@@ -1,0 +1,55 @@
+name: cinlan-qq-bot
+
+services:
+  napcat:
+    image: mlikiowa/napcat-docker:latest
+    container_name: cinlan-qq-napcat
+    restart: unless-stopped
+    environment:
+      NAPCAT_UID: "${NAPCAT_UID:-1000}"
+      NAPCAT_GID: "${NAPCAT_GID:-1000}"
+      WEBUI_TOKEN: "${NAPCAT_WEBUI_TOKEN}"
+    ports:
+      - "127.0.0.1:${NAPCAT_WEBUI_PORT:-6099}:6099"
+    expose:
+      - "3001"
+    volumes:
+      - ./data/napcat/config:/app/napcat/config
+      - ./data/napcat/qq:/app/.config/QQ
+    networks:
+      - qq-bot
+
+  cinlan-qq-bot:
+    build:
+      context: .
+    image: cinlan-qq-bot:local
+    container_name: cinlan-qq-bot
+    restart: unless-stopped
+    user: "${BOT_UID:-1000}:${BOT_GID:-1000}"
+    env_file:
+      - .env
+    environment:
+      QQ_PLATFORM: onebot
+      ONEBOT_WS_URL: "ws://napcat:3001"
+      HTTP_LISTEN_ADDR: ":8080"
+    depends_on:
+      - napcat
+    ports:
+      - "127.0.0.1:${BOT_STATUS_PORT:-18080}:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    volumes:
+      - ./data/bot:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - qq-bot
+
+networks:
+  qq-bot:
+    driver: bridge

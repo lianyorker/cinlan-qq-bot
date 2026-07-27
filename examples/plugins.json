@@ -1,0 +1,19 @@
+{
+  "plugins": [
+    {
+      "name": "customer-crm",
+      "url": "http://127.0.0.1:9001/hooks/qq",
+      "hooks": [
+        "before_message",
+        "after_message",
+        "event"
+      ],
+      "header_env": {
+        "Authorization": "CUSTOMER_CRM_AUTHORIZATION"
+      },
+      "timeout": "5s",
+      "fail_open": true,
+      "enabled": false
+    }
+  ]
+}

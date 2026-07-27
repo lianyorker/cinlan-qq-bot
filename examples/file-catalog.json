@@ -1,0 +1,19 @@
+{
+  "version": 1,
+  "files": [
+    {
+      "id": "sql",
+      "name": "SQL 脚本",
+      "aliases": [
+        "sql",
+        "数据库脚本",
+        "初始化脚本"
+      ],
+      "description": "管理员指定的数据库脚本",
+      "path": "files/replace-with-your.sql",
+      "display_name": "database.sql",
+      "enabled": false,
+      "private_only": true
+    }
+  ]
+}

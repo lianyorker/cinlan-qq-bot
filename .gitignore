@@ -1,0 +1,7 @@
+.env
+/data/
+/bin/
+/cinlan-qq-bot
+/cinlan-qq-bot.exe
+coverage.out
+runtime/loader/target/

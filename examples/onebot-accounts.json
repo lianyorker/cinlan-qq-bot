@@ -1,0 +1,40 @@
+{
+  "default_account": "support",
+  "accounts": [
+    {
+      "name": "support",
+      "self_id": "10001",
+      "transport": "forward_ws",
+      "url": "ws://127.0.0.1:3001",
+      "access_token_env": "SUPPORT_QQ_TOKEN",
+      "enabled": true
+    },
+    {
+      "name": "sse-example",
+      "self_id": "10002",
+      "transport": "http_sse",
+      "url": "http://127.0.0.1:3000",
+      "access_token_env": "SSE_QQ_TOKEN",
+      "enabled": false
+    },
+    {
+      "name": "reverse-ws-example",
+      "self_id": "10003",
+      "transport": "reverse_ws",
+      "listen_addr": "127.0.0.1:3103",
+      "path": "/onebot/v11/ws",
+      "access_token_env": "REVERSE_WS_QQ_TOKEN",
+      "enabled": false
+    },
+    {
+      "name": "reverse-http-example",
+      "self_id": "10004",
+      "transport": "reverse_http",
+      "url": "http://127.0.0.1:3004",
+      "listen_addr": "127.0.0.1:3104",
+      "path": "/onebot/v11/events",
+      "access_token_env": "REVERSE_HTTP_QQ_TOKEN",
+      "enabled": false
+    }
+  ]
+}

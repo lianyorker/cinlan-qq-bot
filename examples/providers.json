@@ -1,0 +1,25 @@
+{
+  "default_provider": "customer-api",
+  "providers": [
+    {
+      "name": "customer-api",
+      "kind": "customer-service",
+      "mode": "custom",
+      "url": "http://127.0.0.1:9000/v1/qq/reply",
+      "timeout": "30s",
+      "max_retries": 3,
+      "enabled": true
+    },
+    {
+      "name": "openai-compatible-example",
+      "kind": "llm",
+      "mode": "openai",
+      "url": "https://api.example.com/v1/chat/completions",
+      "api_key_env": "OPENAI_COMPATIBLE_API_KEY",
+      "model": "replace-with-model",
+      "timeout": "45s",
+      "max_retries": 2,
+      "enabled": false
+    }
+  ]
+}
