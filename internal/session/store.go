@@ -59,6 +59,7 @@ type Snapshot struct {
 type Store struct {
 	mu         sync.Mutex
 	entries    map[string]entry
+	markers    map[string]time.Time
 	maxHistory int
 	ttl        time.Duration
 	now        func() time.Time
@@ -74,6 +75,7 @@ func New(maxHistory int, ttl time.Duration) *Store {
 func newWithClock(maxHistory int, ttl time.Duration, now func() time.Time) *Store {
 	return &Store{
 		entries:    make(map[string]entry),
+		markers:    make(map[string]time.Time),
 		maxHistory: maxHistory,
 		ttl:        ttl,
 		now:        now,
@@ -104,6 +106,53 @@ func (s *Store) PersistenceError() error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.persistErr
+}
+
+// ClaimMarker atomically records a durable one-time event. It returns false
+// when the same marker was already claimed.
+func (s *Store) ClaimMarker(key string) (bool, error) {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return false, errors.New("marker key is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.markers[key]; exists {
+		return false, nil
+	}
+	createdAt := s.now()
+	if s.sqlite != nil {
+		claimed, err := s.claimSQLiteMarkerLocked(key, createdAt)
+		s.persistErr = err
+		if err != nil || !claimed {
+			return claimed, err
+		}
+	}
+	s.markers[key] = createdAt
+	return true, nil
+}
+
+// ReleaseMarker rolls back a claim when its associated operation did not
+// complete.
+func (s *Store) ReleaseMarker(key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("marker key is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, exists := s.markers[key]; !exists {
+		return nil
+	}
+	if s.sqlite != nil {
+		err := s.releaseSQLiteMarkerLocked(key)
+		s.persistErr = err
+		if err != nil {
+			return err
+		}
+	}
+	delete(s.markers, key)
+	return nil
 }
 
 func (s *Store) Snapshot(key string) ([]domain.ChatMessage, bool) {

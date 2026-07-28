@@ -73,7 +73,8 @@ function Build-GoBinary(
         $env:GOARCH = $GoArch
         $env:CGO_ENABLED = "0"
         $env:GOFLAGS = ""
-        & $go.Source build -trimpath -ldflags="-s -w" -o $Output .\cmd\cinlan-qq-bot
+        & $go.Source build -buildvcs=false -trimpath -ldflags="-s -w" `
+            -o $Output .\cmd\cinlan-qq-bot
         if ($LASTEXITCODE -ne 0) {
             throw "Go build failed for $GoOS/$GoArch with exit code $LASTEXITCODE."
         }

@@ -364,7 +364,7 @@ func main() {
 		}
 		if entries := fileCatalog.List(); len(entries) > 0 {
 			if registerErr := botService.ToolRegistry().Register(
-				fileCatalog.Tool(qqAdapter, cfg.FileSendTimeout),
+				fileCatalog.Tool(qqAdapter, cfg.FileSendTimeout, sessionStore),
 			); registerErr != nil {
 				logger.Error("failed to register file delivery tool", "error", registerErr)
 				os.Exit(2)

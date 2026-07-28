@@ -25,6 +25,7 @@ import (
 const (
 	maxCatalogBytes   = 512 << 10
 	maxCatalogEntries = 128
+	maxFirstMessage   = 16 << 10
 	deliveryDedupeTTL = 10 * time.Minute
 )
 
@@ -39,16 +40,22 @@ type actionCaller interface {
 	Call(context.Context, string, map[string]any) (any, error)
 }
 
+type MarkerStore interface {
+	ClaimMarker(string) (bool, error)
+	ReleaseMarker(string) error
+}
+
 type Entry struct {
-	ID              string
-	Name            string
-	Aliases         []string
-	Description     string
-	Path            string
-	DisplayName     string
-	PrivateOnly     bool
-	AllowedGroupIDs []string
-	Size            int64
+	ID                   string
+	Name                 string
+	Aliases              []string
+	Description          string
+	Path                 string
+	DisplayName          string
+	FirstDeliveryMessage string
+	PrivateOnly          bool
+	AllowedGroupIDs      []string
+	Size                 int64
 }
 
 type rawCatalog struct {
@@ -57,15 +64,16 @@ type rawCatalog struct {
 }
 
 type rawEntry struct {
-	ID              string   `json:"id"`
-	Name            string   `json:"name"`
-	Aliases         []string `json:"aliases"`
-	Description     string   `json:"description"`
-	Path            string   `json:"path"`
-	DisplayName     string   `json:"display_name"`
-	Enabled         *bool    `json:"enabled"`
-	PrivateOnly     *bool    `json:"private_only"`
-	AllowedGroupIDs []string `json:"allowed_group_ids"`
+	ID                   string   `json:"id"`
+	Name                 string   `json:"name"`
+	Aliases              []string `json:"aliases"`
+	Description          string   `json:"description"`
+	Path                 string   `json:"path"`
+	DisplayName          string   `json:"display_name"`
+	FirstDeliveryMessage string   `json:"first_delivery_message"`
+	Enabled              *bool    `json:"enabled"`
+	PrivateOnly          *bool    `json:"private_only"`
+	AllowedGroupIDs      []string `json:"allowed_group_ids"`
 }
 
 type DeliveryResult struct {
@@ -197,7 +205,11 @@ func (c *Catalog) List() []Entry {
 	return result
 }
 
-func (c *Catalog) Tool(sender Sender, timeout time.Duration) tool.Definition {
+func (c *Catalog) Tool(
+	sender Sender,
+	timeout time.Duration,
+	markers MarkerStore,
+) tool.Definition {
 	if timeout <= 0 {
 		timeout = 30 * time.Second
 	}
@@ -223,7 +235,7 @@ func (c *Catalog) Tool(sender Sender, timeout time.Duration) tool.Definition {
 		Permission: tool.PermissionEveryone,
 		Timeout:    timeout,
 		Handler: func(ctx context.Context, call tool.Call) (tool.Result, error) {
-			return c.deliver(ctx, sender, call)
+			return c.deliver(ctx, sender, markers, call)
 		},
 	}
 }
@@ -231,6 +243,7 @@ func (c *Catalog) Tool(sender Sender, timeout time.Duration) tool.Definition {
 func (c *Catalog) deliver(
 	ctx context.Context,
 	sender Sender,
+	markers MarkerStore,
 	call tool.Call,
 ) (tool.Result, error) {
 	var arguments deliverArguments
@@ -275,6 +288,29 @@ func (c *Catalog) deliver(
 	}
 	if call.Actor.ChatType == platform.ChatGroup && entry.PrivateOnly {
 		if strings.TrimSpace(call.Actor.UserID) != "" {
+			claim, claimErr := claimFirstDelivery(
+				markers,
+				call.Actor,
+				entry,
+				platform.ChatPrivate,
+				call.Actor.UserID,
+			)
+			if claimErr != nil {
+				c.forgetDelivery(dedupeKey)
+				return tool.Result{}, claimErr
+			}
+			if claim.fresh {
+				if err := sender.Send(ctx, platform.Outbound{
+					ChatType: platform.ChatPrivate,
+					ChatID:   call.Actor.UserID,
+					SelfID:   call.Actor.SelfID,
+					Chain:    message.Chain{message.Text(entry.FirstDeliveryMessage)},
+				}); err != nil {
+					_ = rollbackFirstDelivery(markers, claim)
+					c.forgetDelivery(dedupeKey)
+					return privateRequiredResult(call.Actor, entry), nil
+				}
+			}
 			if err := sender.Send(ctx, platform.Outbound{
 				ChatType: platform.ChatPrivate,
 				ChatID:   call.Actor.UserID,
@@ -288,18 +324,47 @@ func (c *Catalog) deliver(
 					DisplayName: entry.DisplayName,
 					Message:     messageText,
 				}, Response: textResponse(messageText)}, nil
+			} else if rollbackErr := rollbackFirstDelivery(markers, claim); rollbackErr != nil {
+				c.forgetDelivery(dedupeKey)
+				return tool.Result{}, fmt.Errorf(
+					"send private file %q: %v; rollback first delivery: %w",
+					entry.ID,
+					err,
+					rollbackErr,
+				)
 			}
 		}
 		if dedupeKey != "" {
 			c.forgetDelivery(dedupeKey)
 		}
-		messageText := privateGuide(call.Actor.SelfID, entry)
-		return tool.Result{Content: DeliveryResult{
-			Status:      "private_chat_required",
-			FileID:      entry.ID,
-			DisplayName: entry.DisplayName,
-			Message:     messageText,
-		}, Response: textResponse(messageText)}, nil
+		return privateRequiredResult(call.Actor, entry), nil
+	}
+	claim, err := claimFirstDelivery(
+		markers,
+		call.Actor,
+		entry,
+		call.Actor.ChatType,
+		call.Actor.ChatID,
+	)
+	if err != nil {
+		c.forgetDelivery(dedupeKey)
+		return tool.Result{}, err
+	}
+	if claim.fresh {
+		if err := sender.Send(ctx, platform.Outbound{
+			ChatType: call.Actor.ChatType,
+			ChatID:   call.Actor.ChatID,
+			SelfID:   call.Actor.SelfID,
+			Chain:    message.Chain{message.Text(entry.FirstDeliveryMessage)},
+		}); err != nil {
+			_ = rollbackFirstDelivery(markers, claim)
+			c.forgetDelivery(dedupeKey)
+			return tool.Result{}, fmt.Errorf(
+				"send first delivery message for %q: %w",
+				entry.ID,
+				err,
+			)
+		}
 	}
 	if err := sender.Send(ctx, platform.Outbound{
 		ChatType: call.Actor.ChatType,
@@ -307,6 +372,9 @@ func (c *Catalog) deliver(
 		SelfID:   call.Actor.SelfID,
 		Chain:    message.Chain{message.File(entry.Path, entry.DisplayName)},
 	}); err != nil {
+		if rollbackErr := rollbackFirstDelivery(markers, claim); rollbackErr != nil {
+			err = fmt.Errorf("%v; rollback first delivery: %w", err, rollbackErr)
+		}
 		if dedupeKey != "" {
 			c.forgetDelivery(dedupeKey)
 		}
@@ -332,6 +400,9 @@ func normalizeEntry(
 		Name:        strings.TrimSpace(raw.Name),
 		Description: strings.TrimSpace(raw.Description),
 		DisplayName: strings.TrimSpace(raw.DisplayName),
+		FirstDeliveryMessage: strings.TrimSpace(
+			strings.ReplaceAll(raw.FirstDeliveryMessage, `\n`, "\n"),
+		),
 		PrivateOnly: true,
 	}
 	if !entryIDPattern.MatchString(entry.ID) {
@@ -342,6 +413,13 @@ func normalizeEntry(
 	}
 	if raw.PrivateOnly != nil {
 		entry.PrivateOnly = *raw.PrivateOnly
+	}
+	if len(entry.FirstDeliveryMessage) > maxFirstMessage {
+		return Entry{}, fmt.Errorf(
+			"file %q first_delivery_message exceeds %d bytes",
+			entry.ID,
+			maxFirstMessage,
+		)
 	}
 	seenGroupIDs := make(map[string]struct{}, len(raw.AllowedGroupIDs))
 	for _, groupID := range raw.AllowedGroupIDs {
@@ -596,6 +674,75 @@ func privateGuide(selfID string, entry Entry) string {
 		"该文件仅通过私聊发送。请先添加机器人为好友，然后私聊发送“%s”获取。",
 		keyword,
 	)
+}
+
+type firstDeliveryClaim struct {
+	key   string
+	fresh bool
+}
+
+func claimFirstDelivery(
+	markers MarkerStore,
+	actor tool.Actor,
+	entry Entry,
+	targetChatType, targetChatID string,
+) (firstDeliveryClaim, error) {
+	if entry.FirstDeliveryMessage == "" {
+		return firstDeliveryClaim{}, nil
+	}
+	if markers == nil {
+		return firstDeliveryClaim{}, errors.New(
+			"first delivery marker store is not configured",
+		)
+	}
+	recipientType := "user"
+	recipientID := strings.TrimSpace(actor.UserID)
+	if recipientID == "" && targetChatType == platform.ChatPrivate {
+		recipientID = strings.TrimSpace(targetChatID)
+	}
+	if recipientID == "" {
+		recipientType = "chat"
+		recipientID = strings.TrimSpace(targetChatID)
+	}
+	key := strings.Join([]string{
+		"file-delivery:v1",
+		strings.TrimSpace(actor.Platform),
+		"self",
+		strings.TrimSpace(actor.SelfID),
+		recipientType,
+		recipientID,
+		"file",
+		entry.ID,
+	}, "\x00")
+	fresh, err := markers.ClaimMarker(key)
+	if err != nil {
+		return firstDeliveryClaim{}, fmt.Errorf(
+			"claim first delivery marker for %q: %w",
+			entry.ID,
+			err,
+		)
+	}
+	return firstDeliveryClaim{key: key, fresh: fresh}, nil
+}
+
+func rollbackFirstDelivery(
+	markers MarkerStore,
+	claim firstDeliveryClaim,
+) error {
+	if !claim.fresh || claim.key == "" {
+		return nil
+	}
+	return markers.ReleaseMarker(claim.key)
+}
+
+func privateRequiredResult(actor tool.Actor, entry Entry) tool.Result {
+	messageText := privateGuide(actor.SelfID, entry)
+	return tool.Result{Content: DeliveryResult{
+		Status:      "private_chat_required",
+		FileID:      entry.ID,
+		DisplayName: entry.DisplayName,
+		Message:     messageText,
+	}, Response: textResponse(messageText)}
 }
 
 func deliveryKey(actor tool.Actor, fileID string) string {

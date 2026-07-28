@@ -186,6 +186,11 @@ func (b *sqliteBackend) initialize() error {
 			PRIMARY KEY (scope_hash, seq),
 			FOREIGN KEY (scope_hash) REFERENCES sessions(scope_hash) ON DELETE CASCADE
 		)`,
+		`CREATE TABLE IF NOT EXISTS markers (
+			marker_hash BLOB PRIMARY KEY,
+			marker_cipher BLOB NOT NULL,
+			created_at INTEGER NOT NULL
+		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)`,
 	} {
 		if _, err := b.db.Exec(statement); err != nil {
@@ -300,6 +305,74 @@ func (s *Store) loadSQLite() error {
 	}
 	if err := messageRows.Err(); err != nil {
 		return fmt.Errorf("iterate SQLite session messages: %w", err)
+	}
+	markerRows, err := s.sqlite.db.Query(`
+		SELECT marker_hash, marker_cipher, created_at
+		FROM markers`)
+	if err != nil {
+		return fmt.Errorf("query SQLite markers: %w", err)
+	}
+	defer markerRows.Close()
+	for markerRows.Next() {
+		var markerHash, markerCipher []byte
+		var createdAt int64
+		if err := markerRows.Scan(&markerHash, &markerCipher, &createdAt); err != nil {
+			return fmt.Errorf("scan SQLite marker: %w", err)
+		}
+		key, err := s.sqlite.cipher.open("marker", markerHash, markerCipher)
+		if err != nil {
+			return err
+		}
+		expectedHash := s.sqlite.cipher.scopeHash("marker\x00" + string(key))
+		if !hmac.Equal(markerHash, expectedHash) {
+			return errors.New("SQLite marker hash does not match encrypted key")
+		}
+		s.markers[string(key)] = time.Unix(0, createdAt)
+	}
+	if err := markerRows.Err(); err != nil {
+		return fmt.Errorf("iterate SQLite markers: %w", err)
+	}
+	return nil
+}
+
+func (s *Store) claimSQLiteMarkerLocked(
+	key string,
+	createdAt time.Time,
+) (bool, error) {
+	markerHash := s.sqlite.cipher.scopeHash("marker\x00" + key)
+	markerCipher, err := s.sqlite.cipher.seal(
+		"marker",
+		markerHash,
+		[]byte(key),
+	)
+	if err != nil {
+		return false, err
+	}
+	result, err := s.sqlite.db.Exec(`
+		INSERT INTO markers (marker_hash, marker_cipher, created_at)
+		VALUES (?, ?, ?)
+		ON CONFLICT(marker_hash) DO NOTHING`,
+		markerHash,
+		markerCipher,
+		createdAt.UnixNano(),
+	)
+	if err != nil {
+		return false, fmt.Errorf("insert SQLite marker: %w", err)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return false, fmt.Errorf("read SQLite marker insert result: %w", err)
+	}
+	return affected == 1, nil
+}
+
+func (s *Store) releaseSQLiteMarkerLocked(key string) error {
+	markerHash := s.sqlite.cipher.scopeHash("marker\x00" + key)
+	if _, err := s.sqlite.db.Exec(
+		`DELETE FROM markers WHERE marker_hash = ?`,
+		markerHash,
+	); err != nil {
+		return fmt.Errorf("delete SQLite marker: %w", err)
 	}
 	return nil
 }
