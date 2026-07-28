@@ -108,6 +108,66 @@ func TestSmartAttentionIgnoresQuestionAddressedToAnotherUser(t *testing.T) {
 	}
 }
 
+func TestSmartAttentionDirectMentionWinsOverExtraAtComponent(t *testing.T) {
+	agentClient := &fakeAgent{reply: func(
+		request domain.AgentRequest,
+	) (domain.AgentResponse, error) {
+		if strings.HasPrefix(request.RequestID, "attention:") {
+			return domain.AgentResponse{
+				Reply: `{"action":"reply","reason":"support question"}`,
+			}, nil
+		}
+		return domain.AgentResponse{Reply: "direct answer"}, nil
+	}}
+	sender := &fakeSender{}
+	service := smartAttentionService(t, agentClient, sender)
+	event := platformEvent("direct-with-extra-at", "support?", true)
+	event.Chain = append(
+		event.Chain[:1],
+		append(message.Chain{message.At("99999")}, event.Chain[1:]...)...,
+	)
+
+	service.handlePlatformEvent(context.Background(), event)
+
+	if len(agentClient.requests) != 2 {
+		t.Fatalf("agent requests = %d, want attention + answer", len(agentClient.requests))
+	}
+	if len(sender.messages) != 1 || sender.messages[0].text != "direct answer" {
+		t.Fatalf("sent messages = %#v", sender.messages)
+	}
+}
+
+func TestSmartAttentionDirectTechnicalQuestionBypassesClassifier(t *testing.T) {
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "direct answer"}}
+	sender := &fakeSender{}
+	service := smartAttentionService(t, agentClient, sender)
+	profile, ok := service.PersonaRegistry().Get("support")
+	if !ok {
+		t.Fatal("support persona was not registered")
+	}
+	profile.Description = "open source community maintainer"
+	if err := service.PersonaRegistry().Upsert(profile); err != nil {
+		t.Fatalf("Upsert persona: %v", err)
+	}
+
+	service.handlePlatformEvent(
+		context.Background(),
+		platformEvent(
+			"direct-technical-question",
+			"定时任务好像是redis 我有必要集成MQ吗",
+			true,
+		),
+	)
+
+	if len(agentClient.requests) != 1 ||
+		strings.HasPrefix(agentClient.requests[0].RequestID, "attention:") {
+		t.Fatalf("agent requests = %#v, want direct answer request", agentClient.requests)
+	}
+	if len(sender.messages) != 1 || sender.messages[0].text != "direct answer" {
+		t.Fatalf("sent messages = %#v", sender.messages)
+	}
+}
+
 func TestSmartAttentionIgnoresTextualMentionAddressedToAnotherBot(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
 	sender := &fakeSender{}

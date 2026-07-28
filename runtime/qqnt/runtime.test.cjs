@@ -9,6 +9,45 @@ const test = require('node:test');
 process.env.CINLAN_QQNT_TEST_EXPORTS = '1';
 const { __test } = require('./runtime.cjs');
 
+test('convertElements keeps text whose QQNT at target is numeric zero', () => {
+  const previousSelf = { ...__test.state.self };
+  __test.state.self = {
+    uin: '2740954283',
+    uid: 'self-uid',
+    nick: '七七',
+  };
+  try {
+    assert.deepEqual(__test.convertElements([
+      {
+        textElement: {
+          atType: 2,
+          atUid: 'self-uid',
+          atNtUid: 'self-uid',
+          content: '@七七',
+        },
+      },
+      {
+        textElement: {
+          atType: 0,
+          atUid: 0,
+          atNtUid: 0,
+          atUin: 0,
+          atNtUin: 0,
+          content: '定时任务好像是redis 我有必要集成MQ吗',
+        },
+      },
+    ]), [
+      { type: 'at', data: { qq: '2740954283', name: '@七七' } },
+      {
+        type: 'text',
+        data: { text: '定时任务好像是redis 我有必要集成MQ吗' },
+      },
+    ]);
+  } finally {
+    __test.state.self = previousSelf;
+  }
+});
+
 test('handshake frames stay on the connecting socket', () => {
   const frames = [];
   const connectingSocket = {

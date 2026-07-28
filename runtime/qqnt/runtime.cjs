@@ -998,6 +998,9 @@ function convertElements(elements) {
       let target = stringValue(
         text.atUid || text.atNtUid || text.atUin || text.atNtUin,
       );
+      if (target === '0') {
+        target = '';
+      }
       if (atType === AT_UNKNOWN && !target) {
         if (stringValue(text.content)) {
           chain.push({ type: 'text', data: { text: stringValue(text.content) } });

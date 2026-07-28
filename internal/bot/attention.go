@@ -28,6 +28,14 @@ var supportRequestSignals = []string{
 	"sql", "部署", "配置", "给我",
 }
 
+var technicalSupportSignals = []string{
+	"redis", "mq", "消息队列", "定时任务", "xxl-job",
+	"mysql", "sql", "数据库", "缓存", "中间件",
+	"java", "spring", "接口", "api", "源码", "模块",
+	"部署", "配置", "分布式", "并发", "事务", "队列",
+	"商品", "订单", "库存", "支付", "会员", "营销",
+}
+
 var acknowledgementTexts = map[string]struct{}{
 	"ok": {}, "okay": {}, "好": {}, "好的": {}, "好滴": {}, "好嘞": {},
 	"嗯": {}, "嗯嗯": {}, "哦": {}, "噢": {}, "收到": {}, "知道了": {},
@@ -62,8 +70,9 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 	}
 
 	direct := state.eventMentioned
-	if mentionsAnotherUser(state.event.Chain, state.selfID) ||
-		(!direct && containsTextualMention(state.text)) {
+	if !direct &&
+		(mentionsAnotherUser(state.event.Chain, state.selfID) ||
+			containsTextualMention(state.text)) {
 		return ignoreForAttention(event, state, "addressed_to_another_user")
 	}
 	if isOutOfScopeCreationTask(state.text) {
@@ -76,6 +85,9 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		state.pluginHandled = true
 		state.reply = "我没看到相关照片或资料，暂时没法判断。"
 		s.stats.processed.Add(1)
+		return nil
+	}
+	if direct && s.isTechnicalSupportRequest(state) {
 		return nil
 	}
 	if direct && containsInspectableAttachment(state.event.Chain) {
@@ -216,6 +228,25 @@ func looksLikeSupportRequest(text string) bool {
 		}
 	}
 	return false
+}
+
+func (s *Service) isTechnicalSupportRequest(state *flowState) bool {
+	if s.personas == nil || state.personaName == "" ||
+		!containsAnyAttentionSignal(
+			strings.ToLower(state.text),
+			technicalSupportSignals,
+		) {
+		return false
+	}
+	profile, ok := s.personas.Get(state.personaName)
+	if !ok {
+		return false
+	}
+	description := strings.ToLower(strings.TrimSpace(profile.Description))
+	return strings.Contains(description, "技术支持") ||
+		strings.Contains(description, "technical support") ||
+		strings.Contains(description, "社区维护") ||
+		strings.Contains(description, "community maintainer")
 }
 
 func isOutOfScopeCreationTask(text string) bool {
