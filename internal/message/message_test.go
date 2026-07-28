@@ -25,6 +25,61 @@ func TestParseOneBotChainAndPlainText(t *testing.T) {
 	}
 }
 
+func TestImageReferencesSupportsQQNTSnakeCaseFields(t *testing.T) {
+	chain := Chain{Attachment(TypeImage, map[string]any{
+		"file_path":        `D:\qq-cache\error.png`,
+		"origin_image_url": "https://example.test/error.png",
+	})}
+
+	references := chain.ImageReferences()
+
+	if len(references) != 1 ||
+		references[0] != "https://example.test/error.png" {
+		t.Fatalf("image references = %#v", references)
+	}
+}
+
+func TestImageReferencesPrefersLocalCacheOverSenderFileURI(t *testing.T) {
+	chain := Chain{Attachment(TypeImage, map[string]any{
+		"origin_image_url": "file://C:\\Users\\Example\\Documents\\Tencent Files\\1000000000\\nt_qq\\nt_data\\Pic\\2026-07\\Ori\\error.png",
+		"file_path":        `C:\Users\Example\Documents\Tencent Files\2000000000\nt_qq\nt_data\Pic\2026-07\Ori\error.png`,
+	})}
+
+	references := chain.ImageReferences()
+
+	if len(references) != 1 ||
+		references[0] != `C:\Users\Example\Documents\Tencent Files\2000000000\nt_qq\nt_data\Pic\2026-07\Ori\error.png` {
+		t.Fatalf("image references = %#v", references)
+	}
+}
+
+func TestImageReferencesPrefersLocalFieldWhenBothFieldsAreFileURI(t *testing.T) {
+	chain := Chain{Attachment(TypeImage, map[string]any{
+		"origin_image_url": "file://C:\\Users\\Example\\Documents\\Tencent Files\\1000000000\\nt_qq\\nt_data\\Pic\\2026-07\\Ori\\error.png",
+		"file_path":        "file://C:\\Users\\Example\\Documents\\Tencent Files\\2000000000\\nt_qq\\nt_data\\Pic\\2026-07\\Ori\\error.png",
+	})}
+
+	references := chain.ImageReferences()
+
+	if len(references) != 1 ||
+		references[0] != "file://C:\\Users\\Example\\Documents\\Tencent Files\\2000000000\\nt_qq\\nt_data\\Pic\\2026-07\\Ori\\error.png" {
+		t.Fatalf("image references = %#v", references)
+	}
+}
+
+func TestRecordTranscriptBecomesPromptText(t *testing.T) {
+	chain := Chain{Attachment(TypeRecord, map[string]any{
+		"file_path": `D:\qq-cache\voice.amr`,
+		"text":      "hello from voice",
+	})}
+
+	text, mentioned := chain.PlainText("10001")
+
+	if mentioned || text != "hello from voice" {
+		t.Fatalf("plain text = %q, mentioned=%v", text, mentioned)
+	}
+}
+
 func TestParseCQEscapesAndOtherMention(t *testing.T) {
 	chain, err := ParseCQ("[CQ:at,qq=20002] hi&amp;there")
 	if err != nil {

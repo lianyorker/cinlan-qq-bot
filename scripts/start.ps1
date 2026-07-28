@@ -39,12 +39,27 @@ try {
         exit 2
     }
     Import-DotEnv $envFile
+    if (-not $env:AGENT_API_KEY) {
+        $userAgentApiKey = [Environment]::GetEnvironmentVariable("AGENT_API_KEY", "User")
+        if ($userAgentApiKey) {
+            $env:AGENT_API_KEY = $userAgentApiKey
+        }
+    }
+    if (-not $env:SESSION_ENCRYPTION_KEY) {
+        $userSessionKey = [Environment]::GetEnvironmentVariable("SESSION_ENCRYPTION_KEY", "User")
+        if ($userSessionKey) {
+            $env:SESSION_ENCRYPTION_KEY = $userSessionKey
+        }
+    }
 
     if (-not $env:AGENT_API_URL -and -not $env:PROVIDERS_FILE) {
         throw "AGENT_API_URL or PROVIDERS_FILE is required in .env."
     }
     if (-not $env:QQ_GROUP_ALLOWLIST) {
         throw "QQ_GROUP_ALLOWLIST is required in .env."
+    }
+    if ($env:SESSION_STORE_PATH -and -not $env:SESSION_ENCRYPTION_KEY) {
+        throw "SESSION_ENCRYPTION_KEY is required when SESSION_STORE_PATH is enabled."
     }
 
     $platform = if ($env:QQ_PLATFORM) { $env:QQ_PLATFORM.ToLowerInvariant() } else { "native" }

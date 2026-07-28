@@ -161,7 +161,11 @@ func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
 		case TypeImage:
 			appendMarker(&builder, "[图片]")
 		case TypeRecord:
-			appendMarker(&builder, "[语音]")
+			if transcript := strings.TrimSpace(valueString(component.Data["text"])); transcript != "" {
+				builder.WriteString(transcript)
+			} else {
+				appendMarker(&builder, "[语音]")
+			}
 		case TypeVideo:
 			appendMarker(&builder, "[视频]")
 		case TypeFile:
@@ -217,11 +221,14 @@ func (c Chain) ReplyID() string {
 func (c Chain) ImageReferences() []string {
 	keys := [...]string{
 		"url",
-		"originImageUrl",
 		"file",
 		"path",
 		"filePath",
+		"file_path",
 		"sourcePath",
+		"source_path",
+		"originImageUrl",
+		"origin_image_url",
 	}
 	references := make([]string, 0)
 	seen := make(map[string]struct{})
@@ -229,20 +236,49 @@ func (c Chain) ImageReferences() []string {
 		if component.Type != TypeImage {
 			continue
 		}
+		var localReference string
+		var remoteReference string
 		for _, key := range keys {
 			reference := strings.TrimSpace(valueString(component.Data[key]))
 			if reference == "" {
 				continue
 			}
-			if _, ok := seen[reference]; ok {
+			if isRemoteImageReference(reference) {
+				remoteReference = reference
 				break
 			}
-			seen[reference] = struct{}{}
-			references = append(references, reference)
-			break
+			if localReference == "" ||
+				(isLocalFileURI(localReference) && !isLocalFileURI(reference)) {
+				localReference = reference
+			}
+		}
+		if remoteReference != "" {
+			if _, ok := seen[remoteReference]; !ok {
+				seen[remoteReference] = struct{}{}
+				references = append(references, remoteReference)
+			}
+			continue
+		}
+		if localReference != "" {
+			if _, ok := seen[localReference]; !ok {
+				seen[localReference] = struct{}{}
+				references = append(references, localReference)
+			}
 		}
 	}
 	return references
+}
+
+func isRemoteImageReference(reference string) bool {
+	lower := strings.ToLower(strings.TrimSpace(reference))
+	return strings.HasPrefix(lower, "http://") ||
+		strings.HasPrefix(lower, "https://") ||
+		strings.HasPrefix(lower, "data:") ||
+		strings.HasPrefix(lower, "base64://")
+}
+
+func isLocalFileURI(reference string) bool {
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(reference)), "file://")
 }
 
 func (c Chain) MarshalJSON() ([]byte, error) {

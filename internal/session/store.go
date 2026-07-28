@@ -20,6 +20,8 @@ type entry struct {
 	Handoff   bool                 `json:"handoff"`
 	Persona   string               `json:"persona,omitempty"`
 	Provider  string               `json:"provider,omitempty"`
+	Summary   string               `json:"summary,omitempty"`
+	Memory    string               `json:"memory,omitempty"`
 	UpdatedAt time.Time            `json:"updated_at"`
 }
 
@@ -36,6 +38,8 @@ type Info struct {
 	Handoff      bool      `json:"handoff"`
 	Persona      string    `json:"persona,omitempty"`
 	Provider     string    `json:"provider,omitempty"`
+	HasSummary   bool      `json:"has_summary"`
+	HasMemory    bool      `json:"has_memory"`
 	UpdatedAt    time.Time `json:"updated_at"`
 }
 
@@ -48,6 +52,8 @@ type Snapshot struct {
 	History  []domain.ChatMessage
 	Handoff  bool
 	Settings Settings
+	Summary  string
+	Memory   string
 }
 
 type Store struct {
@@ -58,6 +64,7 @@ type Store struct {
 	now        func() time.Time
 	path       string
 	persistErr error
+	sqlite     *sqliteBackend
 }
 
 func New(maxHistory int, ttl time.Duration) *Store {
@@ -73,9 +80,9 @@ func newWithClock(maxHistory int, ttl time.Duration, now func() time.Time) *Stor
 	}
 }
 
-// Open restores sessions from path when it exists. An empty path keeps the
-// original in-memory behavior.
-func Open(maxHistory int, ttl time.Duration, path string) (*Store, error) {
+// openLegacy restores the retired plaintext JSON format for migration tests.
+// Production callers must use OpenEncryptedSQLite.
+func openLegacy(maxHistory int, ttl time.Duration, path string) (*Store, error) {
 	store := newWithClock(maxHistory, ttl, time.Now)
 	store.path = stringsTrim(path)
 	if store.path == "" {
@@ -119,6 +126,8 @@ func (s *Store) SnapshotState(key string) Snapshot {
 			Persona:  current.Persona,
 			Provider: current.Provider,
 		},
+		Summary: current.Summary,
+		Memory:  current.Memory,
 	}
 }
 
@@ -165,12 +174,82 @@ func (s *Store) AddExchange(key, userText, assistantText string) {
 	s.persistLocked()
 }
 
+func (s *Store) ApplyCompression(key, summary, memory string, retain int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current, ok := s.getLocked(key)
+	if !ok {
+		return
+	}
+	current.Summary = strings.TrimSpace(summary)
+	current.Memory = strings.TrimSpace(memory)
+	if retain < 0 {
+		retain = 0
+	}
+	if retain%2 != 0 {
+		retain--
+	}
+	if overflow := len(current.History) - retain; overflow > 0 {
+		current.History = append(
+			[]domain.ChatMessage(nil),
+			current.History[overflow:]...,
+		)
+	}
+	current.UpdatedAt = s.now()
+	s.entries[key] = current
+	s.persistLocked()
+}
+
+// ApplyCompressionSnapshot removes only the prefix covered by the supplied
+// snapshot. Messages appended while compression was running are preserved.
+func (s *Store) ApplyCompressionSnapshot(
+	key, summary, memory string,
+	retain int,
+	snapshot []domain.ChatMessage,
+) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current, ok := s.getLocked(key)
+	if !ok || len(snapshot) == 0 || len(current.History) < len(snapshot) {
+		return false
+	}
+	for index := range snapshot {
+		if current.History[index] != snapshot[index] {
+			return false
+		}
+	}
+	if retain < 0 {
+		retain = 0
+	}
+	if retain%2 != 0 {
+		retain--
+	}
+	if retain > len(snapshot) {
+		retain = len(snapshot)
+	}
+	remove := len(snapshot) - retain
+	current.History = append(
+		[]domain.ChatMessage(nil),
+		current.History[remove:]...,
+	)
+	current.Summary = strings.TrimSpace(summary)
+	current.Memory = strings.TrimSpace(memory)
+	current.UpdatedAt = s.now()
+	s.entries[key] = current
+	s.persistLocked()
+	return true
+}
+
 func (s *Store) Clear(key string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
 	current, _ := s.getLocked(key)
 	current.History = nil
+	current.Summary = ""
+	current.Memory = ""
 	current.UpdatedAt = s.now()
 	s.entries[key] = current
 	s.persistLocked()
@@ -220,6 +299,8 @@ func (s *Store) List() []Info {
 			Handoff:      current.Handoff,
 			Persona:      current.Persona,
 			Provider:     current.Provider,
+			HasSummary:   strings.TrimSpace(current.Summary) != "",
+			HasMemory:    strings.TrimSpace(current.Memory) != "",
 			UpdatedAt:    current.UpdatedAt,
 		})
 	}
@@ -282,6 +363,17 @@ func (s *Store) RunJanitor(ctx context.Context) {
 	}
 }
 
+func (s *Store) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.sqlite == nil || s.sqlite.db == nil {
+		return nil
+	}
+	err := s.sqlite.db.Close()
+	s.sqlite.db = nil
+	return err
+}
+
 func (s *Store) getLocked(key string) (entry, bool) {
 	current, ok := s.entries[key]
 	if !ok {
@@ -329,6 +421,10 @@ func (s *Store) load() error {
 }
 
 func (s *Store) persistLocked() {
+	if s.sqlite != nil {
+		s.persistErr = s.persistSQLiteLocked()
+		return
+	}
 	if s.path == "" {
 		return
 	}

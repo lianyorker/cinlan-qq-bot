@@ -1,5 +1,8 @@
 # QQNT Native Runtime
 
+This runtime is Windows x64 only. macOS builds support the OneBot compatibility
+adapter but do not include the QQNT loader, hook, or automatic QQ login.
+
 ## 运行链
 
 ```text
@@ -78,6 +81,7 @@ Runtime -> Go：
 hello
 runtime_status
 event
+av_event
 action_result
 ```
 
@@ -99,7 +103,15 @@ action
     "runtime": "cinlan-qqnt",
     "pid": 1234,
     "qq_version": "9.9.31-49738",
-    "capabilities": ["message_event", "send_message", "send_file", "runtime_status"]
+    "capabilities": [
+      "message_event",
+      "send_message",
+      "send_file",
+      "send_image",
+      "runtime_status",
+      "av_event",
+      "inspect_avsdk"
+    ]
   }
 }
 ```
@@ -142,7 +154,34 @@ session_attached == true
 
 `runtime_status` 无参数，返回当前账号、wrapper 和 session 状态。
 
-私聊在线文件仍使用 `send_message`，但 chain 中只能包含一个 `file` component，
+`inspect_avsdk` 无参数，返回 AVSDK listener 状态、固定方法白名单和最多 32
+条最近事件摘要。它是只读 action，不调用 QQNT 的通话控制方法：
+
+```json
+{
+  "name": "inspect_avsdk",
+  "params": {}
+}
+```
+
+AVSDK 回调使用独立的 `av_event` envelope，不会解码为普通 `platform.Event`，
+也不会进入客服 Agent 流水线。仅接受以下回调：
+
+```text
+onActionToAVSDK
+onS2CActionToAVSDK
+OnGroupVideoActionToAVSDK
+OnInviteActionToAVSDK
+OnGroupVideoServerPushToAVSDK
+```
+
+事件中的 `action_code_candidate` 仅表示第一个安全整数参数，不在实机确认前
+将它当作正式动作码。事件参数最多记录 8 个；Buffer/string 超过 256 KiB 时只记录长度和
+`oversized: true`，不计算哈希。小 Buffer/string 只记录长度和 SHA256，
+不发送原文；对象只记录类型和最多 16 个键名。Go adapter 只保存最后一条合法
+摘要用于状态诊断，不把 AV 事件写入消息 channel。
+
+私聊文件仍使用 `send_message`，但 chain 中只能包含一个 `file` component，
 不能与引用或文本混发：
 
 ```json
@@ -165,8 +204,44 @@ session_attached == true
 }
 ```
 
-runtime 会验证绝对路径和普通文件类型，通过 QQNT 在线文件消息发送，并查询消息
-记录确认成功。群文件尚未开放。
+runtime 会验证绝对路径和普通文件类型，通过 QQNT 普通文件 element 上传，并等待
+`onMsgInfoListUpdate` 返回 `sendStatus=2` 后才确认成功。群文件尚未开放。
+
+本地图片也使用 `send_message`，chain 中可包含一个 `image` component：
+
+```json
+{
+  "name": "send_message",
+  "params": {
+    "chat_type": "private",
+    "chat_id": "10000002",
+    "quote": false,
+    "chain": [
+      {
+        "type": "image",
+        "data": {
+          "file": "D:\\cinlan-qq-bot\\data\\generated-images\\result.jpg"
+        }
+      }
+    ]
+  }
+}
+```
+
+runtime 只接受 `CINLAN_QQNT_SEND_IMAGE_ROOTS` 内的普通 JPEG/PNG/GIF 文件，并校验
+真实路径、文件头、解码尺寸和 `CINLAN_QQNT_SEND_IMAGE_MAX_BYTES`。校验通过后使用
+QQNT rich media path 和 `picElement` 发送；路径越界、格式伪装和超限文件会在上传前拒绝。
+
+`get_group_member_info` 只接收 `group_id` 和 `user_id`，内部查询 QQNT 群成员缓存，
+缓存未命中时强制刷新一次。IPC 只返回请求 ID 与 `member` 布尔值，不返回完整成员
+列表。
+
+收到的 QQNT 图片会保留 `origin_image_url`、`file_path` 和 `source_path`。Go
+Agent runtime 会优先使用远程图片地址；只有图片位于 `QQNT_IMAGE_ALLOWED_ROOTS`
+配置的 QQ 缓存根目录内、真实路径未越界、属于普通图片文件且未超过
+`QQNT_IMAGE_MAX_BYTES` 时，才会读取本地缓存并转成 OpenAI-compatible data URI。
+其他本地路径和伪装文件仍会被拒绝。图片引用缺失或不可用时会返回明确提示，不让
+模型只看 `[图片]` 占位符猜测内容。主动发送语音和视频仍不属于 native v1 能力。
 
 ## 更新验证
 
@@ -196,6 +271,18 @@ $body = @{ action = "runtime_status"; params = @{} } | ConvertTo-Json
 Invoke-RestMethod http://127.0.0.1:18080/api/v1/actions `
   -Method Post -Headers $headers -ContentType application/json -Body $body
 ```
+
+采集白名单账号发起的真实来电时：
+
+```powershell
+$headers = @{ Authorization = "Bearer $env:ADMIN_API_TOKEN" }
+$body = @{ action = "inspect_avsdk"; params = @{} } | ConvertTo-Json
+Invoke-RestMethod http://127.0.0.1:18080/api/v1/actions `
+  -Method Post -Headers $headers -ContentType application/json -Body $body
+```
+
+必须先从该只读结果确认来电回调、参数结构和动作码，再实现接听、拒绝和挂断。
+当前 runtime 不暴露主动拨号 action，也不允许 AV 事件触发 Agent Tool。
 
 ## 当前实机基线
 

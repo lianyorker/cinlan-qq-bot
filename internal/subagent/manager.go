@@ -228,6 +228,8 @@ func (m *Manager) install(configs []Config) error {
 			Description: fmt.Sprintf("[Subagent %s] %s", config.Name, fallbackDescription(config)),
 			Permission:  config.Permission,
 			Timeout:     30 * time.Second,
+			Source:      "subagent",
+			SourceName:  config.Name,
 			Parameters: map[string]any{
 				"type": "object",
 				"properties": map[string]any{
@@ -348,6 +350,7 @@ func executeHandoff(
 		History:       append([]domain.ChatMessage(nil), call.Actor.History...),
 		SystemPrompt:  config.SystemPrompt,
 		PromptContext: strings.TrimSpace(input.Context),
+		AllowedSkills: append([]string(nil), config.Skills...),
 	}
 	response, err := client.Reply(ctx, request)
 	if err != nil {

@@ -6,10 +6,12 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"strings"
 	"sync"
 	"testing"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
@@ -27,12 +29,16 @@ type fakeAgent struct {
 	requests []domain.AgentRequest
 	response domain.AgentResponse
 	err      error
+	reply    func(domain.AgentRequest) (domain.AgentResponse, error)
 }
 
 func (f *fakeAgent) Reply(_ context.Context, request domain.AgentRequest) (domain.AgentResponse, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.requests = append(f.requests, request)
+	if f.reply != nil {
+		return f.reply(request)
+	}
 	return f.response, f.err
 }
 
@@ -104,8 +110,8 @@ func TestHandleMentionedGroupMessageAndHistory(t *testing.T) {
 	if len(sender.messages) != 2 || !sender.messages[0].quote {
 		t.Fatalf("sent messages = %#v", sender.messages)
 	}
-	if sender.messages[0].atUserID != "20002" || sender.messages[0].atName != "tester" {
-		t.Fatalf("group reply target = %#v", sender.messages[0])
+	if sender.messages[0].atUserID != "" || sender.messages[0].atName != "" {
+		t.Fatalf("quoted reply also mentioned sender = %#v", sender.messages[0])
 	}
 }
 
@@ -145,6 +151,88 @@ func TestRequiresMention(t *testing.T) {
 	}
 	if service.Stats().Ignored != 1 {
 		t.Fatalf("Ignored = %d, want 1", service.Stats().Ignored)
+	}
+}
+
+func TestIgnoresAutomatedSenders(t *testing.T) {
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "answer"}}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+
+	service.handleEvent(
+		context.Background(),
+		testEventFrom("auto-id", "hello", true, "2854196310", "assistant"),
+	)
+	service.handleEvent(
+		context.Background(),
+		testEventFrom("auto-name", "hello", true, "12345", "Q\u7fa4\u7ba1\u5bb6"),
+	)
+	service.handleEvent(
+		context.Background(),
+		testEventFrom("system", "hello", true, "0", "system"),
+	)
+
+	if len(agentClient.requests) != 0 || len(sender.messages) != 0 {
+		t.Fatalf("automated sender reached bot")
+	}
+	if service.Stats().Ignored != 3 {
+		t.Fatalf("Ignored = %d, want 3", service.Stats().Ignored)
+	}
+}
+
+func TestFailedSendDoesNotEnterHistory(t *testing.T) {
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "answer"}}
+	sender := &fakeSender{err: errors.New("send failed")}
+	sessions := session.New(10, time.Hour)
+	service := New(cfg, agentClient, sender, sessions, testLogger())
+
+	service.handleEvent(context.Background(), testEvent("send-failed", "hello", true))
+
+	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
+	if len(snapshot.History) != 0 {
+		t.Fatalf("failed reply entered history: %#v", snapshot.History)
+	}
+	if service.Stats().SendErrors != 1 {
+		t.Fatalf("SendErrors = %d, want 1", service.Stats().SendErrors)
+	}
+}
+
+func TestBindingRemovesOutboundLinks(t *testing.T) {
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{
+		response: domain.AgentResponse{
+			Reply: "See https://example.com/path and docs.example.org/a.",
+		},
+	}
+	sender := &fakeSender{}
+	sessions := session.New(10, time.Hour)
+	service := New(cfg, agentClient, sender, sessions, testLogger())
+	allowLinks := false
+	bindings, err := binding.NewRegistry([]binding.Rule{{
+		Name:       "no-links",
+		Platform:   "*",
+		SelfID:     "10001",
+		ChatType:   "group",
+		ChatID:     "30003",
+		AllowLinks: &allowLinks,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	service.SetChatBindings(bindings)
+
+	service.handleEvent(context.Background(), testEvent("no-links", "hello", true))
+
+	if len(sender.messages) != 1 ||
+		strings.Contains(sender.messages[0].text, "example.") {
+		t.Fatalf("outbound = %#v", sender.messages)
+	}
+	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
+	if len(snapshot.History) != 2 ||
+		strings.Contains(snapshot.History[1].Content, "example.") {
+		t.Fatalf("history = %#v", snapshot.History)
 	}
 }
 
@@ -240,18 +328,48 @@ func TestDuplicateAndCooldown(t *testing.T) {
 	}
 }
 
-func TestCooldownIsIsolatedByGroupSender(t *testing.T) {
+func TestCooldownIsSharedAcrossGroupsForSameUser(t *testing.T) {
 	cfg := testBotConfig(t)
+	cfg.GroupAllowlist, _ = config.ParseAllowlist("*")
 	cfg.UserCooldown = time.Minute
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "answer"}}
 	service := New(cfg, agentClient, &fakeSender{}, session.New(10, time.Hour), testLogger())
 	service.now = func() time.Time { return time.Unix(100, 0) }
 
-	service.handleEvent(context.Background(), testEventFrom("1", "first", true, "20002", "alice"))
-	service.handleEvent(context.Background(), testEventFrom("2", "second", true, "20003", "bob"))
+	first := testEventFrom("1", "first", true, "20002", "alice")
+	first.GroupID = "30003"
+	second := testEventFrom("2", "second", true, "20002", "alice")
+	second.GroupID = "30004"
+	service.handleEvent(context.Background(), first)
+	service.handleEvent(context.Background(), second)
 
-	if len(agentClient.requests) != 2 || service.Stats().RateLimited != 0 {
+	if len(agentClient.requests) != 1 || service.Stats().RateLimited != 1 {
 		t.Fatalf("requests=%d stats=%#v", len(agentClient.requests), service.Stats())
+	}
+}
+
+func TestRateWindowLimitsAndRecovers(t *testing.T) {
+	cfg := testBotConfig(t)
+	cfg.UserCooldown = 0
+	cfg.UserRateLimit = 2
+	cfg.UserRateWindow = time.Minute
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "answer"}}
+	service := New(cfg, agentClient, &fakeSender{}, session.New(10, time.Hour), testLogger())
+	now := time.Unix(100, 0)
+	service.now = func() time.Time { return now }
+
+	service.handleEvent(context.Background(), testEvent("1", "one", true))
+	now = now.Add(time.Second)
+	service.handleEvent(context.Background(), testEvent("2", "two", true))
+	now = now.Add(time.Second)
+	service.handleEvent(context.Background(), testEvent("3", "three", true))
+	if len(agentClient.requests) != 2 || service.Stats().RateLimited != 1 {
+		t.Fatalf("before expiry requests=%d stats=%#v", len(agentClient.requests), service.Stats())
+	}
+	now = now.Add(time.Minute)
+	service.handleEvent(context.Background(), testEvent("4", "four", true))
+	if len(agentClient.requests) != 3 {
+		t.Fatalf("after expiry requests=%d, want 3", len(agentClient.requests))
 	}
 }
 
@@ -275,7 +393,9 @@ func TestPipelineStagesAndCustomCommand(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "agent"}}
 	sender := &fakeSender{}
 	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
-	if got := service.PipelineStages(); len(got) != 9 || got[0] != "wake" || got[len(got)-1] != "respond" {
+	if got := service.PipelineStages(); len(got) != 11 ||
+		got[0] != "wake" || got[1] != "security" ||
+		got[4] != "attention" || got[len(got)-1] != "respond" {
 		t.Fatalf("pipeline stages = %#v", got)
 	}
 	if err := service.CommandRegistry().Register(command.Definition{
@@ -289,6 +409,54 @@ func TestPipelineStagesAndCustomCommand(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("custom-command", "/status", true))
 	if len(agentClient.requests) != 0 || len(sender.messages) != 1 || sender.messages[0].text != "custom status" {
 		t.Fatalf("command handling agent=%#v messages=%#v", agentClient.requests, sender.messages)
+	}
+}
+
+type denyingMessageGuard struct{}
+
+func (denyingMessageGuard) BeforeMessage(
+	context.Context,
+	*plugin.MessageContext,
+) (plugin.Decision, error) {
+	return plugin.Decision{Handled: true, Reply: "denied"}, nil
+}
+
+func TestMessageGuardBypassesCommandsRateLimitPluginsAndHistory(t *testing.T) {
+	cfg := testBotConfig(t)
+	cfg.UserCooldown = time.Hour
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "agent"}}
+	sender := &fakeSender{}
+	sessions := session.New(10, time.Hour)
+	service := New(cfg, agentClient, sender, sessions, testLogger())
+	service.SetMessageGuard(denyingMessageGuard{})
+	if err := service.CommandRegistry().Register(command.Definition{
+		Name: "status",
+		Handler: func(context.Context, *command.Context) (command.Result, error) {
+			t.Fatal("command handler was called after security denial")
+			return command.Result{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+	if err := service.PluginRegistry().Register(promptPlugin{}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	service.handleEvent(context.Background(), testEvent("guard-1", "/status", true))
+	service.handleEvent(context.Background(), testEvent("guard-2", "/status", true))
+
+	if len(agentClient.requests) != 0 ||
+		len(sender.messages) != 2 ||
+		sender.messages[0].text != "denied" ||
+		sender.messages[1].text != "denied" {
+		t.Fatalf("agent=%#v messages=%#v", agentClient.requests, sender.messages)
+	}
+	if service.Stats().RateLimited != 0 {
+		t.Fatalf("stats = %#v", service.Stats())
+	}
+	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
+	if len(snapshot.History) != 0 {
+		t.Fatalf("security denial entered history: %#v", snapshot.History)
 	}
 }
 
@@ -318,7 +486,9 @@ func TestPluginContextReachesAgentRequest(t *testing.T) {
 		ChatID:      "30003",
 		Chain:       message.Chain{message.At("10001"), message.Text("question")},
 	})
-	if len(agentClient.requests) != 1 || agentClient.requests[0].PromptContext != "trusted test context" {
+	if len(agentClient.requests) != 1 ||
+		!strings.Contains(agentClient.requests[0].PromptContext, "trusted test context") ||
+		!strings.Contains(agentClient.requests[0].PromptContext, "CURRENT KNOWLEDGE") {
 		t.Fatalf("agent request = %#v", agentClient.requests)
 	}
 }
@@ -361,8 +531,74 @@ func TestSessionSelectsProviderAndPersona(t *testing.T) {
 	if len(primary.requests) != 0 || len(backup.requests) != 1 {
 		t.Fatalf("provider calls primary=%d backup=%d", len(primary.requests), len(backup.requests))
 	}
-	if backup.requests[0].SystemPrompt != "sales prompt" {
+	if !strings.HasPrefix(backup.requests[0].SystemPrompt, "sales prompt") ||
+		!strings.Contains(backup.requests[0].SystemPrompt, "群聊客服事实边界") {
 		t.Fatalf("system prompt = %q", backup.requests[0].SystemPrompt)
+	}
+}
+
+func TestBindingOverridesSessionProviderAndPersona(t *testing.T) {
+	cfg := testBotConfig(t)
+	boundAgent := &fakeAgent{response: domain.AgentResponse{Reply: "bound"}}
+	sessionAgent := &fakeAgent{response: domain.AgentResponse{Reply: "session"}}
+	providers := provider.NewRegistry()
+	if err := providers.Register(provider.Wrap("bound", "test", boundAgent)); err != nil {
+		t.Fatalf("Register(bound) error = %v", err)
+	}
+	if err := providers.Register(provider.Wrap("session", "test", sessionAgent)); err != nil {
+		t.Fatalf("Register(session) error = %v", err)
+	}
+	sessions := session.New(10, time.Hour)
+	service := NewWithRuntime(
+		cfg,
+		boundAgent,
+		&fakeSender{},
+		sessions,
+		testLogger(),
+		providers,
+		plugin.NewRegistry(),
+	)
+	for _, profile := range []persona.Profile{
+		{Name: "bound", SystemPrompt: "bound prompt"},
+		{Name: "session", SystemPrompt: "session prompt"},
+	} {
+		if err := service.PersonaRegistry().Register(profile); err != nil {
+			t.Fatalf("Register(%s) error = %v", profile.Name, err)
+		}
+	}
+	bindings, err := binding.NewRegistry([]binding.Rule{{
+		Name:     "bound-group",
+		Platform: "*",
+		SelfID:   "10001",
+		ChatType: platform.ChatGroup,
+		ChatID:   "30003",
+		Persona:  "bound",
+		Provider: "bound",
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	service.SetChatBindings(bindings)
+	sessionPersona := "session"
+	sessionProvider := "session"
+	sessions.UpdateSettings(
+		"qq-onebot:self:10001:group:30003",
+		&sessionPersona,
+		&sessionProvider,
+	)
+
+	service.handleEvent(context.Background(), testEvent("binding-routing", "question", true))
+
+	if len(boundAgent.requests) != 1 || len(sessionAgent.requests) != 0 {
+		t.Fatalf(
+			"provider calls bound=%d session=%d",
+			len(boundAgent.requests),
+			len(sessionAgent.requests),
+		)
+	}
+	if !strings.HasPrefix(boundAgent.requests[0].SystemPrompt, "bound prompt") ||
+		!strings.Contains(boundAgent.requests[0].SystemPrompt, "群聊客服事实边界") {
+		t.Fatalf("system prompt = %q", boundAgent.requests[0].SystemPrompt)
 	}
 }
 

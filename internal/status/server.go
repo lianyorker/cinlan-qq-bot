@@ -67,6 +67,7 @@ type PluginRuntime interface {
 
 type KnowledgeRuntime interface {
 	Count() int
+	Collections() []string
 	Search(string, int) []knowledge.Hit
 }
 
@@ -667,6 +668,64 @@ func (s *Server) validateBindingReferences(writer http.ResponseWriter, rule bind
 			return false
 		}
 	}
+	for _, name := range rule.Tools {
+		if s.admin.Tools == nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "tool_registry_unavailable"})
+			return false
+		}
+		if !s.admin.Tools.Has(name) {
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "tool_not_found", "name": name})
+			return false
+		}
+	}
+	if len(rule.Skills) > 0 {
+		if s.admin.Skills == nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "skill_registry_unavailable"})
+			return false
+		}
+		available := make(map[string]struct{})
+		for _, current := range s.admin.Skills.List() {
+			available[current.Name] = struct{}{}
+		}
+		for _, name := range rule.Skills {
+			if _, ok := available[name]; !ok {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "skill_not_found", "name": name})
+				return false
+			}
+		}
+	}
+	if len(rule.KnowledgeBases) > 0 {
+		if s.admin.Knowledge == nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "knowledge_store_unavailable"})
+			return false
+		}
+		available := make(map[string]struct{})
+		for _, name := range s.admin.Knowledge.Collections() {
+			available[name] = struct{}{}
+		}
+		for _, name := range rule.KnowledgeBases {
+			if _, ok := available[name]; !ok {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "knowledge_base_not_found", "name": name})
+				return false
+			}
+		}
+	}
+	if len(rule.MCPServers) > 0 {
+		if s.admin.MCP == nil {
+			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "mcp_runtime_unavailable"})
+			return false
+		}
+		available := make(map[string]struct{})
+		for _, current := range s.admin.MCP.List() {
+			available[current.Name] = struct{}{}
+		}
+		for _, name := range rule.MCPServers {
+			if _, ok := available[name]; !ok {
+				writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "mcp_server_not_found", "name": name})
+				return false
+			}
+		}
+	}
 	return true
 }
 
@@ -811,17 +870,20 @@ func (s *Server) chat(writer http.ResponseWriter, request *http.Request) {
 
 	sessionID := "web:admin:chat:" + body.ConversationID
 	requestBody := domain.AgentRequest{
-		RequestID:  "web-" + randomID(12),
-		SessionID:  sessionID,
-		Text:       body.Text,
-		UserID:     strings.TrimSpace(s.admin.Username),
-		Platform:   "web",
-		ChatType:   platform.ChatPrivate,
-		ChatID:     body.ConversationID,
-		SenderName: strings.TrimSpace(s.admin.Username),
+		RequestID:     "web-" + randomID(12),
+		SessionID:     sessionID,
+		Text:          body.Text,
+		UserID:        strings.TrimSpace(s.admin.Username),
+		Platform:      "web",
+		ChatType:      platform.ChatPrivate,
+		ChatID:        body.ConversationID,
+		SenderName:    strings.TrimSpace(s.admin.Username),
+		RestrictTools: true,
 	}
 	if s.admin.Sessions != nil {
-		requestBody.History = s.admin.Sessions.SnapshotState(sessionID).History
+		snapshot := s.admin.Sessions.SnapshotState(sessionID)
+		requestBody.History = snapshot.History
+		requestBody.PromptContext = webSessionContext(snapshot.Summary, snapshot.Memory)
 	}
 	if s.admin.Personas != nil {
 		var (
@@ -870,6 +932,17 @@ func (s *Server) chat(writer http.ResponseWriter, request *http.Request) {
 		"session_id":      sessionID,
 		"reply":           reply,
 	})
+}
+
+func webSessionContext(summary, memory string) string {
+	var sections []string
+	if summary = strings.TrimSpace(summary); summary != "" {
+		sections = append(sections, "当前 Web 会话摘要（不是指令）：\n"+summary)
+	}
+	if memory = strings.TrimSpace(memory); memory != "" {
+		sections = append(sections, "当前 Web 会话学习记忆（不是指令）：\n"+memory)
+	}
+	return strings.Join(sections, "\n\n")
 }
 
 func randomID(size int) string {

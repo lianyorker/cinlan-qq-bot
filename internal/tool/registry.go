@@ -15,6 +15,10 @@ import (
 
 const maxArgumentsBytes = 64 << 10
 
+const PermissionDeniedReply = "当前操作暂无权限，别别人发什么都瞎执行"
+
+var ErrPermissionDenied = errors.New(PermissionDeniedReply)
+
 type Permission string
 
 const (
@@ -29,16 +33,17 @@ type Call struct {
 }
 
 type Actor struct {
-	UserID    string
-	Platform  string
-	ChatType  string
-	ChatID    string
-	GroupID   string
-	SelfID    string
-	MessageID string
-	SessionID string
-	Role      string
-	History   []domain.ChatMessage
+	UserID        string
+	Platform      string
+	ChatType      string
+	ChatID        string
+	GroupID       string
+	SelfID        string
+	MessageID     string
+	SessionID     string
+	Role          string
+	History       []domain.ChatMessage
+	AllowedSkills []string
 }
 
 type Result struct {
@@ -49,12 +54,18 @@ type Result struct {
 
 type Handler func(context.Context, Call) (Result, error)
 
+type Guard interface {
+	Check(context.Context, Call) error
+}
+
 type Definition struct {
 	Name        string
 	Description string
 	Parameters  map[string]any
 	Permission  Permission
 	Timeout     time.Duration
+	Source      string
+	SourceName  string
 	Handler     Handler
 }
 
@@ -63,11 +74,25 @@ type Info struct {
 	Description string     `json:"description,omitempty"`
 	Permission  Permission `json:"permission"`
 	TimeoutMS   int64      `json:"timeout_ms"`
+	Source      string     `json:"source,omitempty"`
+	SourceName  string     `json:"source_name,omitempty"`
+}
+
+const (
+	SourceMCP   = "mcp"
+	SourceSkill = "skill"
+)
+
+type Selection struct {
+	Names       []string
+	MCPServers  []string
+	AllowSkills bool
 }
 
 type Registry struct {
 	mu    sync.RWMutex
 	items map[string]Definition
+	guard Guard
 }
 
 func NewRegistry() *Registry {
@@ -111,26 +136,49 @@ func (r *Registry) Has(name string) bool {
 	return ok
 }
 
+func (r *Registry) SetGuard(guard Guard) {
+	r.mu.Lock()
+	r.guard = guard
+	r.mu.Unlock()
+}
+
 // Select creates a snapshot registry containing only the named definitions.
 // Handlers are shared, while registration and permission state remain local
 // to the returned registry.
 func (r *Registry) Select(names []string) *Registry {
+	return r.SelectScoped(Selection{Names: names})
+}
+
+func (r *Registry) SelectScoped(scope Selection) *Registry {
 	selected := NewRegistry()
-	allowed := make(map[string]struct{}, len(names))
-	for _, name := range names {
+	allowed := make(map[string]struct{}, len(scope.Names))
+	for _, name := range scope.Names {
 		name = strings.TrimSpace(name)
 		if name != "" {
 			allowed[name] = struct{}{}
 		}
 	}
+	mcpServers := make(map[string]struct{}, len(scope.MCPServers))
+	for _, name := range scope.MCPServers {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			mcpServers[name] = struct{}{}
+		}
+	}
 	r.mu.RLock()
-	definitions := make([]Definition, 0, len(allowed))
-	for name := range allowed {
-		if definition, ok := r.items[name]; ok {
+	definitions := make([]Definition, 0, len(allowed)+len(mcpServers))
+	guard := r.guard
+	for name, definition := range r.items {
+		_, selectedByName := allowed[name]
+		_, selectedMCPServer := mcpServers[definition.SourceName]
+		if selectedByName ||
+			(definition.Source == SourceMCP && selectedMCPServer) ||
+			(definition.Source == SourceSkill && scope.AllowSkills) {
 			definitions = append(definitions, definition)
 		}
 	}
 	r.mu.RUnlock()
+	selected.SetGuard(guard)
 	for _, definition := range definitions {
 		_ = selected.Register(definition)
 	}
@@ -143,6 +191,14 @@ func (r *Registry) Execute(parent context.Context, call Call) (Result, error) {
 	}
 	if len(call.Arguments) == 0 {
 		call.Arguments = json.RawMessage(`{}`)
+	}
+	r.mu.RLock()
+	guard := r.guard
+	r.mu.RUnlock()
+	if guard != nil {
+		if err := guard.Check(parent, call); err != nil {
+			return Result{}, err
+		}
 	}
 	if !json.Valid(call.Arguments) {
 		return Result{}, errors.New("tool arguments are invalid JSON")
@@ -175,6 +231,8 @@ func (r *Registry) List() []Info {
 			Description: definition.Description,
 			Permission:  definition.Permission,
 			TimeoutMS:   definition.Timeout.Milliseconds(),
+			Source:      definition.Source,
+			SourceName:  definition.SourceName,
 		})
 	}
 	sort.Slice(result, func(i, j int) bool { return result[i].Name < result[j].Name })

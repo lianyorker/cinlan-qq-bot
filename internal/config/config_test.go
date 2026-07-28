@@ -8,14 +8,28 @@ import (
 
 func TestLoadCustomAgentConfig(t *testing.T) {
 	clearConfigEnvironment(t)
+	imageRootA := t.TempDir()
+	imageRootB := t.TempDir()
 	t.Setenv("QQ_GROUP_ALLOWLIST", "123456, 789012")
 	t.Setenv("QQ_PRIVATE_ALLOWLIST", "234567")
 	t.Setenv("AGENT_API_MODE", "custom")
 	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
 	t.Setenv("QQ_REQUIRE_MENTION", "false")
+	t.Setenv("QQ_GROUP_BATCH_WINDOW", "750ms")
+	t.Setenv("QQ_REPLY_PART_DELAY", "250ms")
+	t.Setenv("BOT_USER_COOLDOWN", "3s")
+	t.Setenv("BOT_USER_RATE_LIMIT", "7")
+	t.Setenv("BOT_USER_RATE_WINDOW", "2m")
+	t.Setenv("MEDIA_TOOL_USER_COOLDOWN", "20s")
+	t.Setenv("MEDIA_TOOL_USER_LIMIT", "5")
+	t.Setenv("MEDIA_TOOL_WINDOW", "30m")
+	t.Setenv("MEDIA_TOOL_MAX_CONCURRENCY", "3")
 	t.Setenv("AGENT_MAX_RETRIES", "2")
+	t.Setenv("QQNT_IMAGE_ALLOWED_ROOTS", imageRootA+";"+imageRootB)
+	t.Setenv("QQNT_IMAGE_MAX_BYTES", "8192")
 	t.Setenv("SESSION_TTL", "2h")
-	t.Setenv("SESSION_STORE_PATH", "data/sessions.json")
+	t.Setenv("SESSION_STORE_PATH", "data/sessions.db")
+	t.Setenv("SESSION_ENCRYPTION_KEY", "QUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUFBQUE=")
 	t.Setenv("CRON_STORE_PATH", "data/cron.json")
 	t.Setenv("MCP_SERVERS_FILE", "data/mcp.json")
 	t.Setenv("SKILLS_DIR", "data/skills")
@@ -25,6 +39,8 @@ func TestLoadCustomAgentConfig(t *testing.T) {
 	t.Setenv("FILE_CATALOG_PATH", "data/files.json")
 	t.Setenv("FILE_DELIVERY_MAX_BYTES", "4096")
 	t.Setenv("FILE_DELIVERY_TIMEOUT", "45s")
+	t.Setenv("BOT_ALLOWED_ROOT", `D:\workspace\bot`)
+	t.Setenv("SECURITY_INCIDENT_STORE_PATH", "data/security.json")
 
 	cfg, err := Load()
 	if err != nil {
@@ -39,8 +55,44 @@ func TestLoadCustomAgentConfig(t *testing.T) {
 	if cfg.RequireMention {
 		t.Fatalf("RequireMention = true, want false")
 	}
+	if cfg.GroupBatchWindow != 750*time.Millisecond ||
+		cfg.ReplyPartDelay != 250*time.Millisecond {
+		t.Fatalf(
+			"humanized timing = %s/%s",
+			cfg.GroupBatchWindow,
+			cfg.ReplyPartDelay,
+		)
+	}
+	if cfg.UserCooldown != 3*time.Second ||
+		cfg.UserRateLimit != 7 ||
+		cfg.UserRateWindow != 2*time.Minute ||
+		cfg.MediaToolCooldown != 20*time.Second ||
+		cfg.MediaToolLimit != 5 ||
+		cfg.MediaToolWindow != 30*time.Minute ||
+		cfg.MediaToolConcurrency != 3 {
+		t.Fatalf(
+			"rate limits = %s/%d/%s/%s/%d/%s/%d",
+			cfg.UserCooldown,
+			cfg.UserRateLimit,
+			cfg.UserRateWindow,
+			cfg.MediaToolCooldown,
+			cfg.MediaToolLimit,
+			cfg.MediaToolWindow,
+			cfg.MediaToolConcurrency,
+		)
+	}
 	if cfg.AgentMaxRetries != 2 {
 		t.Fatalf("AgentMaxRetries = %d, want 2", cfg.AgentMaxRetries)
+	}
+	if len(cfg.QQNTImageAllowedRoots) != 2 ||
+		cfg.QQNTImageAllowedRoots[0] != imageRootA ||
+		cfg.QQNTImageAllowedRoots[1] != imageRootB ||
+		cfg.QQNTImageMaxBytes != 8192 {
+		t.Fatalf(
+			"QQNT image config = %#v/%d",
+			cfg.QQNTImageAllowedRoots,
+			cfg.QQNTImageMaxBytes,
+		)
 	}
 	if cfg.SessionTTL != 2*time.Hour {
 		t.Fatalf("SessionTTL = %s, want 2h", cfg.SessionTTL)
@@ -74,6 +126,14 @@ func TestLoadCustomAgentConfig(t *testing.T) {
 			cfg.FileCatalogPath,
 			cfg.FileMaxBytes,
 			cfg.FileSendTimeout,
+		)
+	}
+	if cfg.BotAllowedRoot != `D:\workspace\bot` ||
+		cfg.SecurityStorePath != "data/security.json" {
+		t.Fatalf(
+			"security config = %q/%q",
+			cfg.BotAllowedRoot,
+			cfg.SecurityStorePath,
 		)
 	}
 	if cfg.QQPlatform != QQPlatformNative {
@@ -263,6 +323,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"QQNT_ACTION_TIMEOUT",
 		"QQNT_HANDSHAKE_TIMEOUT",
 		"QQNT_MAX_FRAME_BYTES",
+		"QQNT_IMAGE_ALLOWED_ROOTS",
+		"QQNT_IMAGE_MAX_BYTES",
 		"ONEBOT_WS_URL",
 		"ONEBOT_HTTP_URL",
 		"ONEBOT_ACCESS_TOKEN",
@@ -278,6 +340,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"QQ_GROUP_AT_SENDER",
 		"QQ_MAX_REPLY_RUNES",
 		"QQ_MAX_REPLY_CHUNKS",
+		"QQ_GROUP_BATCH_WINDOW",
+		"QQ_REPLY_PART_DELAY",
 		"AGENT_API_MODE",
 		"AGENT_API_URL",
 		"AGENT_API_KEY",
@@ -290,9 +354,33 @@ func clearConfigEnvironment(t *testing.T) {
 		"AGENT_MAX_TOOL_ROUNDS",
 		"AGENT_RETRY_BASE",
 		"AGENT_RETRY_MAX",
+		"IMAGE_API_MODE",
+		"IMAGE_API_URL",
+		"IMAGE_API_KEY",
+		"IMAGE_MODEL",
+		"IMAGE_OUTPUT_DIR",
+		"IMAGE_MAX_BYTES",
+		"IMAGE_TIMEOUT",
+		"IMAGE_RETENTION",
+		"IMAGE_ENHANCE_PROMPT",
+		"WEB_SCREENSHOT_ENABLED",
+		"WEB_SCREENSHOT_BROWSER_PATH",
+		"WEB_SCREENSHOT_ALLOWED_HOSTS",
+		"WEB_SCREENSHOT_OUTPUT_DIR",
+		"WEB_SCREENSHOT_MAX_BYTES",
+		"WEB_SCREENSHOT_TIMEOUT",
+		"WEB_SCREENSHOT_RETENTION",
+		"WEB_SCREENSHOT_WIDTH",
+		"WEB_SCREENSHOT_HEIGHT",
+		"WEB_SCREENSHOT_WAIT",
 		"SESSION_MAX_HISTORY",
 		"SESSION_TTL",
 		"SESSION_STORE_PATH",
+		"SESSION_LEGACY_STORE_PATH",
+		"SESSION_ENCRYPTION_KEY",
+		"SESSION_COMPRESSION_THRESHOLD",
+		"SESSION_COMPRESSION_RETAIN",
+		"SESSION_LEARNING_ENABLED",
 		"CRON_STORE_PATH",
 		"KNOWLEDGE_DIR",
 		"KNOWLEDGE_TOP_K",
@@ -306,11 +394,82 @@ func clearConfigEnvironment(t *testing.T) {
 		"FILE_CATALOG_PATH",
 		"FILE_DELIVERY_MAX_BYTES",
 		"FILE_DELIVERY_TIMEOUT",
+		"BOT_ALLOWED_ROOT",
+		"SECURITY_INCIDENT_STORE_PATH",
 		"BOT_MAX_CONCURRENCY",
 		"BOT_USER_COOLDOWN",
+		"BOT_USER_RATE_LIMIT",
+		"BOT_USER_RATE_WINDOW",
+		"MEDIA_TOOL_USER_COOLDOWN",
+		"MEDIA_TOOL_USER_LIMIT",
+		"MEDIA_TOOL_WINDOW",
+		"MEDIA_TOOL_MAX_CONCURRENCY",
 		"BOT_MESSAGE_DEDUPE_TTL",
 	}
 	for _, key := range keys {
 		t.Setenv(key, "")
+	}
+}
+
+func TestLoadImageGenerationConfig(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("QQ_GROUP_ALLOWLIST", "123456")
+	t.Setenv("AGENT_API_MODE", "openai")
+	t.Setenv("AGENT_API_URL", "https://api.example.test/v1/chat/completions")
+	t.Setenv("AGENT_MODEL", "gpt-test")
+	t.Setenv("IMAGE_API_MODE", "openai")
+	t.Setenv("IMAGE_OUTPUT_DIR", "data/generated")
+	t.Setenv("IMAGE_MAX_BYTES", "4096")
+	t.Setenv("IMAGE_TIMEOUT", "45s")
+	t.Setenv("IMAGE_RETENTION", "2h")
+	t.Setenv("SESSION_STORE_PATH", "")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if cfg.ImageAPIURL != "https://api.example.test/v1/images/generations" ||
+		cfg.ImageModel != "gpt-image-1" ||
+		cfg.ImageOutputDir != "data/generated" ||
+		cfg.ImageMaxBytes != 4096 ||
+		cfg.ImageTimeout != 45*time.Second ||
+		cfg.ImageRetention != 2*time.Hour {
+		t.Fatalf("image config = %#v", cfg)
+	}
+	if !cfg.ImageEnhance {
+		t.Fatal("ImageEnhance = false, want true by default")
+	}
+}
+
+func TestLoadWebScreenshotConfig(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("QQ_GROUP_ALLOWLIST", "*")
+	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
+	t.Setenv("WEB_SCREENSHOT_ENABLED", "true")
+	t.Setenv("WEB_SCREENSHOT_BROWSER_PATH", `C:\Program Files\Google\Chrome\Application\chrome.exe`)
+	t.Setenv("WEB_SCREENSHOT_ALLOWED_HOSTS", "example.com,github.com")
+	t.Setenv("WEB_SCREENSHOT_OUTPUT_DIR", "data/screenshots")
+	t.Setenv("WEB_SCREENSHOT_MAX_BYTES", "4096")
+	t.Setenv("WEB_SCREENSHOT_TIMEOUT", "40s")
+	t.Setenv("WEB_SCREENSHOT_RETENTION", "3h")
+	t.Setenv("WEB_SCREENSHOT_WIDTH", "1280")
+	t.Setenv("WEB_SCREENSHOT_HEIGHT", "720")
+	t.Setenv("WEB_SCREENSHOT_WAIT", "2s")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatalf("Load() error = %v", err)
+	}
+	if !cfg.WebScreenshotEnabled ||
+		cfg.WebScreenshotBrowserPath == "" ||
+		len(cfg.WebScreenshotAllowedHosts) != 2 ||
+		cfg.WebScreenshotOutputDir != "data/screenshots" ||
+		cfg.WebScreenshotMaxBytes != 4096 ||
+		cfg.WebScreenshotTimeout != 40*time.Second ||
+		cfg.WebScreenshotRetention != 3*time.Hour ||
+		cfg.WebScreenshotWidth != 1280 ||
+		cfg.WebScreenshotHeight != 720 ||
+		cfg.WebScreenshotWait != 2*time.Second {
+		t.Fatalf("web screenshot config = %#v", cfg)
 	}
 }

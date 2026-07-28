@@ -23,6 +23,7 @@ type Config struct {
 	Active       bool
 	Permission   tool.Permission
 	Tools        []string
+	Skills       []string
 	Provider     string
 }
 
@@ -41,6 +42,7 @@ type rawConfig struct {
 	Enabled      *bool           `json:"enabled"`
 	Permission   tool.Permission `json:"permission"`
 	Tools        []string        `json:"tools"`
+	Skills       []string        `json:"skills"`
 	Provider     string          `json:"provider"`
 }
 
@@ -126,6 +128,7 @@ func resolveConfig(raw rawConfig) (Config, error) {
 		tools = append(tools, item)
 	}
 	sort.Strings(tools)
+	skills := uniqueNames(raw.Skills)
 	return Config{
 		Name:         name,
 		Description:  description,
@@ -133,8 +136,27 @@ func resolveConfig(raw rawConfig) (Config, error) {
 		Active:       active,
 		Permission:   permission,
 		Tools:        tools,
+		Skills:       skills,
 		Provider:     strings.TrimSpace(raw.Provider),
 	}, nil
+}
+
+func uniqueNames(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	sort.Strings(result)
+	return result
 }
 
 func truncate(value string, limit int) string {

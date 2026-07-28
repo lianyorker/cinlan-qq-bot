@@ -117,6 +117,33 @@ func TestPromptContextIsSentToBothAgentModes(t *testing.T) {
 	}
 }
 
+func TestRequestToolScopeDoesNotExposeOtherChatTools(t *testing.T) {
+	client := NewHTTPClient(testAgentConfig("custom", "http://127.0.0.1"), discardLogger())
+	registry := tool.NewRegistry()
+	for _, name := range []string{"group_a_tool", "group_b_tool"} {
+		if err := registry.Register(tool.Definition{
+			Name: name,
+			Handler: func(context.Context, tool.Call) (tool.Result, error) {
+				return tool.Result{}, nil
+			},
+		}); err != nil {
+			t.Fatalf("Register(%q) error = %v", name, err)
+		}
+	}
+	client.SetTools(registry, 2)
+	request := testAgentRequest()
+	request.RestrictTools = true
+	request.AllowedTools = []string{"group_a_tool"}
+	payload := client.buildCustomRequest(request, nil)
+	if len(payload.Tools) != 1 {
+		t.Fatalf("scoped tools = %#v", payload.Tools)
+	}
+	function, _ := payload.Tools[0]["function"].(map[string]any)
+	if function["name"] != "group_a_tool" {
+		t.Fatalf("scoped tool = %#v", function)
+	}
+}
+
 func TestOpenAIToolLoopExecutesOnlyRegisteredTool(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
@@ -203,6 +230,98 @@ func TestCustomToolLoopExecutesRegisteredTool(t *testing.T) {
 	}
 }
 
+func TestToolLoopFinalRoundDoesNotExposeTools(t *testing.T) {
+	tests := []struct {
+		mode string
+	}{
+		{mode: "openai"},
+		{mode: "custom"},
+	}
+	for _, current := range tests {
+		t.Run(current.mode, func(t *testing.T) {
+			var calls atomic.Int32
+			var executions atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(
+				writer http.ResponseWriter,
+				request *http.Request,
+			) {
+				call := calls.Add(1)
+				if current.mode == "openai" {
+					var payload openAIRequest
+					if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+						t.Fatal(err)
+					}
+					if call == 1 {
+						if len(payload.Tools) != 1 {
+							t.Fatalf("initial tools = %#v", payload.Tools)
+						}
+						_, _ = io.WriteString(writer, `{"choices":[{"message":{
+							"role":"assistant",
+							"tool_calls":[{"id":"call-1","type":"function",
+							"function":{"name":"lookup","arguments":"{}"}}]
+						}}]}`)
+						return
+					}
+					if len(payload.Tools) != 0 {
+						t.Fatalf("final tools = %#v", payload.Tools)
+					}
+					_, _ = io.WriteString(writer, `{"choices":[{"message":{
+						"role":"assistant","content":"根据现有结果回答"
+					}}]}`)
+					return
+				}
+				var payload customRequest
+				if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+					t.Fatal(err)
+				}
+				if call == 1 {
+					if len(payload.Tools) != 1 {
+						t.Fatalf("initial tools = %#v", payload.Tools)
+					}
+					_, _ = io.WriteString(writer,
+						`{"tool_calls":[{"id":"call-1","name":"lookup","arguments":"{}"}]}`,
+					)
+					return
+				}
+				if len(payload.Tools) != 0 {
+					t.Fatalf("final tools = %#v", payload.Tools)
+				}
+				_, _ = io.WriteString(writer, `{"reply":"根据现有结果回答"}`)
+			}))
+			defer server.Close()
+
+			registry := tool.NewRegistry()
+			if err := registry.Register(tool.Definition{
+				Name: "lookup",
+				Handler: func(context.Context, tool.Call) (tool.Result, error) {
+					executions.Add(1)
+					return tool.Result{Content: "evidence"}, nil
+				},
+			}); err != nil {
+				t.Fatal(err)
+			}
+			client := NewHTTPClient(
+				testAgentConfig(current.mode, server.URL),
+				discardLogger(),
+			)
+			client.SetTools(registry, 1)
+			response, err := client.Reply(context.Background(), testAgentRequest())
+			if err != nil ||
+				response.Reply != "根据现有结果回答" ||
+				calls.Load() != 2 ||
+				executions.Load() != 1 {
+				t.Fatalf(
+					"Reply()=%#v err=%v calls=%d executions=%d",
+					response,
+					err,
+					calls.Load(),
+					executions.Load(),
+				)
+			}
+		})
+	}
+}
+
 func TestOpenAITerminalToolResponseSkipsSecondModelRequest(t *testing.T) {
 	var calls atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
@@ -260,6 +379,59 @@ func TestCustomTerminalToolResponseSkipsSecondModelRequest(t *testing.T) {
 		len(response.Chain) != 1 ||
 		calls.Load() != 1 {
 		t.Fatalf("Reply() = %#v, %v, calls=%d", response, err, calls.Load())
+	}
+}
+
+type denyingToolGuard struct{}
+
+func (denyingToolGuard) Check(context.Context, tool.Call) error {
+	return tool.ErrPermissionDenied
+}
+
+func TestToolPermissionDenialReturnsFixedReplyWithoutSecondModelRequest(t *testing.T) {
+	tests := []struct {
+		mode     string
+		response string
+	}{
+		{
+			mode:     "openai",
+			response: `{"choices":[{"message":{"role":"assistant","tool_calls":[{"id":"call-1","type":"function","function":{"name":"lookup","arguments":"{}"}}]}}]}`,
+		},
+		{
+			mode:     "custom",
+			response: `{"tool_calls":[{"id":"call-1","name":"lookup","arguments":"{}"}]}`,
+		},
+	}
+	for _, current := range tests {
+		t.Run(current.mode, func(t *testing.T) {
+			var calls atomic.Int32
+			server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, _ *http.Request) {
+				calls.Add(1)
+				_, _ = io.WriteString(writer, current.response)
+			}))
+			defer server.Close()
+
+			registry := tool.NewRegistry()
+			registry.SetGuard(denyingToolGuard{})
+			if err := registry.Register(tool.Definition{
+				Name: "lookup",
+				Handler: func(context.Context, tool.Call) (tool.Result, error) {
+					t.Fatal("denied tool handler was called")
+					return tool.Result{}, nil
+				},
+			}); err != nil {
+				t.Fatalf("Register() error = %v", err)
+			}
+			client := NewHTTPClient(testAgentConfig(current.mode, server.URL), discardLogger())
+			client.SetTools(registry, 2)
+			response, err := client.Reply(context.Background(), testAgentRequest())
+			if err != nil ||
+				response.Reply != tool.PermissionDeniedReply ||
+				len(response.Chain) != 1 ||
+				calls.Load() != 1 {
+				t.Fatalf("Reply() = %#v, %v, calls=%d", response, err, calls.Load())
+			}
+		})
 	}
 }
 

@@ -7,6 +7,15 @@ $root = Split-Path -Parent $PSScriptRoot
 $bin = Join-Path $root "bin"
 $loaderManifest = Join-Path $root "runtime\loader\Cargo.toml"
 $loaderTarget = Join-Path $root "runtime\loader\target\release"
+$goTags = $env:GO_BUILD_TAGS
+
+function GoArgs([string]$Command, [string[]]$Arguments) {
+    $result = @($Command)
+    if ($goTags) {
+        $result += @("-tags", $goTags)
+    }
+    return $result + $Arguments
+}
 
 Push-Location $root
 try {
@@ -31,11 +40,11 @@ try {
         (Join-Path $bin "cinlan-qq-hook.dll")
 
     if (-not $SkipTests) {
-        & go test ./...
+        & go @(GoArgs "test" @("./..."))
         if ($LASTEXITCODE -ne 0) {
             throw "Go tests failed with exit code $LASTEXITCODE."
         }
-        & go vet ./...
+        & go @(GoArgs "vet" @("./..."))
         if ($LASTEXITCODE -ne 0) {
             throw "Go vet failed with exit code $LASTEXITCODE."
         }
@@ -56,7 +65,11 @@ try {
         }
     }
 
-    & go build -o (Join-Path $bin "cinlan-qq-bot.exe") .\cmd\cinlan-qq-bot
+    & go @(GoArgs "build" @(
+        "-o",
+        (Join-Path $bin "cinlan-qq-bot.exe"),
+        ".\cmd\cinlan-qq-bot"
+    ))
     if ($LASTEXITCODE -ne 0) {
         throw "Go build failed with exit code $LASTEXITCODE."
     }

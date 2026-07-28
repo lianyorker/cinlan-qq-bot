@@ -24,6 +24,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 	"github.com/lianyorker/cinlan-qq-bot/internal/skill"
 	"github.com/lianyorker/cinlan-qq-bot/internal/subagent"
+	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
 type fakeConnection bool
@@ -634,5 +635,45 @@ func TestAdminAPIManagesPersistentPersonasAndBindings(t *testing.T) {
 	reloadedBindings, err := binding.LoadFile(bindingPath)
 	if err != nil || len(reloadedBindings.List()) != 0 {
 		t.Fatalf("reloaded bindings = %#v, error = %v", reloadedBindings, err)
+	}
+}
+
+func TestAdminBindingRejectsUnknownScopedTool(t *testing.T) {
+	bindings, err := binding.OpenFile(filepath.Join(t.TempDir(), "bindings.json"))
+	if err != nil {
+		t.Fatalf("OpenFile(binding) error = %v", err)
+	}
+	tools := tool.NewRegistry()
+	if err := tools.Register(tool.Definition{
+		Name: "known",
+		Handler: func(context.Context, tool.Call) (tool.Result, error) {
+			return tool.Result{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register(tool) error = %v", err)
+	}
+	server := NewWithOptions(":0", fakeConnection(true), fakeStats{}, AdminOptions{
+		Token:    "secret",
+		Bindings: bindings,
+		Tools:    tools,
+	})
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/api/v1/bindings",
+		strings.NewReader(`{
+			"name":"group",
+			"platform":"*",
+			"self_id":"1",
+			"chat_type":"group",
+			"chat_id":"2",
+			"tools":["unknown"]
+		}`),
+	)
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest ||
+		!strings.Contains(response.Body.String(), "tool_not_found") {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }

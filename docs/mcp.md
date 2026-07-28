@@ -43,6 +43,9 @@ MCP_SERVERS_FILE=data/mcp.json
 `[A-Za-z0-9_-]` 并限制在 64 个字符以内。远程工具描述和结果属于不可信输入，仍受
 本地 JSON 参数大小、权限和超时限制。
 
+MCP 服务默认不会暴露给任何聊天。必须在对应 Chat Binding 的 `mcp_servers` 中声明
+服务名；运行时只把该服务发现的工具放入当前隔离域的请求和执行 Registry。
+
 当前只启动 HTTP(S) Streamable HTTP，不执行 MCP 配置中的 `command` 或其他本地进程。
 stdio、旧版独立 SSE endpoint、server-to-client sampling/elicitation 和 task-augmented
 execution 尚未接入。

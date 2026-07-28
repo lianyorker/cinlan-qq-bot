@@ -1,1 +1,1 @@
-SELECT 1 + 1
+-- Replace this file with your own deployment-specific SQL before enabling it.

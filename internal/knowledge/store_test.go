@@ -43,11 +43,31 @@ func TestLoadDirAndPluginContext(t *testing.T) {
 		t.Fatalf("LoadDir() = %d, %v", count, err)
 	}
 	values := make(map[string]any)
+	values["scope.knowledge_bases"] = []string{"default"}
 	event := &plugin.MessageContext{Text: "登录失败", Values: values}
 	if _, err := (Plugin{Store: store, TopK: 2}).BeforeMessage(context.Background(), event); err != nil {
 		t.Fatalf("BeforeMessage() error = %v", err)
 	}
 	if values[PromptContextKey] == nil {
 		t.Fatalf("prompt context missing: %#v", values)
+	}
+}
+
+func TestSearchScopedDoesNotLeakAcrossCollections(t *testing.T) {
+	store := NewStore()
+	for _, document := range []Document{
+		{ID: "a", Collection: "group-a", Content: "仅 A 群可见的退款规则"},
+		{ID: "b", Collection: "group-b", Content: "仅 B 群可见的退款规则"},
+	} {
+		if err := store.Add(document); err != nil {
+			t.Fatalf("Add() error = %v", err)
+		}
+	}
+	hits := store.SearchScoped("退款规则", 10, []string{"group-a"})
+	if len(hits) != 1 || hits[0].DocumentID != "a" {
+		t.Fatalf("SearchScoped() = %#v", hits)
+	}
+	if hits := store.SearchScoped("退款规则", 10, nil); len(hits) != 0 {
+		t.Fatalf("empty scope returned hits: %#v", hits)
 	}
 }

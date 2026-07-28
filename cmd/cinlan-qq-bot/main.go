@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -18,16 +19,19 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/filedelivery"
 	"github.com/lianyorker/cinlan-qq-bot/internal/knowledge"
 	"github.com/lianyorker/cinlan-qq-bot/internal/mcp"
+	"github.com/lianyorker/cinlan-qq-bot/internal/media"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	onebotplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/onebot"
 	qqntplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/qqnt"
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
 	"github.com/lianyorker/cinlan-qq-bot/internal/provider"
+	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 	"github.com/lianyorker/cinlan-qq-bot/internal/skill"
 	statusserver "github.com/lianyorker/cinlan-qq-bot/internal/status"
 	"github.com/lianyorker/cinlan-qq-bot/internal/subagent"
+	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
 func main() {
@@ -39,6 +43,75 @@ func main() {
 
 	logger := newLogger(cfg.LogLevel)
 	slog.SetDefault(logger)
+	var imageGenerator *media.ImageGenerator
+	if cfg.ImageMode != "" {
+		imageGenerator, err = media.NewImageGenerator(
+			media.ImageGeneratorConfig{
+				Mode:        cfg.ImageMode,
+				APIURL:      cfg.ImageAPIURL,
+				APIKey:      cfg.ImageAPIKey,
+				Model:       cfg.ImageModel,
+				OutputDir:   cfg.ImageOutputDir,
+				AllowedRoot: cfg.BotAllowedRoot,
+				MaxBytes:    cfg.ImageMaxBytes,
+				Timeout:     cfg.ImageTimeout,
+				Retention:   cfg.ImageRetention,
+				Enhance:     cfg.ImageEnhance,
+			},
+		)
+		if err != nil {
+			logger.Error("failed to configure image generation", "error", err)
+			os.Exit(2)
+		}
+		logger.Info(
+			"image generation configured",
+			"mode", cfg.ImageMode,
+			"model", cfg.ImageModel,
+			"output_dir", imageGenerator.OutputDir(),
+			"max_bytes", cfg.ImageMaxBytes,
+		)
+	}
+	var webScreenshot *media.WebScreenshot
+	if cfg.WebScreenshotEnabled {
+		webScreenshot, err = media.NewWebScreenshot(
+			media.WebScreenshotConfig{
+				BrowserPath:  cfg.WebScreenshotBrowserPath,
+				AllowedHosts: cfg.WebScreenshotAllowedHosts,
+				OutputDir:    cfg.WebScreenshotOutputDir,
+				AllowedRoot:  cfg.BotAllowedRoot,
+				MaxBytes:     cfg.WebScreenshotMaxBytes,
+				Timeout:      cfg.WebScreenshotTimeout,
+				Retention:    cfg.WebScreenshotRetention,
+				Width:        cfg.WebScreenshotWidth,
+				Height:       cfg.WebScreenshotHeight,
+				Wait:         cfg.WebScreenshotWait,
+			},
+		)
+		if err != nil {
+			logger.Error("failed to configure web screenshots", "error", err)
+			os.Exit(2)
+		}
+		logger.Info(
+			"web screenshot configured",
+			"browser", cfg.WebScreenshotBrowserPath,
+			"allowed_hosts", len(cfg.WebScreenshotAllowedHosts),
+			"output_dir", webScreenshot.OutputDir(),
+			"max_bytes", cfg.WebScreenshotMaxBytes,
+		)
+	}
+	if len(os.Args) == 2 && os.Args[1] == "--migrate-sessions-only" {
+		sessionStore, openErr := openSessionStore(cfg)
+		if openErr != nil {
+			logger.Error("session migration failed", "error", openErr)
+			os.Exit(2)
+		}
+		if closeErr := sessionStore.Close(); closeErr != nil {
+			logger.Error("close migrated session store", "error", closeErr)
+			os.Exit(2)
+		}
+		logger.Info("encrypted SQLite session migration complete", "file", cfg.SessionStorePath)
+		return
+	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
@@ -97,12 +170,41 @@ func main() {
 		}
 		agentClients["default"] = agentClient
 	}
+	for name, client := range agentClients {
+		if imageErr := client.SetLocalImagePolicy(
+			cfg.QQNTImageAllowedRoots,
+			cfg.QQNTImageMaxBytes,
+		); imageErr != nil {
+			logger.Error(
+				"failed to configure local image input",
+				"provider",
+				name,
+				"error",
+				imageErr,
+			)
+			os.Exit(2)
+		}
+	}
+	logger.Info(
+		"local image input policy configured",
+		"allowed_roots",
+		len(cfg.QQNTImageAllowedRoots),
+		"max_bytes",
+		cfg.QQNTImageMaxBytes,
+	)
 	var qqAdapter interface {
 		platform.Adapter
 		bot.Sender
 	}
 	switch cfg.QQPlatform {
 	case config.QQPlatformNative:
+		var imageSendRoots []string
+		if imageGenerator != nil {
+			imageSendRoots = []string{imageGenerator.OutputDir()}
+		}
+		if webScreenshot != nil {
+			imageSendRoots = appendUniquePath(imageSendRoots, webScreenshot.OutputDir())
+		}
 		nativeAdapter, openErr := qqntplatform.NewAdapter(qqntplatform.Config{
 			ListenAddr:       cfg.QQNTIPCListenAddr,
 			Token:            cfg.QQNTIPCToken,
@@ -117,6 +219,8 @@ func main() {
 			LoadPath:         cfg.QQNTLoadPath,
 			RuntimePath:      cfg.QQNTRuntimePath,
 			PatchPackagePath: cfg.QQNTPatchPackagePath,
+			ImageSendRoots:   imageSendRoots,
+			ImageMaxBytes:    maxInt64(cfg.ImageMaxBytes, cfg.WebScreenshotMaxBytes),
 		}, logger)
 		if openErr != nil {
 			logger.Error("failed to configure QQNT runtime", "error", openErr)
@@ -165,11 +269,16 @@ func main() {
 		logger.Error("failed to register platform adapter", "error", err)
 		os.Exit(2)
 	}
-	sessionStore, err := session.Open(cfg.MaxHistory, cfg.SessionTTL, cfg.SessionStorePath)
+	sessionStore, err := openSessionStore(cfg)
 	if err != nil {
-		logger.Error("failed to open session store", "error", err)
+		logger.Error("failed to open encrypted SQLite session store", "error", err)
 		os.Exit(2)
 	}
+	defer func() {
+		if closeErr := sessionStore.Close(); closeErr != nil {
+			logger.Error("failed to close encrypted SQLite session store", "error", closeErr)
+		}
+	}()
 	botService := bot.NewWithRuntime(
 		cfg,
 		agentClient,
@@ -178,6 +287,28 @@ func main() {
 		logger,
 		providerRegistry,
 		plugin.NewRegistry(),
+	)
+	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
+		Cooldown:      cfg.MediaToolCooldown,
+		Limit:         cfg.MediaToolLimit,
+		Window:        cfg.MediaToolWindow,
+		MaxConcurrent: cfg.MediaToolConcurrency,
+	})
+	securityPolicy, securityErr := security.OpenPolicy(
+		cfg.BotAllowedRoot,
+		cfg.SecurityStorePath,
+		logger,
+	)
+	if securityErr != nil {
+		logger.Error("failed to configure security policy", "error", securityErr)
+		os.Exit(2)
+	}
+	botService.SetMessageGuard(securityPolicy)
+	botService.ToolRegistry().SetGuard(securityPolicy)
+	logger.Info(
+		"security policy enabled",
+		"allowed_root", securityPolicy.AllowedRoot(),
+		"incident_store", securityPolicy.IncidentStorePath(),
 	)
 	if cfg.PersonasFile != "" {
 		if loadErr := botService.PersonaRegistry().UseFile(cfg.PersonasFile); loadErr != nil {
@@ -222,7 +353,11 @@ func main() {
 		logger.Info("chat binding config loaded", "file", cfg.ChatBindingsFile, "bindings", len(bindings.List()))
 	}
 	if cfg.FileCatalogPath != "" {
-		fileCatalog, loadErr := filedelivery.LoadFile(cfg.FileCatalogPath, cfg.FileMaxBytes)
+		fileCatalog, loadErr := filedelivery.LoadFileWithinRoot(
+			cfg.FileCatalogPath,
+			cfg.FileMaxBytes,
+			cfg.BotAllowedRoot,
+		)
 		if loadErr != nil {
 			logger.Error("failed to load file catalog", "file", cfg.FileCatalogPath, "error", loadErr)
 			os.Exit(2)
@@ -238,6 +373,28 @@ func main() {
 		} else {
 			logger.Warn("file catalog contains no enabled files", "file", cfg.FileCatalogPath)
 		}
+	}
+	if extensionErr := registerLocalExtensions(ctx, cfg, botService, logger); extensionErr != nil {
+		logger.Error("failed to register local extensions", "error", extensionErr)
+		os.Exit(2)
+	}
+	if imageGenerator != nil {
+		if registerErr := botService.ToolRegistry().Register(
+			mediaLimiter.Wrap(imageGenerator.Tool()),
+		); registerErr != nil {
+			logger.Error("failed to register image generation tool", "error", registerErr)
+			os.Exit(2)
+		}
+		logger.Info("image generation tool enabled")
+	}
+	if webScreenshot != nil {
+		if registerErr := botService.ToolRegistry().Register(
+			mediaLimiter.Wrap(webScreenshot.Tool()),
+		); registerErr != nil {
+			logger.Error("failed to register web screenshot tool", "error", registerErr)
+			os.Exit(2)
+		}
+		logger.Info("web screenshot tool enabled")
 	}
 	var pluginManager *plugin.WebhookManager
 	if cfg.PluginsFile != "" {
@@ -318,6 +475,16 @@ func main() {
 		}
 		logger.Info("knowledge directory loaded", "directory", cfg.KnowledgeDir, "documents", count)
 	}
+	if err := validateBindingResources(
+		bindings,
+		botService.ToolRegistry(),
+		skillStore,
+		knowledgeStore,
+		mcpManager,
+	); err != nil {
+		logger.Error("chat binding resource isolation is invalid", "error", err)
+		os.Exit(2)
+	}
 	var accountRuntime statusserver.AccountRuntime
 	if current, ok := qqAdapter.(statusserver.AccountRuntime); ok {
 		accountRuntime = current
@@ -356,6 +523,8 @@ func main() {
 		"private_allowlist_size", cfg.PrivateAllowlist.Size(),
 		"private_allowlist_wildcard", cfg.PrivateAllowlist.Wildcard(),
 		"require_mention", cfg.RequireMention,
+		"group_batch_window", cfg.GroupBatchWindow,
+		"reply_part_delay", cfg.ReplyPartDelay,
 		"workers", cfg.MaxConcurrency,
 		"http_listen_addr", cfg.HTTPListenAddr,
 		"session_store_path", sessionStore.Path(),
@@ -435,6 +604,76 @@ func main() {
 	logger.Info("cinlan qq bot stopped")
 }
 
+func openSessionStore(cfg config.Config) (*session.Store, error) {
+	if cfg.SessionStorePath == "" {
+		return session.New(cfg.MaxHistory, cfg.SessionTTL), nil
+	}
+	return session.OpenEncryptedSQLite(
+		cfg.MaxHistory,
+		cfg.SessionTTL,
+		cfg.SessionStorePath,
+		cfg.SessionKey,
+		cfg.SessionLegacyPath,
+	)
+}
+
+func validateBindingResources(
+	bindings *binding.Registry,
+	tools *tool.Registry,
+	skills *skill.Store,
+	knowledgeStore *knowledge.Store,
+	mcpManager *mcp.Manager,
+) error {
+	if bindings == nil {
+		return nil
+	}
+	skillNames := make(map[string]struct{})
+	if skills != nil {
+		for _, current := range skills.List() {
+			skillNames[current.Name] = struct{}{}
+		}
+	}
+	knowledgeNames := make(map[string]struct{})
+	if knowledgeStore != nil {
+		for _, current := range knowledgeStore.Collections() {
+			knowledgeNames[current] = struct{}{}
+		}
+	}
+	mcpNames := make(map[string]struct{})
+	if mcpManager != nil {
+		for _, current := range mcpManager.List() {
+			mcpNames[current.Name] = struct{}{}
+		}
+	}
+	for _, current := range bindings.List() {
+		for _, name := range current.Tools {
+			if tools == nil || !tools.Has(name) {
+				return fmt.Errorf("binding %q references unknown tool %q", current.Name, name)
+			}
+		}
+		for _, name := range current.Skills {
+			if _, ok := skillNames[name]; !ok {
+				return fmt.Errorf("binding %q references unknown skill %q", current.Name, name)
+			}
+		}
+		for _, name := range current.KnowledgeBases {
+			if _, ok := knowledgeNames[name]; !ok {
+				return fmt.Errorf(
+					"binding %q references unknown knowledge base %q",
+					current.Name,
+					name,
+				)
+			}
+		}
+		for _, name := range current.MCPServers {
+			if _, ok := mcpNames[name]; !ok {
+				return fmt.Errorf("binding %q references unknown MCP server %q", current.Name, name)
+			}
+		}
+	}
+	return nil
+}
+
 func newLogger(levelName string) *slog.Logger {
 	level := slog.LevelInfo
 	switch levelName {
@@ -446,4 +685,24 @@ func newLogger(levelName string) *slog.Logger {
 		level = slog.LevelError
 	}
 	return slog.New(slog.NewJSONHandler(os.Stdout, &slog.HandlerOptions{Level: level}))
+}
+
+func appendUniquePath(paths []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return paths
+	}
+	for _, current := range paths {
+		if strings.EqualFold(strings.TrimSpace(current), value) {
+			return paths
+		}
+	}
+	return append(paths, value)
+}
+
+func maxInt64(left, right int64) int64 {
+	if left > right {
+		return left
+	}
+	return right
 }

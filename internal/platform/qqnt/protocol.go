@@ -26,13 +26,40 @@ type helloPayload struct {
 }
 
 type runtimeStatus struct {
-	State           string `json:"state"`
-	SelfID          string `json:"self_id"`
-	SelfUID         string `json:"self_uid"`
-	Nickname        string `json:"nickname"`
-	WrapperLoaded   bool   `json:"wrapper_loaded"`
-	SessionAttached bool   `json:"session_attached"`
-	LastError       string `json:"last_error"`
+	State                 string   `json:"state"`
+	SelfID                string   `json:"self_id"`
+	SelfUID               string   `json:"self_uid"`
+	Nickname              string   `json:"nickname"`
+	WrapperLoaded         bool     `json:"wrapper_loaded"`
+	SessionAttached       bool     `json:"session_attached"`
+	AVSDKAvailable        bool     `json:"avsdk_available"`
+	AVSDKListenerAttached bool     `json:"avsdk_listener_attached"`
+	AVSDKMethods          []string `json:"avsdk_methods"`
+	LastError             string   `json:"last_error"`
+}
+
+type AVArgumentSummary struct {
+	Type          string   `json:"type"`
+	NumberValue   *float64 `json:"number_value,omitempty"`
+	NumberSpecial string   `json:"number_special,omitempty"`
+	IntegerValue  string   `json:"integer_value,omitempty"`
+	BooleanValue  *bool    `json:"boolean_value,omitempty"`
+	ByteLength    int      `json:"byte_length,omitempty"`
+	SHA256        string   `json:"sha256,omitempty"`
+	Oversized     bool     `json:"oversized,omitempty"`
+	ObjectType    string   `json:"object_type,omitempty"`
+	Keys          []string `json:"keys,omitempty"`
+	KeysTruncated bool     `json:"keys_truncated,omitempty"`
+}
+
+type AVEventSummary struct {
+	Sequence            uint64              `json:"sequence"`
+	Callback            string              `json:"callback"`
+	ReceivedAt          string              `json:"received_at"`
+	ActionCodeCandidate *int64              `json:"action_code_candidate"`
+	ArgumentCount       int                 `json:"argument_count"`
+	Arguments           []AVArgumentSummary `json:"arguments"`
+	ArgumentsTruncated  bool                `json:"arguments_truncated"`
 }
 
 type actionPayload struct {

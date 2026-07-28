@@ -73,6 +73,8 @@ func (a *Adapter) launch(ctx context.Context, address, token string) error {
 		"CINLAN_QQNT_IPC_ADDR="+address,
 		"CINLAN_QQNT_IPC_TOKEN="+token,
 		"CINLAN_QQNT_MAX_FRAME_BYTES="+strconv.Itoa(a.cfg.MaxFrameBytes),
+		"CINLAN_QQNT_SEND_IMAGE_ROOTS="+strings.Join(a.cfg.ImageSendRoots, ";"),
+		"CINLAN_QQNT_SEND_IMAGE_MAX_BYTES="+strconv.FormatInt(a.cfg.ImageMaxBytes, 10),
 	)
 	output, err := command.CombinedOutput()
 	if err != nil {

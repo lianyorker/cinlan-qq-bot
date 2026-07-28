@@ -24,14 +24,16 @@ const (
 )
 
 type Document struct {
-	ID      string
-	Title   string
-	Source  string
-	Content string
+	ID         string `json:"id"`
+	Collection string `json:"collection"`
+	Title      string `json:"title"`
+	Source     string `json:"source"`
+	Content    string `json:"content"`
 }
 
 type Hit struct {
 	DocumentID string  `json:"document_id"`
+	Collection string  `json:"collection"`
 	Title      string  `json:"title"`
 	Source     string  `json:"source"`
 	Snippet    string  `json:"snippet"`
@@ -66,6 +68,10 @@ func (s *Store) Add(document Document) error {
 	if document.Content == "" {
 		return errors.New("knowledge document content is empty")
 	}
+	document.Collection = strings.TrimSpace(document.Collection)
+	if document.Collection == "" {
+		document.Collection = "default"
+	}
 	terms := tokenize(document.Title + "\n" + document.Content)
 	if len(terms) == 0 {
 		return errors.New("knowledge document has no searchable terms")
@@ -97,6 +103,43 @@ func (s *Store) Count() int {
 }
 
 func (s *Store) Search(query string, limit int) []Hit {
+	return s.search(query, limit, nil)
+}
+
+func (s *Store) Collections() []string {
+	s.mu.RLock()
+	seen := make(map[string]struct{}, len(s.docs))
+	for _, document := range s.docs {
+		seen[document.Collection] = struct{}{}
+	}
+	s.mu.RUnlock()
+	result := make([]string, 0, len(seen))
+	for collection := range seen {
+		result = append(result, collection)
+	}
+	sort.Strings(result)
+	return result
+}
+
+func (s *Store) SearchScoped(query string, limit int, collections []string) []Hit {
+	allowed := make(map[string]struct{}, len(collections))
+	for _, collection := range collections {
+		collection = strings.TrimSpace(collection)
+		if collection != "" {
+			allowed[collection] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	return s.search(query, limit, allowed)
+}
+
+func (s *Store) search(
+	query string,
+	limit int,
+	allowed map[string]struct{},
+) []Hit {
 	if limit <= 0 {
 		return nil
 	}
@@ -107,6 +150,11 @@ func (s *Store) Search(query string, limit int) []Hit {
 	s.mu.RLock()
 	docs := make([]indexedDocument, 0, len(s.docs))
 	for _, document := range s.docs {
+		if allowed != nil {
+			if _, ok := allowed[document.Collection]; !ok {
+				continue
+			}
+		}
 		docs = append(docs, document)
 	}
 	s.mu.RUnlock()
@@ -130,6 +178,7 @@ func (s *Store) Search(query string, limit int) []Hit {
 		}
 		results = append(results, scored{hit: Hit{
 			DocumentID: document.ID,
+			Collection: document.Collection,
 			Title:      document.Title,
 			Source:     document.Source,
 			Snippet:    snippet(document.Content, queryTerms),
@@ -200,10 +249,11 @@ func (s *Store) LoadDir(root string) (int, error) {
 			}
 		}
 		if addErr := s.Add(Document{
-			ID:      filepath.ToSlash(relative),
-			Title:   title,
-			Source:  filepath.ToSlash(relative),
-			Content: content,
+			ID:         filepath.ToSlash(relative),
+			Collection: documentCollection(relative),
+			Title:      title,
+			Source:     filepath.ToSlash(relative),
+			Content:    content,
 		}); addErr != nil {
 			return addErr
 		}
@@ -230,7 +280,8 @@ func (p Plugin) BeforeMessage(_ context.Context, event *plugin.MessageContext) (
 	if topK <= 0 {
 		topK = 3
 	}
-	hits := p.Store.Search(event.Text, topK)
+	collections, _ := event.Values["scope.knowledge_bases"].([]string)
+	hits := p.Store.SearchScoped(event.Text, topK, collections)
 	if len(hits) == 0 {
 		return plugin.Decision{}, nil
 	}
@@ -251,6 +302,14 @@ func (p Plugin) BeforeMessage(_ context.Context, event *plugin.MessageContext) (
 	}
 	event.Values[PromptContextKey] = contextText
 	return plugin.Decision{}, nil
+}
+
+func documentCollection(relative string) string {
+	relative = filepath.ToSlash(strings.TrimSpace(relative))
+	if relative == "" || !strings.Contains(relative, "/") {
+		return "default"
+	}
+	return strings.SplitN(relative, "/", 2)[0]
 }
 
 func bm25(document indexedDocument, query []string, all []indexedDocument, averageLength float64) float64 {

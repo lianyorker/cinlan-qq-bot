@@ -41,7 +41,7 @@ func TestLoadDirProgressiveDisclosureAndTools(t *testing.T) {
 	result, err := registry.Execute(context.Background(), tool.Call{
 		Name:      "read_skill",
 		Arguments: []byte(`{"name":"refund"}`),
-		Actor:     tool.Actor{Role: "member"},
+		Actor:     tool.Actor{Role: "member", AllowedSkills: []string{"refund"}},
 	})
 	if err != nil {
 		t.Fatalf("read_skill Execute() error = %v", err)
@@ -52,6 +52,7 @@ func TestLoadDirProgressiveDisclosureAndTools(t *testing.T) {
 	}
 
 	values := map[string]any{}
+	values["scope.skills"] = []string{"refund"}
 	_, err = (PromptPlugin{Store: store}).BeforeMessage(context.Background(), &plugin.MessageContext{
 		Event:  platform.Event{},
 		Values: values,

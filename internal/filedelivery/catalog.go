@@ -18,6 +18,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
+	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
@@ -28,20 +29,26 @@ const (
 )
 
 var entryIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
+var numericIDPattern = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 
 type Sender interface {
 	Send(context.Context, platform.Outbound) error
 }
 
+type actionCaller interface {
+	Call(context.Context, string, map[string]any) (any, error)
+}
+
 type Entry struct {
-	ID          string
-	Name        string
-	Aliases     []string
-	Description string
-	Path        string
-	DisplayName string
-	PrivateOnly bool
-	Size        int64
+	ID              string
+	Name            string
+	Aliases         []string
+	Description     string
+	Path            string
+	DisplayName     string
+	PrivateOnly     bool
+	AllowedGroupIDs []string
+	Size            int64
 }
 
 type rawCatalog struct {
@@ -50,14 +57,15 @@ type rawCatalog struct {
 }
 
 type rawEntry struct {
-	ID          string   `json:"id"`
-	Name        string   `json:"name"`
-	Aliases     []string `json:"aliases"`
-	Description string   `json:"description"`
-	Path        string   `json:"path"`
-	DisplayName string   `json:"display_name"`
-	Enabled     *bool    `json:"enabled"`
-	PrivateOnly *bool    `json:"private_only"`
+	ID              string   `json:"id"`
+	Name            string   `json:"name"`
+	Aliases         []string `json:"aliases"`
+	Description     string   `json:"description"`
+	Path            string   `json:"path"`
+	DisplayName     string   `json:"display_name"`
+	Enabled         *bool    `json:"enabled"`
+	PrivateOnly     *bool    `json:"private_only"`
+	AllowedGroupIDs []string `json:"allowed_group_ids"`
 }
 
 type DeliveryResult struct {
@@ -75,6 +83,7 @@ type Catalog struct {
 	entries  []Entry
 	byLookup map[string]Entry
 	maxBytes int64
+	boundary *security.Boundary
 
 	deliveryMu sync.Mutex
 	delivered  map[string]time.Time
@@ -82,6 +91,18 @@ type Catalog struct {
 }
 
 func LoadFile(path string, maxBytes int64) (*Catalog, error) {
+	return loadFile(path, maxBytes, nil)
+}
+
+func LoadFileWithinRoot(path string, maxBytes int64, allowedRoot string) (*Catalog, error) {
+	boundary, err := security.NewBoundary(allowedRoot)
+	if err != nil {
+		return nil, err
+	}
+	return loadFile(path, maxBytes, boundary)
+}
+
+func loadFile(path string, maxBytes int64, boundary *security.Boundary) (*Catalog, error) {
 	path = strings.TrimSpace(path)
 	if path == "" {
 		return nil, errors.New("file catalog path is empty")
@@ -89,7 +110,13 @@ func LoadFile(path string, maxBytes int64) (*Catalog, error) {
 	if maxBytes <= 0 {
 		return nil, errors.New("file delivery maximum size must be positive")
 	}
-	absoluteCatalog, err := filepath.Abs(path)
+	var absoluteCatalog string
+	var err error
+	if boundary != nil {
+		absoluteCatalog, err = boundary.Resolve(path)
+	} else {
+		absoluteCatalog, err = filepath.Abs(path)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("resolve file catalog path: %w", err)
 	}
@@ -120,6 +147,7 @@ func LoadFile(path string, maxBytes int64) (*Catalog, error) {
 		entries:   make([]Entry, 0, len(decoded.Files)),
 		byLookup:  make(map[string]Entry),
 		maxBytes:  maxBytes,
+		boundary:  boundary,
 		delivered: make(map[string]time.Time),
 		now:       time.Now,
 	}
@@ -128,7 +156,7 @@ func LoadFile(path string, maxBytes int64) (*Catalog, error) {
 		if raw.Enabled != nil && !*raw.Enabled {
 			continue
 		}
-		entry, normalizeErr := normalizeEntry(raw, baseDir, maxBytes)
+		entry, normalizeErr := normalizeEntry(raw, baseDir, maxBytes, boundary)
 		if normalizeErr != nil {
 			return nil, fmt.Errorf("file catalog entry %d: %w", index+1, normalizeErr)
 		}
@@ -161,6 +189,10 @@ func (c *Catalog) List() []Entry {
 	for index, entry := range c.entries {
 		result[index] = entry
 		result[index].Aliases = append([]string(nil), entry.Aliases...)
+		result[index].AllowedGroupIDs = append(
+			[]string(nil),
+			entry.AllowedGroupIDs...,
+		)
 	}
 	return result
 }
@@ -214,15 +246,6 @@ func (c *Catalog) deliver(
 	if !ok {
 		return tool.Result{}, fmt.Errorf("file ID %q is not configured", arguments.FileID)
 	}
-	if call.Actor.ChatType == platform.ChatGroup && entry.PrivateOnly {
-		messageText := privateGuide(call.Actor.SelfID, entry)
-		return tool.Result{Content: DeliveryResult{
-			Status:      "private_chat_required",
-			FileID:      entry.ID,
-			DisplayName: entry.DisplayName,
-			Message:     messageText,
-		}, Response: textResponse(messageText)}, nil
-	}
 	if call.Actor.ChatType != platform.ChatPrivate &&
 		call.Actor.ChatType != platform.ChatGroup {
 		return tool.Result{}, fmt.Errorf("unsupported delivery chat type %q", call.Actor.ChatType)
@@ -233,6 +256,9 @@ func (c *Catalog) deliver(
 	if sender == nil {
 		return tool.Result{}, errors.New("file delivery sender is not configured")
 	}
+	if err := c.authorizeDelivery(ctx, sender, call.Actor, entry); err != nil {
+		return tool.Result{}, err
+	}
 	if err := c.validateFile(entry); err != nil {
 		return tool.Result{}, err
 	}
@@ -242,6 +268,34 @@ func (c *Catalog) deliver(
 		messageText := "该文件已经发送，请在当前会话中查看。"
 		return tool.Result{Content: DeliveryResult{
 			Status:      "already_sent",
+			FileID:      entry.ID,
+			DisplayName: entry.DisplayName,
+			Message:     messageText,
+		}, Response: textResponse(messageText)}, nil
+	}
+	if call.Actor.ChatType == platform.ChatGroup && entry.PrivateOnly {
+		if strings.TrimSpace(call.Actor.UserID) != "" {
+			if err := sender.Send(ctx, platform.Outbound{
+				ChatType: platform.ChatPrivate,
+				ChatID:   call.Actor.UserID,
+				SelfID:   call.Actor.SelfID,
+				Chain:    message.Chain{message.File(entry.Path, entry.DisplayName)},
+			}); err == nil {
+				messageText := fmt.Sprintf("已通过私聊发送文件“%s”，请查收。", entry.DisplayName)
+				return tool.Result{Content: DeliveryResult{
+					Status:      "sent_private",
+					FileID:      entry.ID,
+					DisplayName: entry.DisplayName,
+					Message:     messageText,
+				}, Response: textResponse(messageText)}, nil
+			}
+		}
+		if dedupeKey != "" {
+			c.forgetDelivery(dedupeKey)
+		}
+		messageText := privateGuide(call.Actor.SelfID, entry)
+		return tool.Result{Content: DeliveryResult{
+			Status:      "private_chat_required",
 			FileID:      entry.ID,
 			DisplayName: entry.DisplayName,
 			Message:     messageText,
@@ -267,7 +321,12 @@ func (c *Catalog) deliver(
 	}, Response: textResponse(messageText)}, nil
 }
 
-func normalizeEntry(raw rawEntry, baseDir string, maxBytes int64) (Entry, error) {
+func normalizeEntry(
+	raw rawEntry,
+	baseDir string,
+	maxBytes int64,
+	boundary *security.Boundary,
+) (Entry, error) {
 	entry := Entry{
 		ID:          strings.TrimSpace(raw.ID),
 		Name:        strings.TrimSpace(raw.Name),
@@ -283,6 +342,26 @@ func normalizeEntry(raw rawEntry, baseDir string, maxBytes int64) (Entry, error)
 	}
 	if raw.PrivateOnly != nil {
 		entry.PrivateOnly = *raw.PrivateOnly
+	}
+	seenGroupIDs := make(map[string]struct{}, len(raw.AllowedGroupIDs))
+	for _, groupID := range raw.AllowedGroupIDs {
+		groupID = strings.TrimSpace(groupID)
+		if !numericIDPattern.MatchString(groupID) {
+			return Entry{}, fmt.Errorf(
+				"file %q has invalid allowed group ID %q",
+				entry.ID,
+				groupID,
+			)
+		}
+		if _, exists := seenGroupIDs[groupID]; exists {
+			return Entry{}, fmt.Errorf(
+				"file %q repeats allowed group ID %q",
+				entry.ID,
+				groupID,
+			)
+		}
+		seenGroupIDs[groupID] = struct{}{}
+		entry.AllowedGroupIDs = append(entry.AllowedGroupIDs, groupID)
 	}
 	seenAliases := make(map[string]struct{}, len(raw.Aliases))
 	for _, alias := range raw.Aliases {
@@ -307,11 +386,17 @@ func normalizeEntry(raw rawEntry, baseDir string, maxBytes int64) (Entry, error)
 	if !filepath.IsAbs(configuredPath) {
 		configuredPath = filepath.Join(baseDir, configuredPath)
 	}
-	absolutePath, err := filepath.Abs(configuredPath)
-	if err != nil {
-		return Entry{}, fmt.Errorf("resolve file %q path: %w", entry.ID, err)
+	var resolvedPath string
+	var err error
+	if boundary != nil {
+		resolvedPath, err = boundary.Resolve(configuredPath)
+	} else {
+		var absolutePath string
+		absolutePath, err = filepath.Abs(configuredPath)
+		if err == nil {
+			resolvedPath, err = filepath.EvalSymlinks(absolutePath)
+		}
 	}
-	resolvedPath, err := filepath.EvalSymlinks(absolutePath)
 	if err != nil {
 		return Entry{}, fmt.Errorf("resolve file %q target: %w", entry.ID, err)
 	}
@@ -344,7 +429,118 @@ func normalizeEntry(raw rawEntry, baseDir string, maxBytes int64) (Entry, error)
 	return entry, nil
 }
 
+func (c *Catalog) authorizeDelivery(
+	ctx context.Context,
+	sender Sender,
+	actor tool.Actor,
+	entry Entry,
+) error {
+	if len(entry.AllowedGroupIDs) == 0 {
+		return nil
+	}
+	if actor.ChatType == platform.ChatGroup {
+		if containsString(entry.AllowedGroupIDs, strings.TrimSpace(actor.ChatID)) {
+			return nil
+		}
+		return tool.ErrPermissionDenied
+	}
+
+	userID := strings.TrimSpace(actor.UserID)
+	if userID == "" {
+		userID = strings.TrimSpace(actor.ChatID)
+	}
+	if !numericIDPattern.MatchString(userID) {
+		return tool.ErrPermissionDenied
+	}
+	caller, ok := sender.(actionCaller)
+	if !ok {
+		return tool.ErrPermissionDenied
+	}
+	for _, groupID := range entry.AllowedGroupIDs {
+		result, err := caller.Call(ctx, "get_group_member_info", map[string]any{
+			"group_id": groupID,
+			"user_id":  userID,
+		})
+		if err != nil {
+			continue
+		}
+		member, known := decodeMembershipResult(result, groupID, userID)
+		if known && member {
+			return nil
+		}
+	}
+	return tool.ErrPermissionDenied
+}
+
+func decodeMembershipResult(result any, groupID, userID string) (bool, bool) {
+	var encoded []byte
+	switch current := result.(type) {
+	case json.RawMessage:
+		encoded = current
+	case []byte:
+		encoded = current
+	default:
+		var err error
+		encoded, err = json.Marshal(result)
+		if err != nil {
+			return false, false
+		}
+	}
+	var payload map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil {
+		return false, false
+	}
+	if current, exists := payload["group_id"]; exists &&
+		jsonID(current) != groupID {
+		return false, false
+	}
+	if current, exists := payload["user_id"]; exists &&
+		jsonID(current) != userID {
+		return false, false
+	}
+	if member, exists := payload["member"].(bool); exists {
+		return member, true
+	}
+	if _, exists := payload["user_id"]; exists {
+		// Standard OneBot get_group_member_info returns the member object
+		// itself; a successful response proves membership.
+		return true, true
+	}
+	return false, false
+}
+
+func jsonID(value any) string {
+	switch current := value.(type) {
+	case string:
+		return strings.TrimSpace(current)
+	case json.Number:
+		return current.String()
+	default:
+		return strings.TrimSpace(fmt.Sprint(current))
+	}
+}
+
+func containsString(values []string, target string) bool {
+	for _, value := range values {
+		if value == target {
+			return true
+		}
+	}
+	return false
+}
+
 func (c *Catalog) validateFile(entry Entry) error {
+	if c.boundary != nil {
+		resolved, err := c.boundary.Resolve(entry.Path)
+		if err != nil {
+			return fmt.Errorf("validate configured file %q boundary: %w", entry.ID, err)
+		}
+		if resolved != entry.Path {
+			return fmt.Errorf("configured file %q target changed", entry.ID)
+		}
+	}
 	info, err := os.Stat(entry.Path)
 	if err != nil {
 		return fmt.Errorf("stat configured file %q: %w", entry.ID, err)

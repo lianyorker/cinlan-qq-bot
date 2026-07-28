@@ -23,6 +23,10 @@ type AgentRequest struct {
 	History       []ChatMessage
 	PromptContext string
 	SystemPrompt  string
+	AllowedTools  []string
+	AllowedSkills []string
+	MCPServers    []string
+	RestrictTools bool
 	Chain         message.Chain
 }
 

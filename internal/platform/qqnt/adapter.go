@@ -12,6 +12,7 @@ import (
 	"io"
 	"log/slog"
 	"net"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -25,6 +26,8 @@ const (
 	defaultMaximumFrameBytes = 1024 * 1024
 	eventQueueSize           = 512
 )
+
+var avIntegerPattern = regexp.MustCompile(`^-?[0-9]{1,128}$`)
 
 type Config struct {
 	ListenAddr       string
@@ -41,22 +44,28 @@ type Config struct {
 	LoadPath         string
 	RuntimePath      string
 	PatchPackagePath string
+	ImageSendRoots   []string
+	ImageMaxBytes    int64
 }
 
 type RuntimeInfo struct {
-	Connected       bool     `json:"connected"`
-	Ready           bool     `json:"ready"`
-	State           string   `json:"state"`
-	SelfID          string   `json:"self_id"`
-	SelfUID         string   `json:"self_uid"`
-	Nickname        string   `json:"nickname"`
-	Runtime         string   `json:"runtime"`
-	PID             int      `json:"pid"`
-	QQVersion       string   `json:"qq_version"`
-	Capabilities    []string `json:"capabilities"`
-	WrapperLoaded   bool     `json:"wrapper_loaded"`
-	SessionAttached bool     `json:"session_attached"`
-	LastError       string   `json:"last_error"`
+	Connected             bool            `json:"connected"`
+	Ready                 bool            `json:"ready"`
+	State                 string          `json:"state"`
+	SelfID                string          `json:"self_id"`
+	SelfUID               string          `json:"self_uid"`
+	Nickname              string          `json:"nickname"`
+	Runtime               string          `json:"runtime"`
+	PID                   int             `json:"pid"`
+	QQVersion             string          `json:"qq_version"`
+	Capabilities          []string        `json:"capabilities"`
+	WrapperLoaded         bool            `json:"wrapper_loaded"`
+	SessionAttached       bool            `json:"session_attached"`
+	AVSDKAvailable        bool            `json:"avsdk_available"`
+	AVSDKListenerAttached bool            `json:"avsdk_listener_attached"`
+	AVSDKMethods          []string        `json:"avsdk_methods,omitempty"`
+	LastAVEvent           *AVEventSummary `json:"last_av_event,omitempty"`
+	LastError             string          `json:"last_error"`
 }
 
 type actionResult struct {
@@ -144,6 +153,8 @@ func (a *Adapter) RuntimeInfo() RuntimeInfo {
 	defer a.statusMu.RUnlock()
 	info := a.status
 	info.Capabilities = append([]string(nil), info.Capabilities...)
+	info.AVSDKMethods = append([]string(nil), info.AVSDKMethods...)
+	info.LastAVEvent = cloneAVEvent(info.LastAVEvent)
 	return info
 }
 
@@ -351,6 +362,10 @@ func (a *Adapter) serveConnection(ctx context.Context, connection net.Conn) erro
 				return nil
 			case a.events <- event:
 			}
+		case "av_event":
+			if err := a.handleAVEvent(current.Payload); err != nil {
+				a.logger.Warn("ignored QQNT AVSDK event", "reason", err.Error())
+			}
 		case "action_result":
 			a.handleActionResult(current)
 		case "hello":
@@ -382,6 +397,12 @@ func (a *Adapter) handleStatus(raw json.RawMessage) error {
 	a.status.Nickname = current.Nickname
 	a.status.WrapperLoaded = current.WrapperLoaded
 	a.status.SessionAttached = current.SessionAttached
+	a.status.AVSDKAvailable = current.AVSDKAvailable
+	a.status.AVSDKListenerAttached = current.AVSDKListenerAttached
+	a.status.AVSDKMethods = append(
+		a.status.AVSDKMethods[:0],
+		current.AVSDKMethods...,
+	)
 	a.status.LastError = current.LastError
 	a.status.Ready = ready
 	a.statusMu.Unlock()
@@ -391,9 +412,114 @@ func (a *Adapter) handleStatus(raw json.RawMessage) error {
 		"self_id", current.SelfID,
 		"wrapper_loaded", current.WrapperLoaded,
 		"session_attached", current.SessionAttached,
+		"avsdk_available", current.AVSDKAvailable,
+		"avsdk_listener_attached", current.AVSDKListenerAttached,
 		"last_error", current.LastError,
 	)
 	return nil
+}
+
+func (a *Adapter) handleAVEvent(raw json.RawMessage) error {
+	var current AVEventSummary
+	if err := decodePayload(raw, &current); err != nil {
+		return err
+	}
+	if err := validateAVEvent(current); err != nil {
+		return err
+	}
+	a.statusMu.Lock()
+	a.status.LastAVEvent = cloneAVEvent(&current)
+	a.statusMu.Unlock()
+	actionCodeCandidate := any(nil)
+	if current.ActionCodeCandidate != nil {
+		actionCodeCandidate = *current.ActionCodeCandidate
+	}
+	a.logger.Info(
+		"QQNT AVSDK event observed",
+		"callback", current.Callback,
+		"action_code_candidate", actionCodeCandidate,
+		"argument_count", current.ArgumentCount,
+	)
+	return nil
+}
+
+func validateAVEvent(current AVEventSummary) error {
+	switch current.Callback {
+	case "onActionToAVSDK",
+		"onS2CActionToAVSDK",
+		"OnGroupVideoActionToAVSDK",
+		"OnInviteActionToAVSDK",
+		"OnGroupVideoServerPushToAVSDK":
+	default:
+		return fmt.Errorf("unsupported AVSDK callback %q", current.Callback)
+	}
+	if current.Sequence == 0 {
+		return fmt.Errorf("AVSDK event sequence is empty")
+	}
+	if current.ArgumentCount < 0 ||
+		len(current.Arguments) > 8 ||
+		current.ArgumentCount < len(current.Arguments) {
+		return fmt.Errorf("invalid AVSDK argument count")
+	}
+	for _, argument := range current.Arguments {
+		switch argument.Type {
+		case "buffer", "null", "undefined", "number", "bigint",
+			"boolean", "string", "object", "function", "symbol",
+			"unavailable":
+		default:
+			return fmt.Errorf("unsupported AVSDK argument type %q", argument.Type)
+		}
+		if argument.ByteLength < 0 || len(argument.Keys) > 16 {
+			return fmt.Errorf("invalid AVSDK argument summary")
+		}
+		if argument.NumberSpecial != "" {
+			switch argument.NumberSpecial {
+			case "NaN", "Infinity", "-Infinity":
+			default:
+				return fmt.Errorf("invalid AVSDK special number")
+			}
+		}
+		if argument.IntegerValue != "" &&
+			!avIntegerPattern.MatchString(argument.IntegerValue) {
+			return fmt.Errorf("invalid AVSDK integer value")
+		}
+		if len(argument.ObjectType) > 64 {
+			return fmt.Errorf("invalid AVSDK object type")
+		}
+		for _, key := range argument.Keys {
+			if len(key) > 64 {
+				return fmt.Errorf("invalid AVSDK object key")
+			}
+		}
+		if argument.SHA256 != "" {
+			if len(argument.SHA256) != 64 {
+				return fmt.Errorf("invalid AVSDK argument SHA256")
+			}
+			if _, err := hex.DecodeString(argument.SHA256); err != nil {
+				return fmt.Errorf("invalid AVSDK argument SHA256")
+			}
+		}
+	}
+	return nil
+}
+
+func cloneAVEvent(source *AVEventSummary) *AVEventSummary {
+	if source == nil {
+		return nil
+	}
+	result := *source
+	if source.ActionCodeCandidate != nil {
+		actionCodeCandidate := *source.ActionCodeCandidate
+		result.ActionCodeCandidate = &actionCodeCandidate
+	}
+	result.Arguments = append([]AVArgumentSummary(nil), source.Arguments...)
+	for index := range result.Arguments {
+		result.Arguments[index].Keys = append(
+			[]string(nil),
+			source.Arguments[index].Keys...,
+		)
+	}
+	return &result
 }
 
 func (a *Adapter) handleActionResult(current envelope) {

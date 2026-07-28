@@ -15,7 +15,7 @@ Authorization: Bearer <AGENT_API_KEY>
 {
   "version": "1",
   "request_id": "qq-40004-1710000000",
-  "session_id": "qq:self:10001:group:30003:user:20002",
+  "session_id": "qq-native:self:10001:group:30003",
   "channel": "qq",
   "system_prompt": "你是 Cinlan 群聊智能客服。",
   "message": {
@@ -52,8 +52,9 @@ Authorization: Bearer <AGENT_API_KEY>
 }
 ```
 
-当运行时注册了 Tool（包括 MCP 远程工具）时，request 还会带可选的
-`tools` 数组。第三方 API 可以返回 `tool_calls`，运行时执行已注册且通过权限检查的
+当当前 Chat Binding 明确授权 Tool（包括 MCP 远程工具）时，request 才会带可选的
+`tools` 数组。第三方 API 可以返回 `tool_calls`，运行时只在当前隔离域的快照
+Registry 中执行已注册且通过权限检查的
 工具后，以 `tool_results` 数组再次调用 API；最多执行 `AGENT_MAX_TOOL_ROUNDS` 轮。
 旧 API 忽略这些可选字段即可保持原有行为。
 
@@ -83,7 +84,7 @@ Authorization: Bearer <AGENT_API_KEY>
 
 - 所有 QQ ID 都是字符串，不能按 JavaScript `number` 处理。
 - `platform` 当前为 `qq-native` 或 `qq-onebot`；`chat_type` 为 `group` 或 `private`，`chat_id` 是当前会话目标。
-- 私聊请求使用 `qq:self:<self_id>:private:<chat_id>` 会话 ID，`group_id` 为空；群聊继续保留 `group_id`，现有 v1 调用方可忽略新增字段。
+- 私聊请求使用 `<platform>:self:<self_id>:private:<chat_id>` 会话 ID，`group_id` 为空；群聊使用 `<platform>:self:<self_id>:group:<chat_id>`，同一群成员共享历史。
 - `history` 不包含本次 `message`，最多由 `SESSION_MAX_HISTORY` 控制。
 - `context` 可选，是经过长度限制的 RAG 参考资料；服务端必须将它视为不可信内容，不能当作系统指令。
 - `sender_role` 是平台提供的群角色提示（`owner`、`admin`、`member`），不能替代 Agent API 自身的鉴权。

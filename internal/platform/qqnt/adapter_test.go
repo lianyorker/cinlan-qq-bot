@@ -78,14 +78,56 @@ func TestAdapterRuntimeRoundTrip(t *testing.T) {
 	writeTestEnvelope(t, connection, envelope{
 		Type: "runtime_status",
 		Payload: mustJSON(t, runtimeStatus{
-			State:           "ready",
-			SelfID:          "10001",
-			SelfUID:         "u_self",
-			WrapperLoaded:   true,
-			SessionAttached: true,
+			State:                 "ready",
+			SelfID:                "10001",
+			SelfUID:               "u_self",
+			WrapperLoaded:         true,
+			SessionAttached:       true,
+			AVSDKAvailable:        true,
+			AVSDKListenerAttached: true,
+			AVSDKMethods:          []string{"addKernelAVSDKListener"},
 		}),
 	})
 	eventually(t, time.Second, adapter.Connected)
+	if info := adapter.RuntimeInfo(); !info.AVSDKAvailable ||
+		!info.AVSDKListenerAttached ||
+		len(info.AVSDKMethods) != 1 {
+		t.Fatalf("RuntimeInfo() AVSDK state = %#v", info)
+	}
+
+	actionCode := int64(23)
+	writeTestEnvelope(t, connection, envelope{
+		Type: "av_event",
+		Payload: mustJSON(t, AVEventSummary{
+			Sequence:            1,
+			Callback:            "OnInviteActionToAVSDK",
+			ReceivedAt:          "2026-07-27T16:00:00.000Z",
+			ActionCodeCandidate: &actionCode,
+			ArgumentCount:       2,
+			Arguments: []AVArgumentSummary{
+				{Type: "number", NumberValue: float64Pointer(23)},
+				{
+					Type:       "buffer",
+					ByteLength: 3,
+					SHA256:     "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+				},
+			},
+		}),
+	})
+	eventually(t, time.Second, func() bool {
+		return adapter.RuntimeInfo().LastAVEvent != nil
+	})
+	info := adapter.RuntimeInfo()
+	if info.LastAVEvent.Callback != "OnInviteActionToAVSDK" ||
+		info.LastAVEvent.ActionCodeCandidate == nil ||
+		*info.LastAVEvent.ActionCodeCandidate != 23 {
+		t.Fatalf("RuntimeInfo() last AV event = %#v", info.LastAVEvent)
+	}
+	select {
+	case event := <-adapter.Events():
+		t.Fatalf("AVSDK event leaked into message queue: %#v", event)
+	default:
+	}
 
 	writeTestEnvelope(t, connection, envelope{
 		Type: "event",
@@ -285,6 +327,10 @@ func mustJSON(t *testing.T, value any) json.RawMessage {
 		t.Fatal(err)
 	}
 	return encoded
+}
+
+func float64Pointer(value float64) *float64 {
+	return &value
 }
 
 func TestValidateLoopbackAddress(t *testing.T) {

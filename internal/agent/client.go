@@ -11,7 +11,6 @@ import (
 	"io"
 	"log/slog"
 	"math/rand"
-	"mime"
 	"net/http"
 	"net/url"
 	"os"
@@ -22,13 +21,16 @@ import (
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
 const (
-	maxResponseBytes = 2 << 20
-	maxImageBytes    = 20 << 20
+	maxResponseBytes     = 2 << 20
+	defaultMaxImageBytes = 20 << 20
 )
+
+var ErrInputImageUnavailable = errors.New("input image is unavailable")
 
 type Client interface {
 	Reply(context.Context, domain.AgentRequest) (domain.AgentResponse, error)
@@ -58,6 +60,8 @@ type HTTPClient struct {
 	sleep         func(context.Context, time.Duration) error
 	tools         *tool.Registry
 	maxToolRounds int
+	imageRoots    []*security.Boundary
+	maxImageBytes int64
 }
 
 type customRequest struct {
@@ -163,11 +167,37 @@ func NewHTTPClient(cfg Config, logger *slog.Logger) *HTTPClient {
 		logger = slog.Default()
 	}
 	return &HTTPClient{
-		cfg:        cfg,
-		httpClient: &http.Client{},
-		logger:     logger,
-		sleep:      sleepContext,
+		cfg:           cfg,
+		httpClient:    &http.Client{},
+		logger:        logger,
+		sleep:         sleepContext,
+		maxImageBytes: defaultMaxImageBytes,
 	}
+}
+
+func (c *HTTPClient) SetLocalImagePolicy(roots []string, maxBytes int64) error {
+	if maxBytes <= 0 {
+		return errors.New("local image byte limit must be positive")
+	}
+	boundaries := make([]*security.Boundary, 0, len(roots))
+	seen := make(map[string]struct{}, len(roots))
+	for _, root := range roots {
+		if strings.TrimSpace(root) == "" {
+			continue
+		}
+		boundary, err := security.NewBoundary(root)
+		if err != nil {
+			return fmt.Errorf("configure local image root: %w", err)
+		}
+		if _, exists := seen[boundary.Root()]; exists {
+			continue
+		}
+		seen[boundary.Root()] = struct{}{}
+		boundaries = append(boundaries, boundary)
+	}
+	c.imageRoots = boundaries
+	c.maxImageBytes = maxBytes
+	return nil
 }
 
 func (c *HTTPClient) SetTools(registry *tool.Registry, maxRounds int) {
@@ -199,7 +229,8 @@ func (c *HTTPClient) Stream(
 	if onDelta == nil {
 		return errors.New("stream callback is nil")
 	}
-	if c.tools != nil && len(c.tools.List()) > 0 {
+	requestTools := c.requestTools(input)
+	if requestTools != nil && len(requestTools.List()) > 0 {
 		response, err := c.Reply(parent, input)
 		if err != nil {
 			return err
@@ -216,9 +247,13 @@ func (c *HTTPClient) Stream(
 	if c.cfg.Mode != "openai" {
 		return fmt.Errorf("unsupported agent mode %q", c.cfg.Mode)
 	}
+	messages, err := c.buildOpenAIMessages(input)
+	if err != nil {
+		return err
+	}
 	payload, err := json.Marshal(openAIRequest{
 		Model:    c.cfg.Model,
-		Messages: c.buildOpenAIMessages(input),
+		Messages: messages,
 		Stream:   true,
 	})
 	if err != nil {
@@ -247,12 +282,13 @@ func (c *HTTPClient) Stream(
 }
 
 func (c *HTTPClient) Reply(parent context.Context, input domain.AgentRequest) (domain.AgentResponse, error) {
-	if c.tools != nil && len(c.tools.List()) > 0 {
+	requestTools := c.requestTools(input)
+	if requestTools != nil && len(requestTools.List()) > 0 {
 		switch c.cfg.Mode {
 		case "openai":
-			return c.replyWithTools(parent, input)
+			return c.replyWithTools(parent, input, requestTools)
 		case "custom":
-			return c.replyCustomWithTools(parent, input)
+			return c.replyCustomWithTools(parent, input, requestTools)
 		}
 	}
 	payload, err := c.buildPayload(input)
@@ -291,21 +327,42 @@ func (c *HTTPClient) Reply(parent context.Context, input domain.AgentRequest) (d
 	return domain.AgentResponse{}, errors.New("agent request exhausted without a result")
 }
 
-func (c *HTTPClient) replyWithTools(parent context.Context, input domain.AgentRequest) (domain.AgentResponse, error) {
+func (c *HTTPClient) replyWithTools(
+	parent context.Context,
+	input domain.AgentRequest,
+	requestTools *tool.Registry,
+) (domain.AgentResponse, error) {
 	ctx, cancel := context.WithTimeout(parent, c.cfg.Timeout)
 	defer cancel()
-	messages := c.buildOpenAIMessages(input)
+	messages, err := c.buildOpenAIMessages(input)
+	if err != nil {
+		return domain.AgentResponse{}, err
+	}
 	maxRounds := c.maxToolRounds
 	if maxRounds <= 0 {
 		maxRounds = 4
 	}
 
 	for round := 0; round <= maxRounds; round++ {
+		requestMessages := messages
+		var availableTools []map[string]any
+		if round < maxRounds {
+			availableTools = requestTools.OpenAITools()
+		} else {
+			requestMessages = append(
+				append([]openAIMessage(nil), messages...),
+				openAIMessage{
+					Role: "system",
+					Content: "工具调用轮次已用完。请只根据已经取得的工具结果直接回答；" +
+						"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。",
+				},
+			)
+		}
 		payload, err := json.Marshal(openAIRequest{
 			Model:    c.cfg.Model,
-			Messages: messages,
+			Messages: requestMessages,
 			Stream:   false,
-			Tools:    c.tools.OpenAITools(),
+			Tools:    availableTools,
 		})
 		if err != nil {
 			return domain.AgentResponse{}, fmt.Errorf("encode OpenAI tool request: %w", err)
@@ -327,7 +384,14 @@ func (c *HTTPClient) replyWithTools(parent context.Context, input domain.AgentRe
 			return textResponse(reply), nil
 		}
 		if round == maxRounds {
-			return domain.AgentResponse{}, errors.New("agent tool loop exceeded maximum rounds")
+			c.logger.Warn(
+				"agent ignored tool-free final round",
+				"request_id", input.RequestID,
+				"round", round+1,
+			)
+			return textResponse(
+				"我已经查了一轮，但现有范围还不够明确。告诉我具体模块或类名，我继续定位。",
+			), nil
 		}
 
 		messages = append(messages, choice)
@@ -336,23 +400,18 @@ func (c *HTTPClient) replyWithTools(parent context.Context, input domain.AgentRe
 			if call.Type != "" && call.Type != "function" {
 				content["error"] = "unsupported tool call type"
 			} else {
-				result, executeErr := c.tools.Execute(ctx, tool.Call{
-					Name:      call.Function.Name,
-					Arguments: json.RawMessage(call.Function.Arguments),
-					Actor: tool.Actor{
-						UserID:    input.UserID,
-						Platform:  input.Platform,
-						ChatType:  input.ChatType,
-						ChatID:    input.ChatID,
-						GroupID:   input.GroupID,
-						SelfID:    input.SelfID,
-						MessageID: input.MessageID,
-						SessionID: input.SessionID,
-						Role:      toolRole(input.SenderRole),
-						History:   append([]domain.ChatMessage(nil), input.History...),
-					},
-				})
+				result, executeErr := c.executeTool(
+					ctx,
+					requestTools,
+					input,
+					call.Function.Name,
+					json.RawMessage(call.Function.Arguments),
+					round+1,
+				)
 				if executeErr != nil {
+					if errors.Is(executeErr, tool.ErrPermissionDenied) {
+						return textResponse(tool.PermissionDeniedReply), nil
+					}
 					content["error"] = executeErr.Error()
 				} else {
 					if response, terminal := terminalToolResponse(result.Response); terminal {
@@ -379,7 +438,11 @@ func (c *HTTPClient) replyWithTools(parent context.Context, input domain.AgentRe
 	return domain.AgentResponse{}, errors.New("agent tool loop exhausted without a result")
 }
 
-func (c *HTTPClient) replyCustomWithTools(parent context.Context, input domain.AgentRequest) (domain.AgentResponse, error) {
+func (c *HTTPClient) replyCustomWithTools(
+	parent context.Context,
+	input domain.AgentRequest,
+	requestTools *tool.Registry,
+) (domain.AgentResponse, error) {
 	ctx, cancel := context.WithTimeout(parent, c.cfg.Timeout)
 	defer cancel()
 	maxRounds := c.maxToolRounds
@@ -388,7 +451,18 @@ func (c *HTTPClient) replyCustomWithTools(parent context.Context, input domain.A
 	}
 	var toolResults []customToolResult
 	for round := 0; round <= maxRounds; round++ {
-		payload, err := json.Marshal(c.buildCustomRequest(input, toolResults))
+		requestInput := input
+		requestPayload := c.buildCustomRequest(requestInput, toolResults)
+		if round == maxRounds {
+			requestInput.SystemPrompt = strings.TrimSpace(
+				c.systemPrompt(input) + "\n\n工具调用轮次已用完。" +
+					"请只根据已经取得的工具结果直接回答；" +
+					"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。",
+			)
+			requestPayload = c.buildCustomRequest(requestInput, toolResults)
+			requestPayload.Tools = nil
+		}
+		payload, err := json.Marshal(requestPayload)
 		if err != nil {
 			return domain.AgentResponse{}, fmt.Errorf("encode custom tool request: %w", err)
 		}
@@ -408,7 +482,14 @@ func (c *HTTPClient) replyCustomWithTools(parent context.Context, input domain.A
 			return customAgentResponse(response), nil
 		}
 		if round == maxRounds {
-			return domain.AgentResponse{}, errors.New("agent tool loop exceeded maximum rounds")
+			c.logger.Warn(
+				"custom agent ignored tool-free final round",
+				"request_id", input.RequestID,
+				"round", round+1,
+			)
+			return textResponse(
+				"我已经查了一轮，但现有范围还不够明确。告诉我具体模块或类名，我继续定位。",
+			), nil
 		}
 		for index, call := range response.ToolCalls {
 			name, arguments, callID, normalizeErr := normalizeCustomToolCall(call, round, index)
@@ -418,23 +499,18 @@ func (c *HTTPClient) replyCustomWithTools(parent context.Context, input domain.A
 				toolResults = append(toolResults, result)
 				continue
 			}
-			executed, executeErr := c.tools.Execute(ctx, tool.Call{
-				Name:      name,
-				Arguments: arguments,
-				Actor: tool.Actor{
-					UserID:    input.UserID,
-					Platform:  input.Platform,
-					ChatType:  input.ChatType,
-					ChatID:    input.ChatID,
-					GroupID:   input.GroupID,
-					SelfID:    input.SelfID,
-					MessageID: input.MessageID,
-					SessionID: input.SessionID,
-					Role:      toolRole(input.SenderRole),
-					History:   append([]domain.ChatMessage(nil), input.History...),
-				},
-			})
+			executed, executeErr := c.executeTool(
+				ctx,
+				requestTools,
+				input,
+				name,
+				arguments,
+				round+1,
+			)
 			if executeErr != nil {
+				if errors.Is(executeErr, tool.ErrPermissionDenied) {
+					return textResponse(tool.PermissionDeniedReply), nil
+				}
 				result.Error = executeErr.Error()
 			} else {
 				if response, terminal := terminalToolResponse(executed.Response); terminal {
@@ -449,6 +525,54 @@ func (c *HTTPClient) replyCustomWithTools(parent context.Context, input domain.A
 		}
 	}
 	return domain.AgentResponse{}, errors.New("agent custom tool loop exhausted without a result")
+}
+
+func (c *HTTPClient) executeTool(
+	ctx context.Context,
+	requestTools *tool.Registry,
+	input domain.AgentRequest,
+	name string,
+	arguments json.RawMessage,
+	round int,
+) (tool.Result, error) {
+	started := time.Now()
+	result, err := requestTools.Execute(ctx, tool.Call{
+		Name:      name,
+		Arguments: arguments,
+		Actor: tool.Actor{
+			UserID:    input.UserID,
+			Platform:  input.Platform,
+			ChatType:  input.ChatType,
+			ChatID:    input.ChatID,
+			GroupID:   input.GroupID,
+			SelfID:    input.SelfID,
+			MessageID: input.MessageID,
+			SessionID: input.SessionID,
+			Role:      toolRole(input.SenderRole),
+			History:   append([]domain.ChatMessage(nil), input.History...),
+			AllowedSkills: append(
+				[]string(nil),
+				input.AllowedSkills...,
+			),
+		},
+	})
+	outcome := "success"
+	if err != nil {
+		outcome = "error"
+	} else if result.Response != nil {
+		outcome = "terminal"
+	} else if result.Error != "" {
+		outcome = "tool_error"
+	}
+	c.logger.Info(
+		"agent tool call completed",
+		"request_id", input.RequestID,
+		"round", round,
+		"tool", strings.TrimSpace(name),
+		"duration_ms", time.Since(started).Milliseconds(),
+		"outcome", outcome,
+	)
+	return result, err
 }
 
 func (c *HTTPClient) rawWithRetry(ctx context.Context, payload []byte) ([]byte, error) {
@@ -484,7 +608,10 @@ func (c *HTTPClient) buildPayload(input domain.AgentRequest) ([]byte, error) {
 	case "custom":
 		return json.Marshal(c.buildCustomRequest(input, nil))
 	case "openai":
-		messages := c.buildOpenAIMessages(input)
+		messages, err := c.buildOpenAIMessages(input)
+		if err != nil {
+			return nil, err
+		}
 		return json.Marshal(openAIRequest{
 			Model:    c.cfg.Model,
 			Messages: messages,
@@ -517,19 +644,36 @@ func (c *HTTPClient) buildCustomRequest(input domain.AgentRequest, toolResults [
 		},
 		History:     append([]domain.ChatMessage(nil), input.History...),
 		Context:     input.PromptContext,
-		Tools:       c.customTools(),
+		Tools:       c.customTools(input),
 		ToolResults: append([]customToolResult(nil), toolResults...),
 	}
 }
 
-func (c *HTTPClient) customTools() []map[string]any {
+func (c *HTTPClient) customTools(input domain.AgentRequest) []map[string]any {
+	requestTools := c.requestTools(input)
+	if requestTools == nil {
+		return nil
+	}
+	return requestTools.OpenAITools()
+}
+
+func (c *HTTPClient) requestTools(input domain.AgentRequest) *tool.Registry {
 	if c.tools == nil {
 		return nil
 	}
-	return c.tools.OpenAITools()
+	if !input.RestrictTools {
+		return c.tools
+	}
+	return c.tools.SelectScoped(tool.Selection{
+		Names:       input.AllowedTools,
+		MCPServers:  input.MCPServers,
+		AllowSkills: len(input.AllowedSkills) > 0,
+	})
 }
 
-func (c *HTTPClient) buildOpenAIMessages(input domain.AgentRequest) []openAIMessage {
+func (c *HTTPClient) buildOpenAIMessages(
+	input domain.AgentRequest,
+) ([]openAIMessage, error) {
 	messages := make([]openAIMessage, 0, len(input.History)+2)
 	prompt := c.systemPrompt(input)
 	if context := strings.TrimSpace(input.PromptContext); context != "" {
@@ -550,14 +694,16 @@ func (c *HTTPClient) buildOpenAIMessages(input domain.AgentRequest) []openAIMess
 	content := any(input.Text)
 	if references := input.Chain.ImageReferences(); len(references) > 0 {
 		parts := make([]openAIContentPart, 0, len(references)+1)
+		var lastImageErr error
 		text := strings.TrimSpace(input.Text)
 		if text == "" {
 			text = "[Image]"
 		}
 		parts = append(parts, openAIContentPart{Type: "text", Text: text})
 		for _, reference := range references {
-			resolved, err := resolveImageReference(reference)
+			resolved, err := c.resolveImageReference(reference)
 			if err != nil {
+				lastImageErr = err
 				c.logger.Warn("skipped unreadable image component", "error", err)
 				continue
 			}
@@ -566,12 +712,13 @@ func (c *HTTPClient) buildOpenAIMessages(input domain.AgentRequest) []openAIMess
 				ImageURL: &openAIImageURL{URL: resolved},
 			})
 		}
-		if len(parts) > 1 {
-			content = parts
+		if len(parts) == 1 {
+			return nil, fmt.Errorf("%w: %v", ErrInputImageUnavailable, lastImageErr)
 		}
+		content = parts
 	}
 	messages = append(messages, openAIMessage{Role: "user", Content: content})
-	return messages
+	return messages, nil
 }
 
 func (c *HTTPClient) systemPrompt(input domain.AgentRequest) string {
@@ -822,7 +969,7 @@ func openAIContentText(content any) string {
 	}
 }
 
-func resolveImageReference(reference string) (string, error) {
+func (c *HTTPClient) resolveImageReference(reference string) (string, error) {
 	reference = strings.TrimSpace(reference)
 	if reference == "" {
 		return "", errors.New("image reference is empty")
@@ -839,47 +986,116 @@ func resolveImageReference(reference string) (string, error) {
 		}
 		return "data:image/jpeg;base64," + encoded, nil
 	}
+	path, err := localImagePath(reference)
+	if err != nil {
+		return "", err
+	}
+	return c.readLocalImage(path)
+}
 
-	path := reference
-	if strings.HasPrefix(lower, "file://") {
-		parsed, err := url.Parse(reference)
-		if err != nil {
-			return "", fmt.Errorf("parse image file URI: %w", err)
+func localImagePath(reference string) (string, error) {
+	if !strings.HasPrefix(strings.ToLower(reference), "file://") {
+		return reference, nil
+	}
+	rawPath := reference[len("file://"):]
+	if len(rawPath) >= 2 && rawPath[1] == ':' {
+		return url.PathUnescape(rawPath)
+	}
+	parsed, err := url.Parse(reference)
+	if err != nil {
+		return "", fmt.Errorf("parse image file URI: %w", err)
+	}
+	path := parsed.Path
+	if parsed.Host != "" {
+		path = "//" + parsed.Host + path
+	}
+	if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
+		path = path[1:]
+	}
+	path, err = url.PathUnescape(path)
+	if err != nil {
+		return "", fmt.Errorf("decode image file URI: %w", err)
+	}
+	return filepath.FromSlash(path), nil
+}
+
+func (c *HTTPClient) readLocalImage(path string) (string, error) {
+	if len(c.imageRoots) == 0 {
+		return "", errors.New("local image references are not allowed")
+	}
+	var lastErr error
+	for _, boundary := range c.imageRoots {
+		candidates := []string{path}
+		if mapped, ok := mapQQNTImagePath(path, boundary.Root()); ok {
+			candidates = append(candidates, mapped)
 		}
-		path = parsed.Path
-		if parsed.Host != "" {
-			path = "//" + parsed.Host + path
-		}
-		if len(path) >= 3 && path[0] == '/' && path[2] == ':' {
-			path = path[1:]
-		}
-		path, err = url.PathUnescape(path)
-		if err != nil {
-			return "", fmt.Errorf("decode image file URI: %w", err)
+		for _, candidate := range candidates {
+			resolved, resolveErr := boundary.Resolve(candidate)
+			if resolveErr != nil {
+				lastErr = resolveErr
+				continue
+			}
+			encoded, err := c.readLocalImageFile(resolved)
+			if err == nil {
+				return encoded, nil
+			}
+			lastErr = err
 		}
 	}
-	info, err := os.Stat(path)
+	if lastErr == nil || errors.Is(lastErr, security.ErrOutsideAllowedRoot) {
+		return "", errors.New("local image path is outside the allowed roots")
+	}
+	return "", lastErr
+}
+
+func (c *HTTPClient) readLocalImageFile(resolved string) (string, error) {
+	file, err := os.Open(resolved)
 	if err != nil {
-		return "", fmt.Errorf("open image file: %w", err)
+		return "", fmt.Errorf("open local image: %w", err)
+	}
+	defer file.Close()
+	info, err := file.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat local image: %w", err)
 	}
 	if !info.Mode().IsRegular() {
-		return "", errors.New("image reference is not a regular file")
+		return "", errors.New("local image is not a regular file")
 	}
-	if info.Size() > maxImageBytes {
-		return "", fmt.Errorf("image exceeds %d bytes", maxImageBytes)
+	if info.Size() > c.maxImageBytes {
+		return "", fmt.Errorf("local image exceeds %d bytes", c.maxImageBytes)
 	}
-	data, err := os.ReadFile(path)
+	data, err := io.ReadAll(io.LimitReader(file, c.maxImageBytes+1))
 	if err != nil {
-		return "", fmt.Errorf("read image file: %w", err)
+		return "", fmt.Errorf("read local image: %w", err)
+	}
+	if int64(len(data)) > c.maxImageBytes {
+		return "", fmt.Errorf("local image exceeds %d bytes", c.maxImageBytes)
 	}
 	mediaType := http.DetectContentType(data)
-	if extensionType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path))); extensionType != "" {
-		mediaType = extensionType
+	switch mediaType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+	default:
+		return "", fmt.Errorf("unsupported local image media type %q", mediaType)
 	}
-	if !strings.HasPrefix(mediaType, "image/") {
-		return "", fmt.Errorf("unsupported image media type %q", mediaType)
+	return "data:" + mediaType + ";base64," +
+		base64.StdEncoding.EncodeToString(data), nil
+}
+
+// mapQQNTImagePath maps a sender-provided QQNT cache path to the same
+// relative path under this account's explicitly allowed Pic root.
+func mapQQNTImagePath(path, root string) (string, bool) {
+	normalized := filepath.ToSlash(strings.TrimSpace(path))
+	lower := strings.ToLower(normalized)
+	const marker = "/nt_data/pic/"
+	index := strings.Index(lower, marker)
+	if index < 0 {
+		return "", false
 	}
-	return "data:" + mediaType + ";base64," + base64.StdEncoding.EncodeToString(data), nil
+	relative := strings.TrimPrefix(normalized[index+len(marker):], "/")
+	if relative == "" || filepath.IsAbs(filepath.FromSlash(relative)) {
+		return "", false
+	}
+	return filepath.Join(root, filepath.FromSlash(relative)), true
 }
 
 func decodeCustomResponse(body []byte) (customResponse, error) {

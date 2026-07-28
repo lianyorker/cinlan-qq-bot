@@ -3,12 +3,35 @@
 const net = require('node:net');
 const fs = require('node:fs');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const PROTOCOL_VERSION = 1;
 const DEFAULT_MAX_FRAME_BYTES = 1024 * 1024;
+const MAX_AV_BUFFER_BYTES = 256 * 1024;
+const MAX_AV_ARGUMENTS = 8;
+const MAX_AV_OBJECT_KEYS = 16;
+const MAX_RECENT_AV_EVENTS = 32;
+const PTT_TRANSCRIPTION_POLL_ATTEMPTS = 8;
+const PTT_TRANSCRIPTION_POLL_DELAY_MS = 250;
+const RICH_MEDIA_DOWNLOAD_TIMEOUT_MS = 15000;
+const FILE_SEND_CONFIRM_TIMEOUT_MS = 30000;
 const MAX_FRAME_BYTES = parseFrameLimit(
   process.env.CINLAN_QQNT_MAX_FRAME_BYTES,
 );
+const AVSDK_CALLBACK_NAMES = [
+  'onActionToAVSDK',
+  'onS2CActionToAVSDK',
+  'OnGroupVideoActionToAVSDK',
+  'OnInviteActionToAVSDK',
+  'OnGroupVideoServerPushToAVSDK',
+];
+const AVSDK_METHOD_NAMES = [
+  'addKernelAVSDKListener',
+  'removeKernelAVSDKListener',
+  'sendGroupVideoJsonBuffer',
+  'setActionFromAVSDK',
+  'startGroupVideoCmdRequestFromAVSDK',
+];
 const CHAT_PRIVATE = 1;
 const CHAT_GROUP = 2;
 const ELEMENT_TEXT = 1;
@@ -21,16 +44,25 @@ const ELEMENT_REPLY = 7;
 const ELEMENT_ARK = 10;
 const ELEMENT_MARKET_FACE = 11;
 const ELEMENT_MARKDOWN = 14;
+const ELEMENT_MULTI_FORWARD = 16;
 const ELEMENT_ONLINE_FILE = 23;
+const SEND_STATUS_FAILED = 0;
+const SEND_STATUS_SUCCESS = 2;
 const AT_UNKNOWN = 0;
 const AT_ALL = 1;
 const AT_ONE = 2;
+const PIC_TYPE_JPEG = 1000;
+const PIC_TYPE_PNG = 1001;
+const PIC_TYPE_GIF = 2000;
+const DEFAULT_SEND_IMAGE_MAX_BYTES = 20 * 1024 * 1024;
 
 const state = {
   started: false,
   socket: null,
   readBuffer: '',
   reconnectDelay: 500,
+  statusSocket: null,
+  statusFingerprint: '',
   wrapper: null,
   loginService: null,
   loginListenerID: null,
@@ -38,6 +70,11 @@ const state = {
   session: null,
   msgService: null,
   msgListenerID: null,
+  avService: null,
+  avListenerID: null,
+  avMethods: [],
+  avEventSequence: 0,
+  recentAVEvents: [],
   attachTimer: null,
   bootTime: 0,
   errors: new Map(),
@@ -48,6 +85,9 @@ const state = {
   },
   selfUIDLookupUin: '',
   recentMessages: new Map(),
+  pendingSends: new Map(),
+  pendingMediaDownloads: new Map(),
+  messageQueue: Promise.resolve(),
 };
 
 async function start() {
@@ -87,10 +127,19 @@ function connectIPC() {
         runtime: 'cinlan-qqnt',
         pid: process.pid,
         qq_version: process.env.CINLAN_QQNT_VERSION || '',
-        capabilities: ['message_event', 'send_message', 'send_file', 'runtime_status'],
+        capabilities: [
+          'message_event',
+          'send_message',
+          'send_file',
+          ...(imageSendRoots().length > 0 ? ['send_image'] : []),
+          'group_member_query',
+          'runtime_status',
+          'av_event',
+          'inspect_avsdk',
+        ],
       },
-    });
-    publishStatus();
+    }, socket);
+    publishStatus(undefined, socket);
   });
   socket.on('data', consumeData);
   socket.on('error', (error) => {
@@ -100,6 +149,8 @@ function connectIPC() {
     if (state.socket === socket) {
       state.socket = null;
       state.readBuffer = '';
+      state.statusSocket = null;
+      state.statusFingerprint = '';
     }
     const delay = state.reconnectDelay;
     state.reconnectDelay = Math.min(delay * 2, 10000);
@@ -209,7 +260,7 @@ function attachLoginListener() {
     state.loginListenerID = service.addKernelLoginListener(listener);
     state.loginService = service;
     clearRuntimeError('login_attach');
-    void discoverSelfFromLoginList();
+    void discoverSelfFromLoginList(true);
   } catch (error) {
     state.loginService = null;
     reportRuntimeError('login_attach', error);
@@ -257,11 +308,13 @@ async function discoverSelfFromLoginList(allowConfiguredLogin = false) {
 
 function attachSession() {
   attachLoginListener();
+  if (!state.self.uin) {
+    return;
+  }
   if (state.msgService) {
-    if (state.self.uin) {
-      void resolveSelfUID();
-      publishStatus('ready');
-    }
+    void resolveSelfUID();
+    attachAVListener();
+    publishStatus('ready');
     return;
   }
   try {
@@ -280,15 +333,11 @@ function attachSession() {
           return;
         }
         for (const message of messages) {
-          try {
-            handleNativeMessage(message);
-            clearRuntimeError('message_event');
-          } catch (error) {
-            reportRuntimeError('message_event', error);
-          }
+          enqueueNativeMessage(message);
         }
       },
       onAddSendMsg: (message) => {
+        observeSendUpdates([message]);
         if (message?.senderUin) {
           updateSelf({
             uin: String(message.senderUin),
@@ -297,10 +346,17 @@ function attachSession() {
           });
         }
       },
+      onMsgInfoListUpdate: (messages) => {
+        observeSendUpdates(messages);
+      },
+      onRichMediaDownloadComplete: (...args) => {
+        observeRichMediaDownload(args);
+      },
     });
     state.msgListenerID = msgService.addKernelMsgListener(listener);
     state.session = session;
     state.msgService = msgService;
+    attachAVListener(session);
     clearRuntimeError('session_attach');
     void resolveSelfUID();
     publishStatus(state.self.uin ? 'ready' : 'waiting_login');
@@ -309,6 +365,185 @@ function attachSession() {
     state.msgService = null;
     reportRuntimeError('session_attach', error);
   }
+}
+
+function attachAVListener(session = state.session) {
+  if (state.avService || !session || typeof session.getAVSDKService !== 'function') {
+    return;
+  }
+  try {
+    const service = session.getAVSDKService();
+    if (!service || typeof service.addKernelAVSDKListener !== 'function') {
+      throw new Error('QQNT AVSDK service does not expose addKernelAVSDKListener');
+    }
+    const handlers = {};
+    for (const callback of AVSDK_CALLBACK_NAMES) {
+      handlers[callback] = (...args) => recordAVEvent(callback, args);
+    }
+    const listenerID = service.addKernelAVSDKListener(listenerProxy(handlers));
+    state.avService = service;
+    state.avListenerID = listenerID;
+    state.avMethods = availableAVSDKMethods(service);
+    clearRuntimeError('avsdk_attach');
+    publishStatus();
+  } catch (error) {
+    state.avService = null;
+    state.avListenerID = null;
+    state.avMethods = [];
+    reportRuntimeError('avsdk_attach', error);
+  }
+}
+
+function availableAVSDKMethods(service) {
+  return AVSDK_METHOD_NAMES.filter((name) => {
+    try {
+      return typeof service?.[name] === 'function';
+    } catch {
+      return false;
+    }
+  });
+}
+
+function recordAVEvent(callback, args) {
+  if (!AVSDK_CALLBACK_NAMES.includes(callback)) {
+    return;
+  }
+  const values = Array.isArray(args) ? args : [];
+  const actionCodeCandidate = values.find(
+    (value) => typeof value === 'number' && Number.isSafeInteger(value),
+  );
+  const event = {
+    sequence: ++state.avEventSequence,
+    callback,
+    received_at: new Date().toISOString(),
+    action_code_candidate: actionCodeCandidate ?? null,
+    argument_count: values.length,
+    arguments: values
+      .slice(0, MAX_AV_ARGUMENTS)
+      .map((value) => {
+        try {
+          return summarizeAVArgument(value);
+        } catch {
+          return { type: 'unavailable' };
+        }
+      }),
+    arguments_truncated: values.length > MAX_AV_ARGUMENTS,
+  };
+  state.recentAVEvents.push(event);
+  if (state.recentAVEvents.length > MAX_RECENT_AV_EVENTS) {
+    state.recentAVEvents.splice(
+      0,
+      state.recentAVEvents.length - MAX_RECENT_AV_EVENTS,
+    );
+  }
+  sendEnvelope({ type: 'av_event', payload: event });
+}
+
+function summarizeAVArgument(value) {
+  const bytes = byteView(value);
+  if (bytes) {
+    const summary = {
+      type: 'buffer',
+      byte_length: bytes.byteLength,
+      oversized: bytes.byteLength > MAX_AV_BUFFER_BYTES,
+    };
+    if (!summary.oversized) {
+      summary.sha256 = crypto
+        .createHash('sha256')
+        .update(bytes)
+        .digest('hex');
+    }
+    return summary;
+  }
+  if (value === null) {
+    return { type: 'null' };
+  }
+  if (value === undefined) {
+    return { type: 'undefined' };
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value)
+      ? { type: 'number', number_value: value }
+      : { type: 'number', number_special: String(value) };
+  }
+  if (typeof value === 'bigint') {
+    return { type: 'bigint', integer_value: value.toString() };
+  }
+  if (typeof value === 'boolean') {
+    return { type: 'boolean', boolean_value: value };
+  }
+  if (typeof value === 'string') {
+    const byteLength = Buffer.byteLength(value, 'utf8');
+    const summary = {
+      type: 'string',
+      byte_length: byteLength,
+      oversized: byteLength > MAX_AV_BUFFER_BYTES,
+    };
+    if (!summary.oversized) {
+      summary.sha256 = crypto
+        .createHash('sha256')
+        .update(value, 'utf8')
+        .digest('hex');
+    }
+    return summary;
+  }
+  if (typeof value === 'object') {
+    let keys = [];
+    let keysTruncated = false;
+    try {
+      const sourceKeys = Object.keys(value);
+      keysTruncated = sourceKeys.length > MAX_AV_OBJECT_KEYS;
+      keys = sourceKeys.slice(0, MAX_AV_OBJECT_KEYS)
+        .map((key) => String(key).slice(0, 64));
+    } catch {
+      // Native proxies may reject enumeration; the object value is never read.
+    }
+    return {
+      type: 'object',
+      object_type: safeObjectType(value),
+      keys,
+      keys_truncated: keysTruncated,
+    };
+  }
+  return { type: typeof value };
+}
+
+function byteView(value) {
+  if (Buffer.isBuffer(value)) {
+    return value;
+  }
+  if (ArrayBuffer.isView(value)) {
+    return Buffer.from(value.buffer, value.byteOffset, value.byteLength);
+  }
+  if (value instanceof ArrayBuffer) {
+    return Buffer.from(value);
+  }
+  return null;
+}
+
+function safeObjectType(value) {
+  try {
+    const name = value?.constructor?.name;
+    return typeof name === 'string' ? name.slice(0, 64) : 'Object';
+  } catch {
+    return 'Object';
+  }
+}
+
+function inspectAVSDK() {
+  return {
+    available: Boolean(state.avService),
+    listener_attached: state.avListenerID !== null,
+    listener_id: stringValue(state.avListenerID),
+    methods: [...state.avMethods],
+    recent_events: state.recentAVEvents.map((event) => ({
+      ...event,
+      arguments: event.arguments.map((argument) => ({
+        ...argument,
+        keys: Array.isArray(argument.keys) ? [...argument.keys] : undefined,
+      })),
+    })),
+  };
 }
 
 function listenerProxy(handlers) {
@@ -392,7 +627,14 @@ async function resolveSelfUID() {
   }
 }
 
-function handleNativeMessage(raw) {
+function enqueueNativeMessage(raw) {
+  state.messageQueue = state.messageQueue
+    .then(() => handleNativeMessage(raw))
+    .then(() => clearRuntimeError('message_event'))
+    .catch((error) => reportRuntimeError('message_event', error));
+}
+
+async function handleNativeMessage(raw) {
   if (!raw || (raw.chatType !== CHAT_GROUP && raw.chatType !== CHAT_PRIVATE)) {
     return;
   }
@@ -409,6 +651,8 @@ function handleNativeMessage(raw) {
     return;
   }
 
+  raw = await prepareInboundImages(raw);
+  raw = await transcribePttMessage(raw);
   rememberMessage(raw);
   const chain = convertElements(raw.elements);
   sendEnvelope({
@@ -438,6 +682,281 @@ function handleNativeMessage(raw) {
       },
     },
   });
+}
+
+async function prepareInboundImages(raw) {
+  let current = raw;
+  let pictures = pictureElements(current);
+  if (pictures.length === 0 || pictures.every(hasReadableImageReference)) {
+    return current;
+  }
+
+  const stored = await getStoredMessage(current);
+  if (stored) {
+    current = stored;
+    pictures = pictureElements(current);
+  }
+
+  for (const element of pictures) {
+    if (hasReadableImageReference(element)) {
+      continue;
+    }
+    try {
+      const downloaded = await downloadInboundImage(current, element);
+      element.picElement.filePath = downloaded;
+      element.picElement.sourcePath = downloaded;
+      clearRuntimeError('image_download');
+    } catch (error) {
+      reportRuntimeError('image_download', error);
+    }
+  }
+  return current;
+}
+
+function pictureElements(raw) {
+  return (Array.isArray(raw?.elements) ? raw.elements : [])
+    .filter((element) =>
+      numberValue(element?.elementType) === ELEMENT_PIC &&
+      element?.picElement
+    );
+}
+
+function hasReadableImageReference(element) {
+  const picture = element?.picElement;
+  const remote = stringValue(picture?.originImageUrl).trim().toLowerCase();
+  if (remote.startsWith('https://') || remote.startsWith('http://')) {
+    return true;
+  }
+  for (const candidate of [picture?.sourcePath, picture?.filePath]) {
+    const localPath = stringValue(candidate).trim();
+    if (!localPath || !path.isAbsolute(localPath)) {
+      continue;
+    }
+    try {
+      if (fs.statSync(localPath).isFile()) {
+        return true;
+      }
+    } catch {
+      // QQ may report the sender's path; download it into this account's cache.
+    }
+  }
+  return false;
+}
+
+async function getStoredMessage(raw) {
+  if (typeof state.msgService?.getMsgsByMsgId !== 'function') {
+    return null;
+  }
+  const messageID = stringValue(raw?.msgId);
+  if (!messageID) {
+    return null;
+  }
+  try {
+    const response = await state.msgService.getMsgsByMsgId({
+      chatType: raw.chatType,
+      peerUid: stringValue(raw.peerUid),
+      guildId: stringValue(raw.guildId),
+    }, [messageID]);
+    return (Array.isArray(response?.msgList) ? response.msgList : [])
+      .find((message) => stringValue(message?.msgId) === messageID) || null;
+  } catch {
+    return null;
+  }
+}
+
+async function downloadInboundImage(raw, element) {
+  if (typeof state.msgService?.downloadRichMedia !== 'function') {
+    throw new Error('QQNT message service does not expose downloadRichMedia');
+  }
+  const messageID = stringValue(raw?.msgId);
+  const elementID = stringValue(element?.elementId);
+  const peerUID = stringValue(raw?.peerUid);
+  if (!messageID || !elementID || !peerUID) {
+    throw new Error('QQNT image is missing download identifiers');
+  }
+
+  const confirmation = createMediaDownloadConfirmation(messageID, elementID);
+  try {
+    const result = state.msgService.downloadRichMedia({
+      fileModelId: '0',
+      downSourceType: 0,
+      downloadSourceType: 0,
+      triggerType: 1,
+      msgId: messageID,
+      chatType: raw.chatType,
+      peerUid: peerUID,
+      elementId: elementID,
+      thumbSize: 0,
+      downloadType: 1,
+      filePath: '',
+    });
+    Promise.resolve(result).catch((error) => confirmation.fail(error));
+  } catch (error) {
+    confirmation.cancel();
+    throw error;
+  }
+  return confirmation.promise;
+}
+
+function mediaDownloadKey(messageID, elementID) {
+  return `${messageID}\u0000${elementID}`;
+}
+
+function createMediaDownloadConfirmation(messageID, elementID) {
+  const key = mediaDownloadKey(messageID, elementID);
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  const pending = {
+    timer: setTimeout(() => {
+      if (state.pendingMediaDownloads.get(key) !== pending) {
+        return;
+      }
+      state.pendingMediaDownloads.delete(key);
+      rejectPromise(new Error('timed out waiting for QQNT image download'));
+    }, RICH_MEDIA_DOWNLOAD_TIMEOUT_MS),
+    resolve(filePath) {
+      if (state.pendingMediaDownloads.get(key) !== pending) {
+        return;
+      }
+      state.pendingMediaDownloads.delete(key);
+      clearTimeout(pending.timer);
+      resolvePromise(filePath);
+    },
+    reject(error) {
+      if (state.pendingMediaDownloads.get(key) !== pending) {
+        return;
+      }
+      state.pendingMediaDownloads.delete(key);
+      clearTimeout(pending.timer);
+      rejectPromise(error);
+    },
+  };
+  state.pendingMediaDownloads.set(key, pending);
+  return {
+    promise,
+    fail(error) {
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    },
+    cancel() {
+      if (state.pendingMediaDownloads.get(key) === pending) {
+        state.pendingMediaDownloads.delete(key);
+        clearTimeout(pending.timer);
+      }
+    },
+  };
+}
+
+function observeRichMediaDownload(args) {
+  const values = Array.isArray(args) ? args : [args];
+  const event = values.find((value) =>
+    value && typeof value === 'object' &&
+    stringValue(value.msgId) &&
+    stringValue(value.msgElementId || value.elementId)
+  );
+  if (!event) {
+    return;
+  }
+  const key = mediaDownloadKey(
+    stringValue(event.msgId),
+    stringValue(event.msgElementId || event.elementId),
+  );
+  const pending = state.pendingMediaDownloads.get(key);
+  if (!pending) {
+    return;
+  }
+  const filePath = stringValue(
+    event.filePath || event.downloadedFilePath || event.sourcePath,
+  );
+  try {
+    if (!filePath || !path.isAbsolute(filePath) ||
+        !fs.statSync(filePath).isFile()) {
+      pending.reject(new Error('QQNT image download returned no readable file'));
+      return;
+    }
+  } catch {
+    pending.reject(new Error('QQNT image download returned no readable file'));
+    return;
+  }
+  pending.resolve(filePath);
+}
+
+async function transcribePttMessage(raw) {
+  const pttElements = (Array.isArray(raw?.elements) ? raw.elements : [])
+    .filter((element) =>
+      numberValue(element?.elementType) === ELEMENT_PTT &&
+      element?.pttElement &&
+      !stringValue(element.pttElement.text).trim()
+    );
+  if (pttElements.length === 0) {
+    return raw;
+  }
+  if (typeof state.msgService?.translatePtt2Text !== 'function') {
+    throw new Error('QQNT message service does not expose translatePtt2Text');
+  }
+  if (typeof state.msgService.getMsgsByMsgId !== 'function') {
+    throw new Error('QQNT message service does not expose getMsgsByMsgId');
+  }
+
+  const messageID = stringValue(raw.msgId);
+  const peer = {
+    chatType: raw.chatType,
+    peerUid: stringValue(raw.peerUid),
+    guildId: stringValue(raw.guildId),
+  };
+  const storedResponse = await state.msgService.getMsgsByMsgId(peer, [messageID]);
+  const stored = (Array.isArray(storedResponse?.msgList)
+    ? storedResponse.msgList
+    : [])
+    .find((message) => stringValue(message?.msgId) === messageID);
+  if (!stored) {
+    throw new Error('QQNT PTT message is not available from getMsgsByMsgId');
+  }
+  const storedPtt = (Array.isArray(stored.elements) ? stored.elements : [])
+    .filter((element) => numberValue(element?.elementType) === ELEMENT_PTT);
+  if (storedPtt.length < pttElements.length) {
+    throw new Error('QQNT stored message does not contain the expected PTT elements');
+  }
+  if (storedPtt.every((element) =>
+    stringValue(element?.pttElement?.text).trim()
+  )) {
+    return stored;
+  }
+
+  for (const element of storedPtt) {
+    await state.msgService.translatePtt2Text(messageID, peer, element);
+  }
+  if (storedPtt.every((element) =>
+    stringValue(element?.pttElement?.text).trim()
+  )) {
+    return stored;
+  }
+
+  for (let attempt = 0; attempt < PTT_TRANSCRIPTION_POLL_ATTEMPTS; attempt += 1) {
+    const response = await state.msgService.getMsgsByMsgId(peer, [messageID]);
+    const refreshed = (Array.isArray(response?.msgList) ? response.msgList : [])
+      .find((message) => stringValue(message?.msgId) === messageID);
+    const refreshedPtt = (Array.isArray(refreshed?.elements)
+      ? refreshed.elements
+      : [])
+      .filter((element) => numberValue(element?.elementType) === ELEMENT_PTT);
+    if (
+      refreshed &&
+      refreshedPtt.length >= storedPtt.length &&
+      refreshedPtt.every((element) =>
+        stringValue(element?.pttElement?.text).trim()
+      )
+    ) {
+      return refreshed;
+    }
+    if (attempt + 1 < PTT_TRANSCRIPTION_POLL_ATTEMPTS) {
+      await sleep(PTT_TRANSCRIPTION_POLL_DELAY_MS);
+    }
+  }
+  throw new Error('QQNT PTT transcription completed without text');
 }
 
 function rememberMessage(raw) {
@@ -475,19 +994,23 @@ function convertElements(elements) {
     }
     if (element.textElement) {
       const text = element.textElement;
-      if (numberValue(text.atType) === AT_UNKNOWN) {
+      const atType = numberValue(text.atType);
+      let target = stringValue(
+        text.atUid || text.atNtUid || text.atUin || text.atNtUin,
+      );
+      if (atType === AT_UNKNOWN && !target) {
         if (stringValue(text.content)) {
           chain.push({ type: 'text', data: { text: stringValue(text.content) } });
         }
       } else {
-        let target = stringValue(text.atUid || text.atNtUid);
         if (
           state.self.uid &&
-          (target === state.self.uid || stringValue(text.atNtUid) === state.self.uid)
+          (target === state.self.uid ||
+            stringValue(text.atNtUid) === state.self.uid)
         ) {
           target = state.self.uin;
         }
-        if (numberValue(text.atType) === AT_ALL) {
+        if (atType === AT_ALL) {
           target = 'all';
         }
         chain.push({
@@ -513,7 +1036,7 @@ function convertRichElement(element) {
     case ELEMENT_ONLINE_FILE:
       return { type: 'file', data: compactData(element.fileElement, ['fileName', 'filePath', 'fileSize', 'fileUuid']) };
     case ELEMENT_PTT:
-      return { type: 'record', data: compactData(element.pttElement, ['fileName', 'filePath', 'duration']) };
+      return { type: 'record', data: compactData(element.pttElement, ['fileName', 'filePath', 'duration', 'text']) };
     case ELEMENT_VIDEO:
       return { type: 'video', data: compactData(element.videoElement, ['fileName', 'filePath', 'duration']) };
     case ELEMENT_FACE:
@@ -534,6 +1057,19 @@ function convertRichElement(element) {
       return { type: 'mface', data: compactData(element.marketFaceElement, ['emojiId', 'emojiPackageId', 'faceName']) };
     case ELEMENT_MARKDOWN:
       return { type: 'markdown', data: { content: stringValue(element.markdownElement?.content) } };
+    case ELEMENT_MULTI_FORWARD: {
+      const text = extractMultiForwardText(element);
+      if (text) {
+        return {
+          type: 'text',
+          data: { text: `[聊天记录]\n${text}` },
+        };
+      }
+      return {
+        type: 'native_16',
+        data: { element_id: stringValue(element.elementId) },
+      };
+    }
     default:
       return {
         type: `native_${numberValue(element.elementType)}`,
@@ -550,10 +1086,14 @@ async function handleAction(payload) {
   switch (name) {
     case 'runtime_status':
       return runtimeStatus();
+    case 'inspect_avsdk':
+      return inspectAVSDK();
     case 'get_login_list':
       return getLoginList();
     case 'quick_login':
       return quickLogin(params);
+    case 'get_group_member_info':
+      return getGroupMemberInfo(params);
     case 'send_message':
       return sendMessage(params);
     default:
@@ -606,6 +1146,173 @@ async function quickLogin(params) {
   };
 }
 
+async function getGroupMemberInfo(params) {
+  if (!state.session) {
+    throw new Error('QQNT session is not ready');
+  }
+  const groupID = stringValue(params.group_id).trim();
+  const userID = stringValue(params.user_id).trim();
+  if (!/^[1-9]\d{0,19}$/.test(groupID)) {
+    throw new Error('get_group_member_info group_id is invalid');
+  }
+  if (!/^[1-9]\d{0,19}$/.test(userID)) {
+    throw new Error('get_group_member_info user_id is invalid');
+  }
+  const profile = state.session.getProfileService?.();
+  const mapping = await profile?.getUidByUin?.('cinlan-qq-bot', [userID]);
+  const uid = mapping instanceof Map ? mapping.get(userID) : mapping?.[userID];
+  if (!uid) {
+    throw new Error(`cannot resolve QQ ${userID} to UID for group membership`);
+  }
+  const groupService = state.session.getGroupService?.();
+  if (!groupService || typeof groupService.getAllMemberList !== 'function') {
+    throw new Error('QQNT group service does not expose getAllMemberList');
+  }
+
+  let response = await groupService.getAllMemberList(groupID, false);
+  validateGroupMemberResponse(groupID, response);
+  let member = groupMemberExists(response?.result, String(uid));
+  if (!member) {
+    response = await groupService.getAllMemberList(groupID, true);
+    validateGroupMemberResponse(groupID, response);
+    member = groupMemberExists(response?.result, String(uid));
+  }
+  return {
+    group_id: groupID,
+    user_id: userID,
+    member,
+  };
+}
+
+function validateGroupMemberResponse(groupID, response) {
+  const errorCode = numberValue(response?.errCode);
+  if (errorCode !== 0) {
+    const detail = stringValue(response?.errMsg).trim();
+    throw new Error(
+      `QQNT group member query for ${groupID} failed with ${errorCode}` +
+      (detail ? `: ${detail}` : ''),
+    );
+  }
+  if (!response?.result || !response.result.infos) {
+    throw new Error(`QQNT group member query for ${groupID} returned no member map`);
+  }
+}
+
+function extractMultiForwardText(element) {
+  const source =
+    element?.multiForwardMsgElement ||
+    element?.multiForwardElement ||
+    element?.forwardMsgElement ||
+    element?.chatRecordElement ||
+    element;
+  const parts = [];
+  collectForwardText(source, parts, new Set(), 0);
+  return normalizeForwardText(parts.join('\n'));
+}
+
+function collectForwardText(value, parts, seen, depth) {
+  if (depth > 6 || value === null || value === undefined) {
+    return;
+  }
+  if (typeof value === 'string') {
+    const text = normalizeForwardText(value);
+    if (text) {
+      parts.push(text);
+    }
+    return;
+  }
+  if (typeof value !== 'object') {
+    return;
+  }
+  if (seen.has(value)) {
+    return;
+  }
+  seen.add(value);
+  if (Array.isArray(value)) {
+    for (const item of value) {
+      collectForwardText(item, parts, seen, depth + 1);
+    }
+    return;
+  }
+
+  const preferredKeys = [
+    'xmlContent',
+    'xml_content',
+    'text',
+    'content',
+    'title',
+    'summary',
+    'preview',
+    'description',
+    'messages',
+    'messageList',
+    'message_list',
+    'nodes',
+    'items',
+    'records',
+    'forwardMsg',
+    'forward_msg',
+  ];
+  for (const key of preferredKeys) {
+    if (Object.prototype.hasOwnProperty.call(value, key)) {
+      collectForwardText(value[key], parts, seen, depth + 1);
+    }
+  }
+}
+
+function normalizeForwardText(value) {
+  let text = stringValue(value).trim();
+  if (!text) {
+    return '';
+  }
+  if (/<[a-z][^>]*>/i.test(text)) {
+    text = text
+      .replace(/<!\[CDATA\[([\s\S]*?)\]\]>/gi, '$1')
+      .replace(/<br\s*\/?>/gi, '\n')
+      .replace(/<\/(?:p|item|node|msg|title|desc)>/gi, '\n')
+      .replace(/<[^>]+>/g, '');
+  }
+  text = decodeXmlEntities(text)
+    .replace(/\r\n?/g, '\n')
+    .replace(/[ \t]+\n/g, '\n')
+    .replace(/\n{3,}/g, '\n\n')
+    .trim();
+  return text.slice(0, 6000);
+}
+
+function decodeXmlEntities(value) {
+  return value
+    .replace(/&amp;/gi, '&')
+    .replace(/&lt;/gi, '<')
+    .replace(/&gt;/gi, '>')
+    .replace(/&quot;/gi, '"')
+    .replace(/&apos;/gi, "'")
+    .replace(/&#x([0-9a-f]+);/gi, (_match, hex) => {
+      const codePoint = Number.parseInt(hex, 16);
+      return Number.isFinite(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : '';
+    })
+    .replace(/&#([0-9]+);/g, (_match, decimal) => {
+      const codePoint = Number.parseInt(decimal, 10);
+      return Number.isFinite(codePoint) && codePoint >= 0 && codePoint <= 0x10ffff
+        ? String.fromCodePoint(codePoint)
+        : '';
+    });
+}
+
+function groupMemberExists(result, uid) {
+  const infos = result?.infos;
+  if (infos instanceof Map) {
+    return infos.has(uid);
+  }
+  return Boolean(
+    infos &&
+    typeof infos === 'object' &&
+    Object.prototype.hasOwnProperty.call(infos, uid),
+  );
+}
+
 async function sendMessage(params) {
   if (!state.msgService || !state.session || !state.self.uin) {
     throw new Error('QQNT message service is not ready');
@@ -637,7 +1344,7 @@ async function sendMessage(params) {
     if (fileComponents.length !== 1 || components.length !== 1 || params.quote || params.reply_to) {
       throw new Error('native file delivery cannot be mixed with text or reply components');
     }
-    return sendOnlineFile(peer, fileComponents[0]);
+    return sendPrivateFile(peer, fileComponents[0]);
   }
 
   const elements = [];
@@ -666,10 +1373,14 @@ async function sendMessage(params) {
       elements.push(await buildAtElement(component, peer));
       continue;
     }
+    if (component?.type === 'image') {
+      elements.push(await buildImageElement(component));
+      continue;
+    }
     throw new Error(`native v1 cannot send component ${JSON.stringify(component?.type)}`);
   }
   if (elements.length === 0 || (elements.length === 1 && elements[0].elementType === ELEMENT_REPLY)) {
-    throw new Error('send_message contains no text');
+    throw new Error('send_message contains no sendable content');
   }
 
   const result = await state.msgService.sendMsg('0', peer, elements, new Map());
@@ -681,6 +1392,179 @@ async function sendMessage(params) {
     result: code === undefined ? 0 : code,
     message_id: stringValue(result?.msgId || result?.messageId),
   };
+}
+
+async function buildImageElement(component) {
+  const source = resolveAllowedSendImage(stringValue(component?.data?.file));
+  const data = fs.readFileSync(source);
+  const image = inspectSendImage(data);
+  const md5 = crypto.createHash('md5').update(data).digest('hex');
+  const fileName = path.basename(source);
+  if (typeof state.msgService?.getRichMediaFilePathForGuild !== 'function') {
+    throw new Error('QQNT message service cannot prepare an image upload');
+  }
+  const mediaPath = stringValue(state.msgService.getRichMediaFilePathForGuild({
+    md5HexStr: md5,
+    fileName,
+    elementType: ELEMENT_PIC,
+    elementSubType: 0,
+    thumbSize: 0,
+    needCreate: true,
+    downloadType: 1,
+    file_uuid: '',
+  }));
+  if (!mediaPath || !path.isAbsolute(mediaPath)) {
+    throw new Error('QQNT returned an invalid image cache path');
+  }
+  fs.mkdirSync(path.dirname(mediaPath), { recursive: true });
+  if (path.resolve(mediaPath) !== path.resolve(source)) {
+    fs.copyFileSync(source, mediaPath);
+  }
+  return {
+    elementType: ELEMENT_PIC,
+    elementId: '',
+    picElement: {
+      md5HexStr: md5,
+      filePath: mediaPath,
+      fileSize: String(data.length),
+      picWidth: image.width,
+      picHeight: image.height,
+      fileName,
+      sourcePath: mediaPath,
+      original: true,
+      picType: image.picType,
+      picSubType: 0,
+      fileUuid: '',
+      fileSubId: '',
+      thumbFileSize: 0,
+      summary: stringValue(component?.data?.summary),
+      thumbPath: new Map(),
+    },
+  };
+}
+
+function resolveAllowedSendImage(value) {
+  if (!value || !path.isAbsolute(value)) {
+    throw new Error('native image path must be absolute');
+  }
+  const roots = imageSendRoots();
+  if (roots.length === 0) {
+    throw new Error('native image sending is not enabled');
+  }
+  let resolved;
+  try {
+    resolved = fs.realpathSync(value);
+  } catch {
+    throw new Error('native image file does not exist');
+  }
+  const allowed = roots.some((root) => {
+    let resolvedRoot;
+    try {
+      resolvedRoot = fs.realpathSync(root);
+    } catch {
+      return false;
+    }
+    const relative = path.relative(resolvedRoot, resolved);
+    return relative !== '..' &&
+      !relative.startsWith(`..${path.sep}`) &&
+      !path.isAbsolute(relative);
+  });
+  if (!allowed) {
+    throw new Error('native image path is outside the allowed roots');
+  }
+  const info = fs.statSync(resolved);
+  const maximum = imageSendMaxBytes();
+  if (!info.isFile() || info.size <= 0 || info.size > maximum) {
+    throw new Error(`native image must be a regular file up to ${maximum} bytes`);
+  }
+  return resolved;
+}
+
+function inspectSendImage(data) {
+  if (!Buffer.isBuffer(data) || data.length < 12) {
+    throw new Error('native image is empty or truncated');
+  }
+  if (data.subarray(0, 8).equals(Buffer.from([
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a,
+  ]))) {
+    if (data.length < 24) {
+      throw new Error('native PNG is truncated');
+    }
+    return validateImageDimensions(
+      data.readUInt32BE(16),
+      data.readUInt32BE(20),
+      PIC_TYPE_PNG,
+    );
+  }
+  if (data.subarray(0, 6).toString('ascii') === 'GIF87a' ||
+    data.subarray(0, 6).toString('ascii') === 'GIF89a') {
+    return validateImageDimensions(
+      data.readUInt16LE(6),
+      data.readUInt16LE(8),
+      PIC_TYPE_GIF,
+    );
+  }
+  if (data[0] === 0xff && data[1] === 0xd8) {
+    let offset = 2;
+    while (offset + 9 < data.length) {
+      if (data[offset] !== 0xff) {
+        offset += 1;
+        continue;
+      }
+      const marker = data[offset + 1];
+      if (marker === 0xd8 || marker === 0x01) {
+        offset += 2;
+        continue;
+      }
+      if (marker === 0xd9 || marker === 0xda) {
+        break;
+      }
+      const length = data.readUInt16BE(offset + 2);
+      if (length < 2 || offset + 2 + length > data.length) {
+        break;
+      }
+      if ((marker >= 0xc0 && marker <= 0xc3) ||
+        (marker >= 0xc5 && marker <= 0xc7) ||
+        (marker >= 0xc9 && marker <= 0xcb) ||
+        (marker >= 0xcd && marker <= 0xcf)) {
+        return validateImageDimensions(
+          data.readUInt16BE(offset + 7),
+          data.readUInt16BE(offset + 5),
+          PIC_TYPE_JPEG,
+        );
+      }
+      offset += 2 + length;
+    }
+    throw new Error('native JPEG dimensions cannot be read');
+  }
+  throw new Error('native image type is not JPEG, PNG, or GIF');
+}
+
+function validateImageDimensions(width, height, picType) {
+  if (!Number.isInteger(width) || !Number.isInteger(height) ||
+    width < 1 || height < 1 || width > 4096 || height > 4096) {
+    throw new Error('native image dimensions are invalid');
+  }
+  return { width, height, picType };
+}
+
+function imageSendRoots() {
+  return stringValue(process.env.CINLAN_QQNT_SEND_IMAGE_ROOTS)
+    .split(';')
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function imageSendMaxBytes() {
+  const raw = stringValue(process.env.CINLAN_QQNT_SEND_IMAGE_MAX_BYTES);
+  if (!raw) {
+    return DEFAULT_SEND_IMAGE_MAX_BYTES;
+  }
+  const parsed = Number(raw);
+  if (!Number.isSafeInteger(parsed) || parsed < 1) {
+    throw new Error('CINLAN_QQNT_SEND_IMAGE_MAX_BYTES must be a positive integer');
+  }
+  return parsed;
 }
 
 async function buildAtElement(component, peer) {
@@ -723,7 +1607,7 @@ async function buildAtElement(component, peer) {
   };
 }
 
-async function sendOnlineFile(peer, component) {
+async function sendPrivateFile(peer, component) {
   const filePath = stringValue(component?.data?.file);
   if (!filePath || !path.isAbsolute(filePath)) {
     throw new Error('native file component requires an absolute local path');
@@ -741,7 +1625,7 @@ async function sendOnlineFile(peer, component) {
     stringValue(component?.data?.name) || filePath,
   );
   const fileElement = {
-    elementType: ELEMENT_ONLINE_FILE,
+    elementType: ELEMENT_FILE,
     elementId: '',
     fileElement: {
       fileName: actualFileName,
@@ -749,56 +1633,125 @@ async function sendOnlineFile(peer, component) {
       fileSize: String(stat.size),
     },
   };
-  const startTime = Math.floor(Date.now() / 1000) - 2;
-  let sendError;
-  let lastPollError;
+  if (stat.size === 0) {
+    throw new Error('native file component cannot send an empty file');
+  }
+  if (typeof state.msgService.generateMsgUniqueId !== 'function') {
+    throw new Error('QQNT message service does not expose generateMsgUniqueId');
+  }
+  const msfService = state.session.getMSFService?.();
+  if (!msfService || typeof msfService.getServerTime !== 'function') {
+    throw new Error('QQNT session does not expose MSF server time');
+  }
+  const correlationID = stringValue(
+    await state.msgService.generateMsgUniqueId(
+      peer.chatType,
+      msfService.getServerTime(),
+    ),
+  );
+  if (!correlationID) {
+    throw new Error('QQNT did not generate a file message correlation ID');
+  }
+  const sendPeer = { ...peer, guildId: correlationID };
+  const confirmation = createSendConfirmation(correlationID);
   try {
-    const sendResult = state.msgService.sendMsg('0', peer, [fileElement], new Map());
-    Promise.resolve(sendResult).catch((error) => {
-      sendError = error;
+    const sendResult = state.msgService.sendMsg(
+      '0',
+      sendPeer,
+      [fileElement],
+      new Map(),
+    );
+    Promise.resolve(sendResult).then((result) => {
+      const code = result?.result;
+      if (code !== undefined && String(code) !== '0') {
+        confirmation.fail(
+          new Error(`QQNT sendMsg failed with result ${String(code)}`),
+        );
+      }
+    }, (error) => {
+      confirmation.fail(error);
     });
   } catch (error) {
+    confirmation.cancel();
     throw new Error(`QQNT file send failed: ${error.message}`);
   }
 
-  for (let attempt = 0; attempt < 10; attempt += 1) {
-    await sleep(1000);
-    if (sendError) {
-      throw new Error(`QQNT file send failed: ${sendError.message || String(sendError)}`);
-    }
-    try {
-      const response = await state.msgService.getOnlineFileMsgs(peer);
-      const messages = Array.isArray(response?.msgList) ? response.msgList : [];
-      const found = messages.find((current) => {
-        if (numberValue(current?.msgTime) < startTime) {
-          return false;
-        }
-        return (Array.isArray(current?.elements) ? current.elements : []).some((element) => {
-          if (numberValue(element?.elementType) !== ELEMENT_ONLINE_FILE || !element.fileElement) {
-            return false;
-          }
-          return stringValue(element.fileElement.fileName) === actualFileName &&
-            normalizePath(element.fileElement.filePath) === normalizePath(filePath);
-        });
-      });
-      if (found) {
-        return {
-          result: 0,
-          message_id: stringValue(found.msgId || found.messageId),
-        };
-      }
-    } catch (error) {
-      lastPollError = error;
-    }
+  let sent;
+  try {
+    sent = await confirmation.promise;
+  } catch (error) {
+    throw new Error(`QQNT file send failed: ${error.message || String(error)}`);
   }
-  const detail = lastPollError
-    ? `: ${lastPollError.message || String(lastPollError)}`
-    : '';
-  throw new Error(`QQNT file send timed out while waiting for the online-file message${detail}`);
+  return {
+    result: 0,
+    message_id: stringValue(sent.msgId || sent.messageId),
+  };
 }
 
-function normalizePath(value) {
-  return path.normalize(String(value)).toLowerCase();
+function createSendConfirmation(correlationID) {
+  let resolvePromise;
+  let rejectPromise;
+  const promise = new Promise((resolve, reject) => {
+    resolvePromise = resolve;
+    rejectPromise = reject;
+  });
+  const pending = {
+    timer: setTimeout(() => {
+      if (state.pendingSends.get(correlationID) !== pending) {
+        return;
+      }
+      state.pendingSends.delete(correlationID);
+      rejectPromise(new Error('timed out waiting for QQNT send confirmation'));
+    }, FILE_SEND_CONFIRM_TIMEOUT_MS),
+    resolve(message) {
+      if (state.pendingSends.get(correlationID) !== pending) {
+        return;
+      }
+      state.pendingSends.delete(correlationID);
+      clearTimeout(pending.timer);
+      resolvePromise(message);
+    },
+    reject(error) {
+      if (state.pendingSends.get(correlationID) !== pending) {
+        return;
+      }
+      state.pendingSends.delete(correlationID);
+      clearTimeout(pending.timer);
+      rejectPromise(error);
+    },
+  };
+  state.pendingSends.set(correlationID, pending);
+  return {
+    promise,
+    fail(error) {
+      pending.reject(error instanceof Error ? error : new Error(String(error)));
+    },
+    cancel() {
+      if (state.pendingSends.get(correlationID) === pending) {
+        state.pendingSends.delete(correlationID);
+        clearTimeout(pending.timer);
+      }
+    },
+  };
+}
+
+function observeSendUpdates(messages) {
+  if (!Array.isArray(messages)) {
+    return;
+  }
+  for (const message of messages) {
+    const correlationID = stringValue(message?.guildId);
+    const pending = state.pendingSends.get(correlationID);
+    if (!pending) {
+      continue;
+    }
+    const status = numberValue(message?.sendStatus);
+    if (status === SEND_STATUS_SUCCESS) {
+      pending.resolve(message);
+    } else if (status === SEND_STATUS_FAILED) {
+      pending.reject(new Error('QQNT reported a failed file message'));
+    }
+  }
 }
 
 function sleep(milliseconds) {
@@ -845,19 +1798,36 @@ async function resolvePrivateUID(uin) {
   return String(resolved);
 }
 
-function publishStatus(forcedState) {
-  sendEnvelope({
+function publishStatus(forcedState, socket) {
+  const target = socket || state.socket;
+  const payload = {
+    state: forcedState || runtimeState(),
+    self_id: state.self.uin,
+    self_uid: state.self.uid,
+    nickname: state.self.nick,
+    wrapper_loaded: Boolean(state.wrapper),
+    session_attached: Boolean(state.msgService),
+    avsdk_available: Boolean(state.avService),
+    avsdk_listener_attached: state.avListenerID !== null,
+    avsdk_methods: [...state.avMethods],
+    last_error: latestRuntimeError(),
+  };
+  const fingerprint = JSON.stringify(payload);
+  if (
+    state.statusSocket === target &&
+    state.statusFingerprint === fingerprint
+  ) {
+    return false;
+  }
+  const sent = sendEnvelope({
     type: 'runtime_status',
-    payload: {
-      state: forcedState || runtimeState(),
-      self_id: state.self.uin,
-      self_uid: state.self.uid,
-      nickname: state.self.nick,
-      wrapper_loaded: Boolean(state.wrapper),
-      session_attached: Boolean(state.msgService),
-      last_error: latestRuntimeError(),
-    },
-  });
+    payload,
+  }, target);
+  if (sent) {
+    state.statusSocket = target;
+    state.statusFingerprint = fingerprint;
+  }
+  return sent;
 }
 
 function runtimeState() {
@@ -878,13 +1848,15 @@ function runtimeStatus() {
     nickname: state.self.nick,
     wrapper_loaded: Boolean(state.wrapper),
     session_attached: Boolean(state.msgService),
+    avsdk_available: Boolean(state.avService),
+    avsdk_listener_attached: state.avListenerID !== null,
+    avsdk_methods: [...state.avMethods],
     last_error: latestRuntimeError(),
   };
 }
 
-function sendEnvelope(envelope) {
-  const socket = state.socket;
-  if (!socket || socket.destroyed || !socket.writable) {
+function sendEnvelope(envelope, socket = state.socket) {
+  if (!socket || socket.connecting || socket.destroyed || !socket.writable) {
     return false;
   }
   const frame = JSON.stringify(
@@ -1002,10 +1974,29 @@ if (process.env.CINLAN_QQNT_TEST_EXPORTS === '1') {
   module.exports.__test = {
     state,
     buildAtElement,
+    buildImageElement,
     convertElements,
+    extractMultiForwardText,
+    attachAVListener,
+    attachLoginListener,
+    attachSession,
+    discoverSelfFromLoginList,
+    inspectAVSDK,
+    handleNativeMessage,
+    publishStatus,
     quickLogin,
+    recordAVEvent,
     resolveSelfUID,
-    sendOnlineFile,
+    sendEnvelope,
+    getGroupMemberInfo,
+    observeSendUpdates,
+    observeRichMediaDownload,
+    prepareInboundImages,
+    sendPrivateFile,
+    inspectSendImage,
+    resolveAllowedSendImage,
+    summarizeAVArgument,
+    transcribePttMessage,
     updateSelf,
   };
 }

@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
@@ -25,7 +26,10 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
-const workerQueueSize = 64
+const (
+	workerQueueSize      = 64
+	maintenanceQueueSize = 64
+)
 
 type Sender interface {
 	Send(context.Context, platform.Outbound) error
@@ -54,26 +58,34 @@ type counters struct {
 }
 
 type Service struct {
-	cfg       config.Config
-	agent     agent.Client
-	sender    Sender
-	sessions  *session.Store
-	logger    *slog.Logger
-	stats     counters
-	now       func() time.Time
-	providers *provider.Registry
-	plugins   *plugin.Registry
-	commands  *command.Registry
-	tools     *tool.Registry
-	personas  *persona.Registry
-	bindings  *binding.Registry
+	cfg          config.Config
+	agent        agent.Client
+	sender       Sender
+	sessions     *session.Store
+	logger       *slog.Logger
+	stats        counters
+	now          func() time.Time
+	providers    *provider.Registry
+	plugins      *plugin.Registry
+	messageGuard plugin.BeforeHook
+	commands     *command.Registry
+	tools        *tool.Registry
+	personas     *persona.Registry
+	bindings     *binding.Registry
 
 	stateMu       sync.Mutex
 	lastAccepted  map[string]time.Time
+	requestTimes  map[string][]time.Time
 	seenMessages  map[string]time.Time
 	dedupeCounter uint64
+	rateCounter   uint64
 
 	flow *pipeline.Pipeline
+
+	maintenance        chan flowState
+	maintenanceRunning atomic.Bool
+	maintenanceMu      sync.Mutex
+	maintenancePending map[string]struct{}
 }
 
 func New(
@@ -124,19 +136,22 @@ func NewWithRuntime(
 		sessions = session.New(maxHistory, ttl)
 	}
 	service := &Service{
-		cfg:          cfg,
-		agent:        agentClient,
-		sender:       sender,
-		sessions:     sessions,
-		logger:       logger,
-		now:          time.Now,
-		lastAccepted: make(map[string]time.Time),
-		seenMessages: make(map[string]time.Time),
-		providers:    providers,
-		plugins:      plugins,
-		commands:     command.NewRegistry(),
-		tools:        tool.NewRegistry(),
-		personas:     persona.NewRegistry(),
+		cfg:                cfg,
+		agent:              agentClient,
+		sender:             sender,
+		sessions:           sessions,
+		logger:             logger,
+		now:                time.Now,
+		lastAccepted:       make(map[string]time.Time),
+		requestTimes:       make(map[string][]time.Time),
+		seenMessages:       make(map[string]time.Time),
+		providers:          providers,
+		plugins:            plugins,
+		commands:           command.NewRegistry(),
+		tools:              tool.NewRegistry(),
+		personas:           persona.NewRegistry(),
+		maintenance:        make(chan flowState, maintenanceQueueSize),
+		maintenancePending: make(map[string]struct{}),
 	}
 	if strings.TrimSpace(cfg.AgentSystemPrompt) != "" {
 		_ = service.personas.Register(persona.Profile{
@@ -156,6 +171,10 @@ func (s *Service) ProviderRegistry() *provider.Registry {
 
 func (s *Service) PluginRegistry() *plugin.Registry {
 	return s.plugins
+}
+
+func (s *Service) SetMessageGuard(guard plugin.BeforeHook) {
+	s.messageGuard = guard
 }
 
 func (s *Service) CommandRegistry() *command.Registry {
@@ -179,6 +198,8 @@ func (s *Service) ChatBindings() *binding.Registry {
 }
 
 func (s *Service) Run(ctx context.Context, events <-chan onebot.Event) {
+	stopMaintenance := s.startMaintenance(ctx)
+	defer stopMaintenance()
 	workerCount := s.cfg.MaxConcurrency
 	if workerCount <= 0 {
 		workerCount = 1
@@ -224,6 +245,8 @@ func (s *Service) Run(ctx context.Context, events <-chan onebot.Event) {
 // RunPlatform is the transport-neutral event entry point. Run remains
 // available for callers that consume the legacy OneBot event channel.
 func (s *Service) RunPlatform(ctx context.Context, events <-chan platform.Event) {
+	stopMaintenance := s.startMaintenance(ctx)
+	defer stopMaintenance()
 	workerCount := s.cfg.MaxConcurrency
 	if workerCount <= 0 {
 		workerCount = 1
@@ -235,9 +258,7 @@ func (s *Service) RunPlatform(ctx context.Context, events <-chan platform.Event)
 		workersWG.Add(1)
 		go func(queue <-chan platform.Event) {
 			defer workersWG.Done()
-			for event := range queue {
-				s.handlePlatformEvent(ctx, event)
-			}
+			s.runPlatformWorker(ctx, queue)
 		}(workers[i])
 	}
 
@@ -403,17 +424,37 @@ func (s *Service) handleCommand(
 func (s *Service) sendReply(
 	ctx context.Context,
 	selfID, chatType, chatID, userID, senderName, messageID, text string,
-) {
+) bool {
+	return s.sendTextParts(
+		ctx,
+		selfID,
+		chatType,
+		chatID,
+		userID,
+		senderName,
+		messageID,
+		splitReply(text, s.cfg.MaxReplyRunes, s.cfg.MaxReplyChunks),
+	)
+}
+
+func (s *Service) sendTextParts(
+	ctx context.Context,
+	selfID, chatType, chatID, userID, senderName, messageID string,
+	parts []string,
+) bool {
 	if s.sender == nil {
 		s.stats.sendErrors.Add(1)
 		s.logger.Error("failed to send reply", "reason", "sender_not_configured")
-		return
+		return false
 	}
-	chunks := splitReply(text, s.cfg.MaxReplyRunes, s.cfg.MaxReplyChunks)
-	for index, chunk := range chunks {
+	for index, part := range parts {
+		if index > 0 && !waitForReplyPart(ctx, s.replyPartDelay(parts[index-1])) {
+			return false
+		}
 		quote := s.cfg.QuoteReply && index == 0
-		chain := message.Chain{message.Text(chunk)}
-		if s.cfg.GroupAtSender && chatType == platform.ChatGroup && index == 0 {
+		chain := message.Chain{message.Text(part)}
+		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
+			index == 0 && !quote {
 			chain = append(message.Chain{message.AtNamed(userID, senderName)}, chain...)
 		}
 		err := s.sender.Send(ctx, platform.Outbound{
@@ -431,23 +472,24 @@ func (s *Service) sendReply(
 				"chat_type", chatType,
 				"chat_id", chatID,
 				"message_id", messageID,
-				"chunk", index+1,
+				"part", index+1,
 				"error", err,
 			)
-			return
+			return false
 		}
 		s.stats.replied.Add(1)
 	}
+	return true
 }
 
 func (s *Service) sendChain(
 	ctx context.Context,
 	selfID, chatType, chatID, userID, senderName, messageID string,
 	chain message.Chain,
-) {
+) bool {
 	if len(chain) == 1 && chain[0].Type == message.TypeText {
 		text, _ := chain.PlainText("")
-		s.sendReply(
+		return s.sendReply(
 			ctx,
 			selfID,
 			chatType,
@@ -457,15 +499,14 @@ func (s *Service) sendChain(
 			messageID,
 			text,
 		)
-		return
 	}
 	if s.sender == nil {
 		s.stats.sendErrors.Add(1)
 		s.logger.Error("failed to send reply", "reason", "sender_not_configured")
-		return
+		return false
 	}
 	outbound := chain.Clone()
-	if s.cfg.GroupAtSender && chatType == platform.ChatGroup {
+	if s.cfg.GroupAtSender && chatType == platform.ChatGroup && !s.cfg.QuoteReply {
 		outbound = append(message.Chain{message.AtNamed(userID, senderName)}, outbound...)
 	}
 	err := s.sender.Send(ctx, platform.Outbound{
@@ -485,9 +526,32 @@ func (s *Service) sendChain(
 			"message_id", messageID,
 			"error", err,
 		)
-		return
+		return false
 	}
 	s.stats.replied.Add(1)
+	return true
+}
+
+func (s *Service) replyPartDelay(previous string) time.Duration {
+	if s.cfg.ReplyPartDelay <= 0 {
+		return 0
+	}
+	extraRunes := min(utf8.RuneCountInString(previous), 80)
+	return s.cfg.ReplyPartDelay + time.Duration(extraRunes)*8*time.Millisecond
+}
+
+func waitForReplyPart(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func (s *Service) duplicate(key string) bool {
@@ -511,17 +575,66 @@ func (s *Service) duplicate(key string) bool {
 }
 
 func (s *Service) allowRequest(key string) bool {
-	if s.cfg.UserCooldown == 0 {
+	if s.cfg.UserCooldown == 0 && s.cfg.UserRateLimit <= 0 {
 		return true
 	}
 
 	s.stateMu.Lock()
 	defer s.stateMu.Unlock()
 	now := s.now()
-	if last, ok := s.lastAccepted[key]; ok && now.Sub(last) < s.cfg.UserCooldown {
+	if s.cfg.UserCooldown > 0 {
+		if last, ok := s.lastAccepted[key]; ok &&
+			now.Sub(last) < s.cfg.UserCooldown {
+			return false
+		}
+	}
+	requests := s.requestTimes[key]
+	if s.cfg.UserRateWindow > 0 {
+		first := 0
+		for first < len(requests) &&
+			now.Sub(requests[first]) >= s.cfg.UserRateWindow {
+			first++
+		}
+		if first > 0 {
+			requests = append([]time.Time(nil), requests[first:]...)
+		}
+	}
+	if s.cfg.UserRateLimit > 0 &&
+		len(requests) >= s.cfg.UserRateLimit {
 		return false
 	}
-	s.lastAccepted[key] = now
+	if s.cfg.UserCooldown > 0 {
+		s.lastAccepted[key] = now
+	}
+	if s.cfg.UserRateLimit > 0 {
+		s.requestTimes[key] = append(requests, now)
+	}
+	s.rateCounter++
+	if s.rateCounter%128 == 0 {
+		for currentKey, currentRequests := range s.requestTimes {
+			if s.cfg.UserRateWindow <= 0 {
+				continue
+			}
+			first := 0
+			for first < len(currentRequests) &&
+				now.Sub(currentRequests[first]) >= s.cfg.UserRateWindow {
+				first++
+			}
+			if first >= len(currentRequests) {
+				delete(s.requestTimes, currentKey)
+			} else if first > 0 {
+				s.requestTimes[currentKey] =
+					append([]time.Time(nil), currentRequests[first:]...)
+			}
+		}
+		for currentKey, last := range s.lastAccepted {
+			if s.cfg.UserCooldown > 0 &&
+				now.Sub(last) >= s.cfg.UserCooldown &&
+				len(s.requestTimes[currentKey]) == 0 {
+				delete(s.lastAccepted, currentKey)
+			}
+		}
+	}
 	return true
 }
 

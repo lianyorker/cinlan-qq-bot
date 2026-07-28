@@ -193,6 +193,8 @@ func (m *Manager) buildDefinitions(server *managedServer, remoteTools []Tool) ([
 			Parameters:  remote.InputSchema,
 			Permission:  server.config.Permission,
 			Timeout:     server.config.ToolTimeout,
+			Source:      tool.SourceMCP,
+			SourceName:  server.config.Name,
 			Handler: func(ctx context.Context, call tool.Call) (tool.Result, error) {
 				result, err := server.client.CallTool(ctx, remoteName, call.Arguments)
 				if err != nil {

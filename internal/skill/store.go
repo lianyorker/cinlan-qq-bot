@@ -123,6 +123,27 @@ func (s *Store) List() []Info {
 	return result
 }
 
+func (s *Store) ListSelected(names []string) []Info {
+	allowed := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name != "" {
+			allowed[name] = struct{}{}
+		}
+	}
+	if len(allowed) == 0 {
+		return nil
+	}
+	items := s.List()
+	result := make([]Info, 0, len(items))
+	for _, item := range items {
+		if _, ok := allowed[item.Name]; ok {
+			result = append(result, item)
+		}
+	}
+	return result
+}
+
 func (s *Store) Read(name string) (Info, string, bool) {
 	name = strings.TrimSpace(name)
 	s.mu.RLock()
@@ -137,7 +158,14 @@ func (s *Store) Read(name string) (Info, string, bool) {
 // Prompt returns only the inventory. Full instructions are deliberately
 // loaded through read_skill to keep every chat request bounded.
 func (s *Store) Prompt() string {
-	items := s.List()
+	return s.prompt(s.List())
+}
+
+func (s *Store) PromptSelected(names []string) string {
+	return s.prompt(s.ListSelected(names))
+}
+
+func (s *Store) prompt(items []Info) string {
 	if len(items) == 0 {
 		return ""
 	}
@@ -171,9 +199,10 @@ func (s *Store) RegisterTools(registry *tool.Registry) error {
 		Description: "List available local SKILL.md capability bundles.",
 		Permission:  tool.PermissionEveryone,
 		Timeout:     skillToolTimeout,
+		Source:      tool.SourceSkill,
 		Parameters:  map[string]any{"type": "object", "additionalProperties": false},
-		Handler: func(context.Context, tool.Call) (tool.Result, error) {
-			return tool.Result{Content: s.List()}, nil
+		Handler: func(_ context.Context, call tool.Call) (tool.Result, error) {
+			return tool.Result{Content: s.ListSelected(call.Actor.AllowedSkills)}, nil
 		},
 	}); err != nil {
 		return err
@@ -183,6 +212,7 @@ func (s *Store) RegisterTools(registry *tool.Registry) error {
 		Description: "Read one local SKILL.md capability bundle by its exact name.",
 		Permission:  tool.PermissionEveryone,
 		Timeout:     skillToolTimeout,
+		Source:      tool.SourceSkill,
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -197,6 +227,9 @@ func (s *Store) RegisterTools(registry *tool.Registry) error {
 			}
 			if err := decodeToolArguments(call.Arguments, &input); err != nil {
 				return tool.Result{}, err
+			}
+			if !containsName(call.Actor.AllowedSkills, input.Name) {
+				return tool.Result{}, tool.ErrPermissionDenied
 			}
 			info, content, ok := s.Read(input.Name)
 			if !ok {
@@ -226,7 +259,8 @@ func (p PromptPlugin) BeforeMessage(_ context.Context, event *plugin.MessageCont
 	if p.Store == nil {
 		return plugin.Decision{}, nil
 	}
-	prompt := p.Store.Prompt()
+	names, _ := event.Values["scope.skills"].([]string)
+	prompt := p.Store.PromptSelected(names)
 	if prompt == "" {
 		return plugin.Decision{}, nil
 	}
@@ -235,6 +269,16 @@ func (p PromptPlugin) BeforeMessage(_ context.Context, event *plugin.MessageCont
 	}
 	event.Values["agent.system_prompt_append"] = prompt
 	return plugin.Decision{}, nil
+}
+
+func containsName(values []string, target string) bool {
+	target = strings.TrimSpace(target)
+	for _, value := range values {
+		if strings.TrimSpace(value) == target {
+			return true
+		}
+	}
+	return false
 }
 
 func readSkillDirectory(root, directoryName string) (document, bool, error) {
