@@ -281,7 +281,7 @@ func (c *Catalog) deliver(
 				SelfID:   call.Actor.SelfID,
 				Chain:    message.Chain{message.File(entry.Path, entry.DisplayName)},
 			}); err == nil {
-				messageText := fmt.Sprintf("已通过私聊发送文件“%s”，请查收。", entry.DisplayName)
+				messageText := "已通过私聊发送文件，请查收。"
 				return tool.Result{Content: DeliveryResult{
 					Status:      "sent_private",
 					FileID:      entry.ID,
@@ -312,7 +312,7 @@ func (c *Catalog) deliver(
 		}
 		return tool.Result{}, fmt.Errorf("send file %q: %w", entry.ID, err)
 	}
-	messageText := fmt.Sprintf("已发送文件“%s”，请查收。", entry.DisplayName)
+	messageText := "文件已发送，请查收。"
 	return tool.Result{Content: DeliveryResult{
 		Status:      "sent",
 		FileID:      entry.ID,

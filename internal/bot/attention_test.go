@@ -266,6 +266,27 @@ func TestSmartAttentionDoesNotInventAppearanceFacts(t *testing.T) {
 	}
 }
 
+func TestAppearanceRuleAppliesWhenSmartAttentionDisabled(t *testing.T) {
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
+	sender := &fakeSender{}
+	service := attentionService(t, agentClient, sender, false)
+
+	service.handlePlatformEvent(
+		context.Background(),
+		platformEvent("appearance-without-attention", "群主帅不帅", true),
+	)
+
+	if len(agentClient.requests) != 0 ||
+		len(sender.messages) != 1 ||
+		sender.messages[0].text != "我没看到相关照片或资料，暂时没法判断。" {
+		t.Fatalf(
+			"appearance requests=%#v messages=%#v",
+			agentClient.requests,
+			sender.messages,
+		)
+	}
+}
+
 func TestMentionedImageReachesMultimodalAgentRequest(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "图里是报错信息"}}
 	sender := &fakeSender{}
@@ -380,6 +401,15 @@ func smartAttentionService(
 	agentClient *fakeAgent,
 	sender *fakeSender,
 ) *Service {
+	return attentionService(t, agentClient, sender, true)
+}
+
+func attentionService(
+	t *testing.T,
+	agentClient *fakeAgent,
+	sender *fakeSender,
+	smartAttention bool,
+) *Service {
 	t.Helper()
 	cfg := testBotConfig(t)
 	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
@@ -389,7 +419,6 @@ func smartAttentionService(
 	}); err != nil {
 		t.Fatalf("Register persona: %v", err)
 	}
-	enabled := true
 	bindings, err := binding.NewRegistry([]binding.Rule{{
 		Name:           "smart-group",
 		Platform:       "*",
@@ -397,7 +426,7 @@ func smartAttentionService(
 		ChatType:       platform.ChatGroup,
 		ChatID:         "30003",
 		Persona:        "support",
-		SmartAttention: &enabled,
+		SmartAttention: &smartAttention,
 	}})
 	if err != nil {
 		t.Fatalf("NewRegistry: %v", err)

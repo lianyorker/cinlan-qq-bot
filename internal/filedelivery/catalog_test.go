@@ -70,7 +70,7 @@ func TestDeliverFileRoutesGroupRequestToPrivateAndSendsConfiguredFile(t *testing
 	groupContent, ok := groupResult.Content.(DeliveryResult)
 	if !ok ||
 		groupContent.Status != "sent_private" ||
-		groupContent.Message == "" ||
+		groupContent.Message != "已通过私聊发送文件，请查收。" ||
 		groupResult.Response == nil ||
 		groupResult.Response.Reply != groupContent.Message ||
 		len(sender.outbound) != 1 {
@@ -99,7 +99,9 @@ func TestDeliverFileRoutesGroupRequestToPrivateAndSendsConfiguredFile(t *testing
 	privateContent, ok := privateResult.Content.(DeliveryResult)
 	if !ok ||
 		privateContent.Status != "sent" ||
+		privateContent.Message != "文件已发送，请查收。" ||
 		privateResult.Response == nil ||
+		privateResult.Response.Reply != privateContent.Message ||
 		len(sender.outbound) != 2 {
 		t.Fatalf("private result = %#v, outbound = %#v", privateResult, sender.outbound)
 	}

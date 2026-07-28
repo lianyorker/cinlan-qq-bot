@@ -65,16 +65,11 @@ type attentionDecision struct {
 func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) error {
 	state := stateFrom(event)
 	if state.ignored || state.securityDenied || state.sessionID == "" ||
-		state.chatType != platform.ChatGroup || !state.smartAttention {
+		state.chatType != platform.ChatGroup {
 		return nil
 	}
 
 	direct := state.eventMentioned
-	if !direct &&
-		(mentionsAnotherUser(state.event.Chain, state.selfID) ||
-			containsTextualMention(state.text)) {
-		return ignoreForAttention(event, state, "addressed_to_another_user")
-	}
 	if isOutOfScopeCreationTask(state.text) {
 		return ignoreForAttention(event, state, "out_of_scope_creation")
 	}
@@ -86,6 +81,14 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		state.reply = "我没看到相关照片或资料，暂时没法判断。"
 		s.stats.processed.Add(1)
 		return nil
+	}
+	if !state.smartAttention {
+		return nil
+	}
+	if !direct &&
+		(mentionsAnotherUser(state.event.Chain, state.selfID) ||
+			containsTextualMention(state.text)) {
+		return ignoreForAttention(event, state, "addressed_to_another_user")
 	}
 	if direct && s.isTechnicalSupportRequest(state) {
 		return nil
