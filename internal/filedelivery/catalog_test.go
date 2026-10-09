@@ -13,14 +13,12 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	"github.com/lianyorker/cinlan-qq-bot/internal/security"
-	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
 type recordingSender struct {
 	outbound []platform.Outbound
 	err      error
-	send     func(platform.Outbound) error
 	calls    []recordedAction
 	call     func(context.Context, string, map[string]any) (any, error)
 }
@@ -33,11 +31,6 @@ type recordedAction struct {
 func (s *recordingSender) Send(_ context.Context, outbound platform.Outbound) error {
 	if s.err != nil {
 		return s.err
-	}
-	if s.send != nil {
-		if err := s.send(outbound); err != nil {
-			return err
-		}
 	}
 	s.outbound = append(s.outbound, outbound)
 	return nil
@@ -58,7 +51,7 @@ func (s *recordingSender) Call(
 func TestDeliverFileRoutesGroupRequestToPrivateAndSendsConfiguredFile(t *testing.T) {
 	catalog := loadTestCatalog(t, []byte("select 1;"))
 	sender := &recordingSender{}
-	definition := catalog.Tool(sender, time.Second, nil)
+	definition := catalog.Tool(sender, time.Second)
 
 	groupResult, err := definition.Handler(context.Background(), tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"SQL"}`),
@@ -134,129 +127,10 @@ func TestDeliverFileRoutesGroupRequestToPrivateAndSendsConfiguredFile(t *testing
 	}
 }
 
-func TestDeliverFileSendsFirstMessageOncePerUserBeforeFile(t *testing.T) {
-	catalog := loadTestCatalogWithFirstMessage(t, "首次领取说明")
-	sender := &recordingSender{}
-	markers := session.New(10, time.Hour)
-	definition := catalog.Tool(sender, time.Second, markers)
-	call := tool.Call{
-		Arguments: json.RawMessage(`{"file_id":"sql"}`),
-		Actor: tool.Actor{
-			Platform:  platform.PlatformQQNative,
-			ChatType:  platform.ChatPrivate,
-			ChatID:    "10000002",
-			UserID:    "10000002",
-			SelfID:    "10000001",
-			MessageID: "first",
-		},
-	}
-
-	if _, err := definition.Handler(context.Background(), call); err != nil {
-		t.Fatalf("first delivery error = %v", err)
-	}
-	if len(sender.outbound) != 2 ||
-		sender.outbound[0].Chain[0].Type != message.TypeText ||
-		sender.outbound[0].Chain[0].Data["text"] != "首次领取说明" ||
-		sender.outbound[1].Chain[0].Type != message.TypeFile {
-		t.Fatalf("first delivery outbounds = %#v", sender.outbound)
-	}
-
-	call.Actor.MessageID = "second"
-	if _, err := definition.Handler(context.Background(), call); err != nil {
-		t.Fatalf("second delivery error = %v", err)
-	}
-	if len(sender.outbound) != 3 ||
-		sender.outbound[2].Chain[0].Type != message.TypeFile {
-		t.Fatalf("repeat delivery outbounds = %#v", sender.outbound)
-	}
-
-	call.Actor.ChatID = "10000003"
-	call.Actor.UserID = "10000003"
-	call.Actor.MessageID = "other-user"
-	if _, err := definition.Handler(context.Background(), call); err != nil {
-		t.Fatalf("other user delivery error = %v", err)
-	}
-	if len(sender.outbound) != 5 ||
-		sender.outbound[3].Chain[0].Data["text"] != "首次领取说明" ||
-		sender.outbound[4].Chain[0].Type != message.TypeFile {
-		t.Fatalf("other user delivery outbounds = %#v", sender.outbound)
-	}
-}
-
-func TestDeliverFileSendsFirstMessageBeforePrivateFileFromGroup(t *testing.T) {
-	catalog := loadTestCatalogWithFirstMessage(t, "首次领取说明")
-	sender := &recordingSender{}
-	definition := catalog.Tool(sender, time.Second, session.New(10, time.Hour))
-	result, err := definition.Handler(context.Background(), tool.Call{
-		Arguments: json.RawMessage(`{"file_id":"sql"}`),
-		Actor: tool.Actor{
-			Platform:  platform.PlatformQQNative,
-			ChatType:  platform.ChatGroup,
-			ChatID:    "20000001",
-			UserID:    "10000002",
-			SelfID:    "10000001",
-			MessageID: "group-first",
-		},
-	})
-	if err != nil {
-		t.Fatalf("group first delivery error = %v", err)
-	}
-	content := result.Content.(DeliveryResult)
-	if content.Status != "sent_private" ||
-		len(sender.outbound) != 2 ||
-		sender.outbound[0].ChatType != platform.ChatPrivate ||
-		sender.outbound[0].ChatID != "10000002" ||
-		sender.outbound[0].Chain[0].Data["text"] != "首次领取说明" ||
-		sender.outbound[1].Chain[0].Type != message.TypeFile {
-		t.Fatalf("group first delivery = %#v, outbound = %#v", result, sender.outbound)
-	}
-}
-
-func TestDeliverFileRollsBackFirstMessageWhenFileSendFails(t *testing.T) {
-	catalog := loadTestCatalogWithFirstMessage(t, "首次领取说明")
-	sendCount := 0
-	sender := &recordingSender{
-		send: func(platform.Outbound) error {
-			sendCount++
-			if sendCount == 2 {
-				return errors.New("file send failed")
-			}
-			return nil
-		},
-	}
-	markers := session.New(10, time.Hour)
-	definition := catalog.Tool(sender, time.Second, markers)
-	call := tool.Call{
-		Arguments: json.RawMessage(`{"file_id":"sql"}`),
-		Actor: tool.Actor{
-			Platform:  platform.PlatformQQNative,
-			ChatType:  platform.ChatPrivate,
-			ChatID:    "10000002",
-			UserID:    "10000002",
-			SelfID:    "10000001",
-			MessageID: "failed",
-		},
-	}
-	if _, err := definition.Handler(context.Background(), call); err == nil {
-		t.Fatal("failed first delivery returned no error")
-	}
-
-	call.Actor.MessageID = "retry"
-	if _, err := definition.Handler(context.Background(), call); err != nil {
-		t.Fatalf("retry delivery error = %v", err)
-	}
-	if len(sender.outbound) != 3 ||
-		sender.outbound[0].Chain[0].Data["text"] != "首次领取说明" ||
-		sender.outbound[1].Chain[0].Data["text"] != "首次领取说明" ||
-		sender.outbound[2].Chain[0].Type != message.TypeFile {
-		t.Fatalf("retry delivery outbounds = %#v", sender.outbound)
-	}
-}
-
 func TestDeliverFileGuidesGroupWhenPrivateSendFails(t *testing.T) {
 	catalog := loadTestCatalog(t, []byte("select 1;"))
 	sender := &recordingSender{err: errors.New("not a friend")}
-	definition := catalog.Tool(sender, time.Second, nil)
+	definition := catalog.Tool(sender, time.Second)
 
 	result, err := definition.Handler(context.Background(), tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql"}`),
@@ -283,7 +157,7 @@ func TestDeliverFileGuidesGroupWhenPrivateSendFails(t *testing.T) {
 
 func TestDeliverFileGroupGuideWithoutUserIDCanRetry(t *testing.T) {
 	catalog := loadTestCatalog(t, []byte("select 1;"))
-	definition := catalog.Tool(&recordingSender{}, time.Second, nil)
+	definition := catalog.Tool(&recordingSender{}, time.Second)
 	call := tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql"}`),
 		Actor: tool.Actor{
@@ -309,7 +183,7 @@ func TestDeliverFileGroupGuideWithoutUserIDCanRetry(t *testing.T) {
 func TestDeliverFileRestrictsGroupRequestToConfiguredGroup(t *testing.T) {
 	catalog := loadTestCatalogWithGroups(t, []string{"20000001"})
 	sender := &recordingSender{}
-	definition := catalog.Tool(sender, time.Second, nil)
+	definition := catalog.Tool(sender, time.Second)
 
 	allowed := tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql"}`),
@@ -398,7 +272,7 @@ func TestDeliverFileChecksPrivateUserGroupMembership(t *testing.T) {
 					return current.result, current.callErr
 				},
 			}
-			definition := catalog.Tool(sender, time.Second, nil)
+			definition := catalog.Tool(sender, time.Second)
 			_, err := definition.Handler(context.Background(), tool.Call{
 				Arguments: json.RawMessage(`{"file_id":"sql"}`),
 				Actor: tool.Actor{
@@ -508,7 +382,7 @@ func TestLoadFileWithinRootRejectsExternalCatalogAndEntry(t *testing.T) {
 
 func TestToolSchemaEnumeratesConfiguredIDs(t *testing.T) {
 	catalog := loadTestCatalog(t, []byte("select 1;"))
-	definition := catalog.Tool(&recordingSender{}, time.Second, nil)
+	definition := catalog.Tool(&recordingSender{}, time.Second)
 	properties := definition.Parameters["properties"].(map[string]any)
 	fileID := properties["file_id"].(map[string]any)
 	enum := fileID["enum"].([]string)
@@ -522,7 +396,7 @@ func TestToolSchemaEnumeratesConfiguredIDs(t *testing.T) {
 
 func TestDeliverFileRejectsUnconfiguredPathArgument(t *testing.T) {
 	catalog := loadTestCatalog(t, []byte("select 1;"))
-	definition := catalog.Tool(&recordingSender{}, time.Second, nil)
+	definition := catalog.Tool(&recordingSender{}, time.Second)
 	_, err := definition.Handler(context.Background(), tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql","path":"C:\\secret.txt"}`),
 		Actor: tool.Actor{
@@ -575,42 +449,6 @@ func loadTestCatalogWithGroups(t *testing.T, groupIDs []string) *Catalog {
   }]
 }`)
 	if err := os.WriteFile(filepath.Join(dir, "files.json"), content, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	catalog, err := LoadFile(filepath.Join(dir, "files.json"), 1024)
-	if err != nil {
-		t.Fatalf("LoadFile() error = %v", err)
-	}
-	return catalog
-}
-
-func loadTestCatalogWithFirstMessage(t *testing.T, firstMessage string) *Catalog {
-	t.Helper()
-	dir := t.TempDir()
-	if err := os.WriteFile(
-		filepath.Join(dir, "schema.sql"),
-		[]byte("select 1;"),
-		0o600,
-	); err != nil {
-		t.Fatal(err)
-	}
-	encodedMessage, err := json.Marshal(firstMessage)
-	if err != nil {
-		t.Fatal(err)
-	}
-	content := []byte(`{
-  "version": 1,
-  "files": [{
-    "id": "sql",
-    "path": "schema.sql",
-    "first_delivery_message": ` + string(encodedMessage) + `
-  }]
-}`)
-	if err := os.WriteFile(
-		filepath.Join(dir, "files.json"),
-		content,
-		0o600,
-	); err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := LoadFile(filepath.Join(dir, "files.json"), 1024)

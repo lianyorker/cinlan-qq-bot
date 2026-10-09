@@ -55,3 +55,13 @@ func TestLoadFileSupportsMultipleChatAndUserSelectors(t *testing.T) {
 		t.Fatal("multi-selector binding did not match")
 	}
 }
+
+func TestExampleChatBindingsLoad(t *testing.T) {
+	registry, err := LoadFile(filepath.Join("..", "..", "examples", "chat-bindings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rules := registry.List(); len(rules) != 2 || rules[0].ReplyPolicy == nil || rules[1].ReplyPolicy == nil {
+		t.Fatalf("example bindings = %#v", rules)
+	}
+}

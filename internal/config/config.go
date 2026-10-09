@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -74,8 +75,6 @@ type Config struct {
 	HTTPListenAddr string
 	LogLevel       string
 	AdminAPIToken  string
-	AdminUsername  string
-	AdminPassword  string
 
 	QQPlatform string
 
@@ -103,6 +102,7 @@ type Config struct {
 	OneBotListenAddr   string
 	OneBotReversePath  string
 	OneBotAccountsFile string
+	OneBotAutoAccept   bool
 
 	GroupAllowlist   Allowlist
 	PrivateAllowlist Allowlist
@@ -175,6 +175,9 @@ type Config struct {
 	UserCooldown         time.Duration
 	UserRateLimit        int
 	UserRateWindow       time.Duration
+	AttentionTimeout     time.Duration
+	AttentionRateLimit   int
+	AttentionRateWindow  time.Duration
 	MediaToolCooldown    time.Duration
 	MediaToolLimit       int
 	MediaToolWindow      time.Duration
@@ -208,10 +211,8 @@ func Load() (Config, error) {
 		HTTPListenAddr: envOr("HTTP_LISTEN_ADDR", "127.0.0.1:18080"),
 		LogLevel:       strings.ToLower(envOr("LOG_LEVEL", "info")),
 		AdminAPIToken:  os.Getenv("ADMIN_API_TOKEN"),
-		AdminUsername:  envOr("ADMIN_USERNAME", "admin"),
-		AdminPassword:  envOr("ADMIN_PASSWORD", "admin123"),
 
-		QQPlatform:           normalizeQQPlatform(envOr("QQ_PLATFORM", QQPlatformNative)),
+		QQPlatform:           normalizeQQPlatform(envOr("QQ_PLATFORM", defaultQQPlatform())),
 		QQNTPath:             envOrAllowEmpty("QQNT_PATH", ""),
 		QQNTLoaderPath:       envOr("QQNT_LOADER_PATH", "bin/cinlan-qq-loader.exe"),
 		QQNTHookPath:         envOr("QQNT_HOOK_PATH", "bin/cinlan-qq-hook.dll"),
@@ -228,6 +229,7 @@ func Load() (Config, error) {
 		OneBotListenAddr:   envOr("ONEBOT_REVERSE_LISTEN_ADDR", "127.0.0.1:3002"),
 		OneBotReversePath:  envOr("ONEBOT_REVERSE_PATH", reversePathDefault),
 		OneBotAccountsFile: envOrAllowEmpty("ONEBOT_ACCOUNTS_FILE", ""),
+		OneBotAutoAccept:   parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
 		GroupAllowlist:     groupAllowlist,
 		PrivateAllowlist:   privateAllowlist,
 
@@ -401,6 +403,14 @@ func Load() (Config, error) {
 		false,
 		&errs,
 	)
+	cfg.AttentionTimeout = parseDuration("BOT_ATTENTION_TIMEOUT", 5*time.Second, true, &errs)
+	cfg.AttentionRateLimit = parseInt("BOT_ATTENTION_RATE_LIMIT", 20, 0, &errs)
+	cfg.AttentionRateWindow = parseDuration(
+		"BOT_ATTENTION_RATE_WINDOW",
+		time.Minute,
+		false,
+		&errs,
+	)
 	cfg.MediaToolCooldown = parseDuration(
 		"MEDIA_TOOL_USER_COOLDOWN",
 		30*time.Second,
@@ -433,12 +443,8 @@ func (c Config) Validate() error {
 
 	if strings.TrimSpace(c.HTTPListenAddr) == "" {
 		errs = append(errs, errors.New("HTTP_LISTEN_ADDR must not be empty"))
-	}
-	if strings.TrimSpace(c.AdminUsername) == "" {
-		errs = append(errs, errors.New("ADMIN_USERNAME must not be empty"))
-	}
-	if c.AdminPassword == "" {
-		errs = append(errs, errors.New("ADMIN_PASSWORD must not be empty"))
+	} else if err := validateListenAddress(c.HTTPListenAddr, "HTTP_LISTEN_ADDR"); err != nil {
+		errs = append(errs, err)
 	}
 	if !contains([]string{"debug", "info", "warn", "error"}, c.LogLevel) {
 		errs = append(errs, fmt.Errorf("LOG_LEVEL must be debug, info, warn, or error; got %q", c.LogLevel))
@@ -447,6 +453,12 @@ func (c Config) Validate() error {
 		errs = append(errs, fmt.Errorf(
 			"QQ_PLATFORM must be native or onebot; got %q",
 			c.QQPlatform,
+		))
+	}
+	if c.QQPlatform == QQPlatformNative && runtime.GOOS != "windows" {
+		errs = append(errs, fmt.Errorf(
+			"QQ_PLATFORM=native is supported only on Windows; use QQ_PLATFORM=onebot on %s",
+			runtime.GOOS,
 		))
 	}
 	if c.SessionStorePath != "" && strings.TrimSpace(c.SessionKey) == "" {
@@ -587,6 +599,14 @@ func (c Config) Validate() error {
 			"BOT_USER_RATE_WINDOW must be positive when BOT_USER_RATE_LIMIT is enabled",
 		))
 	}
+	if c.AttentionTimeout <= 0 {
+		errs = append(errs, errors.New("BOT_ATTENTION_TIMEOUT must be positive"))
+	}
+	if c.AttentionRateLimit > 0 && c.AttentionRateWindow <= 0 {
+		errs = append(errs, errors.New(
+			"BOT_ATTENTION_RATE_WINDOW must be positive when BOT_ATTENTION_RATE_LIMIT is enabled",
+		))
+	}
 	if c.MediaToolLimit > 0 && c.MediaToolWindow <= 0 {
 		errs = append(errs, errors.New(
 			"MEDIA_TOOL_WINDOW must be positive when MEDIA_TOOL_USER_LIMIT is enabled",
@@ -637,12 +657,40 @@ func defaultQQNTImageAllowedRoots() string {
 
 func parsePathList(value string) []string {
 	var paths []string
-	for _, current := range strings.Split(value, ";") {
-		if path := strings.TrimSpace(current); path != "" {
-			paths = append(paths, path)
+	// SplitList follows the host platform (':' on Unix, ';' on Windows).
+	// Accept semicolons as well so a copied cross-platform configuration does
+	// not silently turn multiple roots into one invalid path.
+	for _, group := range strings.Split(value, ";") {
+		for _, current := range filepath.SplitList(group) {
+			if path := strings.TrimSpace(current); path != "" {
+				paths = append(paths, path)
+			}
 		}
 	}
 	return paths
+}
+
+func defaultQQPlatform() string {
+	if runtime.GOOS == "windows" {
+		return QQPlatformNative
+	}
+	return QQPlatformOneBot
+}
+
+func validateListenAddress(value, key string) error {
+	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
+	if err != nil {
+		return fmt.Errorf("%s must be host:port: %w", key, err)
+	}
+	if strings.TrimSpace(port) == "" {
+		return fmt.Errorf("%s port must not be empty", key)
+	}
+	parsed, err := strconv.Atoi(port)
+	if err != nil || parsed < 0 || parsed > 65535 {
+		return fmt.Errorf("%s port must be between 0 and 65535", key)
+	}
+	_ = host
+	return nil
 }
 
 func parseList(value string) []string {

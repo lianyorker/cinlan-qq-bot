@@ -19,24 +19,25 @@ type rawFile struct {
 }
 
 type rawRule struct {
-	Name            string   `json:"name"`
-	Platform        string   `json:"platform"`
-	SelfID          string   `json:"self_id"`
-	ChatType        string   `json:"chat_type"`
-	ChatID          string   `json:"chat_id"`
-	ChatIDs         []string `json:"chat_ids"`
-	UserIDs         []string `json:"user_ids"`
-	Persona         string   `json:"persona"`
-	Provider        string   `json:"provider"`
-	Tools           []string `json:"tools"`
-	Skills          []string `json:"skills"`
-	KnowledgeBases  []string `json:"knowledge_bases"`
-	MCPServers      []string `json:"mcp_servers"`
-	RequireMention  *bool    `json:"require_mention"`
-	SmartAttention  *bool    `json:"smart_attention"`
-	LearningEnabled *bool    `json:"learning_enabled"`
-	AllowLinks      *bool    `json:"allow_links"`
-	Enabled         *bool    `json:"enabled"`
+	Name            string       `json:"name"`
+	Platform        string       `json:"platform"`
+	SelfID          string       `json:"self_id"`
+	ChatType        string       `json:"chat_type"`
+	ChatID          string       `json:"chat_id"`
+	ChatIDs         []string     `json:"chat_ids"`
+	UserIDs         []string     `json:"user_ids"`
+	Persona         string       `json:"persona"`
+	Provider        string       `json:"provider"`
+	Tools           []string     `json:"tools"`
+	Skills          []string     `json:"skills"`
+	KnowledgeBases  []string     `json:"knowledge_bases"`
+	MCPServers      []string     `json:"mcp_servers"`
+	RequireMention  *bool        `json:"require_mention"`
+	SmartAttention  *bool        `json:"smart_attention"`
+	ReplyPolicy     *ReplyPolicy `json:"reply_policy"`
+	LearningEnabled *bool        `json:"learning_enabled"`
+	AllowLinks      *bool        `json:"allow_links"`
+	Enabled         *bool        `json:"enabled"`
 }
 
 func LoadFile(path string) (*Registry, error) {
@@ -92,6 +93,7 @@ func LoadFile(path string) (*Registry, error) {
 			MCPServers:      raw.MCPServers,
 			RequireMention:  raw.RequireMention,
 			SmartAttention:  raw.SmartAttention,
+			ReplyPolicy:     raw.ReplyPolicy,
 			LearningEnabled: raw.LearningEnabled,
 			AllowLinks:      raw.AllowLinks,
 		})

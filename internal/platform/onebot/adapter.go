@@ -13,9 +13,10 @@ import (
 )
 
 type Adapter struct {
-	client *onebot.Client
-	events chan platform.Event
-	logger *slog.Logger
+	client           *onebot.Client
+	events           chan platform.Event
+	logger           *slog.Logger
+	AutoAcceptFriend bool
 }
 
 func NewAdapter(client *onebot.Client, logger *slog.Logger) *Adapter {
@@ -51,6 +52,10 @@ func (a *Adapter) Run(ctx context.Context) error {
 	go func() {
 		defer forwardWG.Done()
 		for event := range a.client.Events() {
+			if a.AutoAcceptFriend && isFriendRequest(event) {
+				a.autoAcceptFriendRequest(ctx, event)
+				continue
+			}
 			converted, err := convertEvent(event)
 			if err != nil {
 				a.logger.Warn("ignored onebot event", "reason", err.Error())
@@ -95,6 +100,24 @@ func (a *Adapter) Call(ctx context.Context, action string, params map[string]any
 
 func (a *Adapter) SendGroupText(ctx context.Context, groupID, replyTo, text string, quote bool) error {
 	return a.client.SendGroupText(ctx, groupID, replyTo, text, quote)
+}
+
+func isFriendRequest(event onebot.Event) bool {
+	return event.PostType == "request" && event.RequestType == "friend"
+}
+
+func (a *Adapter) autoAcceptFriendRequest(ctx context.Context, event onebot.Event) {
+	userID := event.UserID.String()
+	if event.Flag == "" {
+		a.logger.Warn("onebot friend request missing flag; not approved", "user_id", userID)
+		return
+	}
+	if err := a.client.SetFriendAddRequest(ctx, event.Flag, true, ""); err != nil {
+		a.logger.Error("failed to auto-accept friend request",
+			"user_id", userID, "error", err.Error())
+		return
+	}
+	a.logger.Info("auto-accepted friend request", "user_id", userID)
 }
 
 func convertEvent(event onebot.Event) (platform.Event, error) {

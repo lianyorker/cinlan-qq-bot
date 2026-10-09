@@ -50,6 +50,8 @@ type Event struct {
 	NoticeType    string          `json:"notice_type"`
 	RequestType   string          `json:"request_type"`
 	MetaEventType string          `json:"meta_event_type"`
+	Flag          string          `json:"flag"`
+	Comment       string          `json:"comment"`
 	MessageID     StringID        `json:"message_id"`
 	UserID        StringID        `json:"user_id"`
 	GroupID       StringID        `json:"group_id"`

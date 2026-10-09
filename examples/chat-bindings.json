@@ -1,0 +1,46 @@
+{
+  "bindings": [
+    {
+      "name": "support-groups",
+      "platform": "*",
+      "self_id": "*",
+      "chat_type": "group",
+      "chat_ids": [
+        "replace-group-id"
+      ],
+      "persona": "human-support",
+      "provider": "customer-api",
+      "reply_policy": {
+        "mode": "ai_decide",
+        "on_error": "mention_only",
+        "confidence_threshold": 0.72,
+        "history": {
+          "mode": "none"
+        }
+      },
+      "allow_links": false,
+      "learning_enabled": true
+    },
+    {
+      "name": "support-private",
+      "platform": "*",
+      "self_id": "*",
+      "chat_type": "private",
+      "user_ids": [
+        "replace-user-id"
+      ],
+      "persona": "human-support",
+      "provider": "customer-api",
+      "reply_policy": {
+        "mode": "ai_decide",
+        "on_error": "ignore",
+        "confidence_threshold": 0.72,
+        "history": {
+          "mode": "none"
+        }
+      },
+      "allow_links": false,
+      "learning_enabled": true
+    }
+  ]
+}

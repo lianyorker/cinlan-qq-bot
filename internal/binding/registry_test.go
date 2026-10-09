@@ -124,3 +124,47 @@ func TestBindingSupportsDirectUserSelector(t *testing.T) {
 		t.Fatal("direct user binding leaked to another user")
 	}
 }
+
+func TestReplyPolicyNormalizesAndSupportsPrivateAIDecision(t *testing.T) {
+	policy := ReplyPolicy{
+		Mode:    ReplyModeAIDecide,
+		History: AttentionHistoryPolicy{Mode: AttentionHistoryLastN},
+	}
+	registry, err := NewRegistry([]Rule{{
+		Name: "private-ai", Platform: "*", SelfID: "1",
+		ChatType: "private", ChatID: "2", ReplyPolicy: &policy,
+	}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rule, ok := registry.Match("qq-native", "1", "private", "2")
+	if !ok || rule.ReplyPolicy == nil ||
+		rule.ReplyPolicy.Mode != ReplyModeAIDecide ||
+		rule.ReplyPolicy.OnError != ReplyOnErrorIgnore ||
+		rule.ReplyPolicy.ConfidenceThreshold != 0.65 ||
+		rule.ReplyPolicy.History.Limit != 2 {
+		t.Fatalf("normalized policy = %#v", rule.ReplyPolicy)
+	}
+}
+
+func TestReplyPolicyRejectsAmbiguousLegacyFields(t *testing.T) {
+	smart := true
+	_, err := NewRegistry([]Rule{{
+		Name: "ambiguous", Platform: "*", SelfID: "1", ChatType: "group",
+		ChatID: "2", SmartAttention: &smart,
+		ReplyPolicy: &ReplyPolicy{Mode: ReplyModeAIDecide},
+	}})
+	if err == nil {
+		t.Fatal("ambiguous reply policy was accepted")
+	}
+}
+
+func TestLegacyReplyPolicyKeepsPrivateAlwaysAndGroupMention(t *testing.T) {
+	rule := Rule{}
+	if got := rule.EffectiveReplyPolicy("private", true); got.Mode != ReplyModeAlways {
+		t.Fatalf("private legacy policy = %#v", got)
+	}
+	if got := rule.EffectiveReplyPolicy("group", true); got.Mode != ReplyModeMentionOnly {
+		t.Fatalf("group legacy policy = %#v", got)
+	}
+}

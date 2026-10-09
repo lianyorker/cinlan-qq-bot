@@ -1,4 +1,4 @@
-FROM golang:1.26-alpine AS build
+FROM golang:1.26.3-alpine3.22 AS build
 
 WORKDIR /src
 COPY go.mod go.sum ./
@@ -19,6 +19,11 @@ RUN apk add --no-cache ca-certificates tzdata \
 
 WORKDIR /app
 COPY --from=build /out/cinlan-qq-bot /usr/local/bin/cinlan-qq-bot
+RUN mkdir -p /app/data \
+    && chown -R app:app /app
+
+ENV QQ_PLATFORM=onebot \
+    HTTP_LISTEN_ADDR=:8080
 
 USER app
 EXPOSE 8080

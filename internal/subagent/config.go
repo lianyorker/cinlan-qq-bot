@@ -17,14 +17,16 @@ const maxConfigBytes = 512 << 10
 var namePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_.-]{0,47}$`)
 
 type Config struct {
-	Name         string
-	Description  string
-	SystemPrompt string
-	Active       bool
-	Permission   tool.Permission
-	Tools        []string
-	Skills       []string
-	Provider     string
+	Name           string
+	Description    string
+	SystemPrompt   string
+	Active         bool
+	Permission     tool.Permission
+	Tools          []string
+	Skills         []string
+	Provider       string
+	InheritHistory bool
+	HistoryLimit   int
 }
 
 type fileConfig struct {
@@ -35,15 +37,17 @@ type fileConfig struct {
 }
 
 type rawConfig struct {
-	Name         string          `json:"name"`
-	Description  string          `json:"description"`
-	SystemPrompt string          `json:"system_prompt"`
-	Active       *bool           `json:"active"`
-	Enabled      *bool           `json:"enabled"`
-	Permission   tool.Permission `json:"permission"`
-	Tools        []string        `json:"tools"`
-	Skills       []string        `json:"skills"`
-	Provider     string          `json:"provider"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description"`
+	SystemPrompt   string          `json:"system_prompt"`
+	Active         *bool           `json:"active"`
+	Enabled        *bool           `json:"enabled"`
+	Permission     tool.Permission `json:"permission"`
+	Tools          []string        `json:"tools"`
+	Skills         []string        `json:"skills"`
+	Provider       string          `json:"provider"`
+	InheritHistory *bool           `json:"inherit_history"`
+	HistoryLimit   int             `json:"history_limit"`
 }
 
 func LoadFile(path string) ([]Config, error) {
@@ -129,15 +133,28 @@ func resolveConfig(raw rawConfig) (Config, error) {
 	}
 	sort.Strings(tools)
 	skills := uniqueNames(raw.Skills)
+	inheritHistory := raw.InheritHistory != nil && *raw.InheritHistory
+	historyLimit := raw.HistoryLimit
+	if historyLimit < 0 || historyLimit > 20 {
+		return Config{}, fmt.Errorf("subagent %q history_limit must be between 0 and 20", name)
+	}
+	if !inheritHistory && historyLimit != 0 {
+		return Config{}, fmt.Errorf("subagent %q sets history_limit without inherit_history", name)
+	}
+	if inheritHistory && historyLimit == 0 {
+		historyLimit = 4
+	}
 	return Config{
-		Name:         name,
-		Description:  description,
-		SystemPrompt: prompt,
-		Active:       active,
-		Permission:   permission,
-		Tools:        tools,
-		Skills:       skills,
-		Provider:     strings.TrimSpace(raw.Provider),
+		Name:           name,
+		Description:    description,
+		SystemPrompt:   prompt,
+		Active:         active,
+		Permission:     permission,
+		Tools:          tools,
+		Skills:         skills,
+		Provider:       strings.TrimSpace(raw.Provider),
+		InheritHistory: inheritHistory,
+		HistoryLimit:   historyLimit,
 	}, nil
 }
 

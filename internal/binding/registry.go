@@ -13,24 +13,58 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
 
+const (
+	ReplyModeDisabled    = "disabled"
+	ReplyModeMentionOnly = "mention_only"
+	ReplyModeAlways      = "always"
+	ReplyModeAIDecide    = "ai_decide"
+
+	ReplyOnErrorIgnore      = "ignore"
+	ReplyOnErrorReply       = "reply"
+	ReplyOnErrorMentionOnly = "mention_only"
+
+	AttentionHistoryNone  = "none"
+	AttentionHistoryLastN = "last_n"
+)
+
+const (
+	defaultConfidenceThreshold = 0.65
+	defaultAttentionHistory    = 2
+	maximumAttentionHistory    = 6
+)
+
+type AttentionHistoryPolicy struct {
+	Mode  string `json:"mode,omitempty"`
+	Limit int    `json:"limit,omitempty"`
+}
+
+type ReplyPolicy struct {
+	Mode                string                 `json:"mode"`
+	OnError             string                 `json:"on_error,omitempty"`
+	Provider            string                 `json:"provider,omitempty"`
+	ConfidenceThreshold float64                `json:"confidence_threshold,omitempty"`
+	History             AttentionHistoryPolicy `json:"history,omitempty"`
+}
+
 type Rule struct {
-	Name            string   `json:"name"`
-	Platform        string   `json:"platform"`
-	SelfID          string   `json:"self_id"`
-	ChatType        string   `json:"chat_type"`
-	ChatID          string   `json:"chat_id,omitempty"`
-	ChatIDs         []string `json:"chat_ids,omitempty"`
-	UserIDs         []string `json:"user_ids,omitempty"`
-	Persona         string   `json:"persona,omitempty"`
-	Provider        string   `json:"provider,omitempty"`
-	Tools           []string `json:"tools,omitempty"`
-	Skills          []string `json:"skills,omitempty"`
-	KnowledgeBases  []string `json:"knowledge_bases,omitempty"`
-	MCPServers      []string `json:"mcp_servers,omitempty"`
-	RequireMention  *bool    `json:"require_mention,omitempty"`
-	SmartAttention  *bool    `json:"smart_attention,omitempty"`
-	LearningEnabled *bool    `json:"learning_enabled,omitempty"`
-	AllowLinks      *bool    `json:"allow_links,omitempty"`
+	Name            string       `json:"name"`
+	Platform        string       `json:"platform"`
+	SelfID          string       `json:"self_id"`
+	ChatType        string       `json:"chat_type"`
+	ChatID          string       `json:"chat_id,omitempty"`
+	ChatIDs         []string     `json:"chat_ids,omitempty"`
+	UserIDs         []string     `json:"user_ids,omitempty"`
+	Persona         string       `json:"persona,omitempty"`
+	Provider        string       `json:"provider,omitempty"`
+	Tools           []string     `json:"tools,omitempty"`
+	Skills          []string     `json:"skills,omitempty"`
+	KnowledgeBases  []string     `json:"knowledge_bases,omitempty"`
+	MCPServers      []string     `json:"mcp_servers,omitempty"`
+	RequireMention  *bool        `json:"require_mention,omitempty"`
+	SmartAttention  *bool        `json:"smart_attention,omitempty"`
+	ReplyPolicy     *ReplyPolicy `json:"reply_policy,omitempty"`
+	LearningEnabled *bool        `json:"learning_enabled,omitempty"`
+	AllowLinks      *bool        `json:"allow_links,omitempty"`
 }
 
 type Registry struct {
@@ -274,6 +308,19 @@ func normalize(rule Rule) (Rule, error) {
 	); err != nil {
 		return Rule{}, err
 	}
+	if rule.ReplyPolicy != nil {
+		if rule.RequireMention != nil || rule.SmartAttention != nil {
+			return Rule{}, fmt.Errorf(
+				"chat binding %q cannot combine reply_policy with require_mention or smart_attention",
+				rule.Name,
+			)
+		}
+		policy, policyErr := normalizeReplyPolicy(*rule.ReplyPolicy)
+		if policyErr != nil {
+			return Rule{}, fmt.Errorf("chat binding %q: %w", rule.Name, policyErr)
+		}
+		rule.ReplyPolicy = &policy
+	}
 
 	if rule.Name == "" || len(rule.Name) > 64 {
 		return Rule{}, fmt.Errorf("chat binding name %q is invalid", rule.Name)
@@ -294,6 +341,7 @@ func normalize(rule Rule) (Rule, error) {
 		len(rule.MCPServers) == 0 &&
 		rule.RequireMention == nil &&
 		rule.SmartAttention == nil &&
+		rule.ReplyPolicy == nil &&
 		rule.LearningEnabled == nil &&
 		rule.AllowLinks == nil {
 		return Rule{}, fmt.Errorf("chat binding %q has no settings", rule.Name)
@@ -387,6 +435,10 @@ func cloneRule(rule Rule) Rule {
 		value := *rule.SmartAttention
 		rule.SmartAttention = &value
 	}
+	if rule.ReplyPolicy != nil {
+		value := *rule.ReplyPolicy
+		rule.ReplyPolicy = &value
+	}
 	if rule.LearningEnabled != nil {
 		value := *rule.LearningEnabled
 		rule.LearningEnabled = &value
@@ -396,6 +448,87 @@ func cloneRule(rule Rule) Rule {
 		rule.AllowLinks = &value
 	}
 	return rule
+}
+
+func LegacyReplyPolicy(chatType string, requireMention bool) ReplyPolicy {
+	mode := ReplyModeAlways
+	if chatType == platform.ChatGroup && requireMention {
+		mode = ReplyModeMentionOnly
+	}
+	policy, _ := normalizeReplyPolicy(ReplyPolicy{Mode: mode})
+	return policy
+}
+
+func (r Rule) EffectiveReplyPolicy(chatType string, defaultRequireMention bool) ReplyPolicy {
+	if r.ReplyPolicy != nil {
+		return *r.ReplyPolicy
+	}
+	if chatType == platform.ChatGroup && r.SmartAttention != nil && *r.SmartAttention {
+		policy, _ := normalizeReplyPolicy(ReplyPolicy{Mode: ReplyModeAIDecide})
+		return policy
+	}
+	requireMention := defaultRequireMention
+	if r.RequireMention != nil {
+		requireMention = *r.RequireMention
+	}
+	return LegacyReplyPolicy(chatType, requireMention)
+}
+
+func normalizeReplyPolicy(policy ReplyPolicy) (ReplyPolicy, error) {
+	policy.Mode = strings.ToLower(strings.TrimSpace(policy.Mode))
+	policy.OnError = strings.ToLower(strings.TrimSpace(policy.OnError))
+	policy.Provider = strings.TrimSpace(policy.Provider)
+	policy.History.Mode = strings.ToLower(strings.TrimSpace(policy.History.Mode))
+
+	switch policy.Mode {
+	case ReplyModeDisabled, ReplyModeMentionOnly, ReplyModeAlways, ReplyModeAIDecide:
+	default:
+		return ReplyPolicy{}, fmt.Errorf("invalid reply_policy mode %q", policy.Mode)
+	}
+	if policy.OnError == "" {
+		policy.OnError = ReplyOnErrorIgnore
+	}
+	switch policy.OnError {
+	case ReplyOnErrorIgnore, ReplyOnErrorReply, ReplyOnErrorMentionOnly:
+	default:
+		return ReplyPolicy{}, fmt.Errorf("invalid reply_policy on_error %q", policy.OnError)
+	}
+	if policy.Provider != "" {
+		if len(policy.Provider) > 128 {
+			return ReplyPolicy{}, errors.New("reply_policy provider exceeds 128 characters")
+		}
+		for _, current := range policy.Provider {
+			if current < 0x20 || current == 0x7f {
+				return ReplyPolicy{}, errors.New("reply_policy provider contains control characters")
+			}
+		}
+	}
+	if policy.ConfidenceThreshold == 0 {
+		policy.ConfidenceThreshold = defaultConfidenceThreshold
+	}
+	if policy.ConfidenceThreshold < 0 || policy.ConfidenceThreshold > 1 {
+		return ReplyPolicy{}, errors.New("reply_policy confidence_threshold must be between 0 and 1")
+	}
+	if policy.History.Mode == "" {
+		policy.History.Mode = AttentionHistoryNone
+	}
+	switch policy.History.Mode {
+	case AttentionHistoryNone:
+		policy.History.Limit = 0
+	case AttentionHistoryLastN:
+		if policy.History.Limit == 0 {
+			policy.History.Limit = defaultAttentionHistory
+		}
+		if policy.History.Limit < 1 || policy.History.Limit > maximumAttentionHistory {
+			return ReplyPolicy{}, fmt.Errorf(
+				"reply_policy history limit must be between 1 and %d",
+				maximumAttentionHistory,
+			)
+		}
+	default:
+		return ReplyPolicy{}, fmt.Errorf("invalid reply_policy history mode %q", policy.History.Mode)
+	}
+	return policy, nil
 }
 
 func validateID(name, field, value string) error {

@@ -13,6 +13,65 @@ Official QQNT
 
 loader、hook、IPC、QQNT adapter 和 Agent runtime 均位于本目录。NapCatQQ/AstrBot 只用于功能调研和公开接口行为对照，其源码不会被打包或作为运行依赖。
 
+## 架构
+
+### 运行链路
+
+```text
+┌────────────────────────── Windows ──────────────────────────┐
+│  官方 QQNT (QQ.exe)                                          │
+│    └─ cinlan-qq-loader.exe 以 suspended 启动 QQ，注入 hook    │
+│         └─ wrapper.node -> runtime/qqnt/runtime.cjs          │
+│              └─ QQNT adapter：消息事件/发送动作转统一协议      │
+│                   └─ loopback IPC (token 鉴权, 127.0.0.1)    │
+│                        └─ Go Agent runtime (cinlan-qq-bot)   │
+└──────────────────────────────────────────────────────────────┘
+```
+
+OneBot 兼容模式下，Go runtime 直接连接外部 OneBot 11 服务，不经过 loader/hook。
+
+### 目录结构
+
+```text
+cinlan-qq-bot/
+├─ cmd/                  # 入口 main
+├─ internal/             # Go 核心代码
+│  ├─ platform/          # 平台适配层：native QQNT adapter + OneBot adapter
+│  ├─ message/           # 统一 MessageChain 与组件转换
+│  ├─ pipeline/          # 有序消息流水线编排
+│  ├─ bot/               # 业务编排、白名单、唤醒与回复策略
+│  ├─ binding/           # Chat Binding：路由与注意力决策
+│  ├─ agent/             # Agent 调度与 Custom/OpenAI Provider 对接
+│  ├─ provider/          # Provider registry
+│  ├─ persona/           # 人格注入
+│  ├─ session/           # 加密 SQLite 会话与压缩
+│  ├─ knowledge/         # Markdown/TXT 知识库检索
+│  ├─ plugin/ command/   # 插件与命令 registry
+│  ├─ tool/ skill/       # Agent Tool 与 SKILL.md
+│  ├─ mcp/ subagent/     # MCP Streamable HTTP 与 subagent handoff
+│  ├─ media/             # 生图与网页截图
+│  ├─ filedelivery/      # 文件目录与发送
+│  ├─ cron/              # 定时通知任务
+│  ├─ security/          # 危险请求指纹与防护
+│  └─ config/ status/    # 配置加载与健康状态
+├─ runtime/
+│  ├─ loader/            # Rust：QQ 启动与 hook 注入
+│  └─ qqnt/              # JS：QQNT main process 内的 runtime.cjs
+├─ scripts/              # 构建、启动、发布与检查脚本
+├─ examples/             # Binding、Persona、插件等示例配置
+└─ docs/                 # 功能与部署文档
+```
+
+### 消息流水线
+
+```text
+wake -> security -> command -> session -> attention
+     -> rate limit -> plugin -> agent -> decorate -> respond
+```
+
+各阶段职责见 [docs/原生运行时.md](docs/原生运行时.md) 和
+[docs/完整性审计.md](docs/完整性审计.md)。
+
 ## Native Runtime
 
 当前 `qq-native` v1 已实现：
@@ -46,14 +105,21 @@ OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_
 
 要求：
 
-- Windows 10/11 x64。
-- 已安装官方 QQNT。
 - 可访问的 Agent API。
-- 首次源码构建需要 Go 和 Rust；构建完成后的运行不依赖 NapCat/AstrBot。
+- Windows 10/11 x64 原生模式需要已安装官方 QQNT。
+- 首次构建 Windows native 包需要 Go 和 Rust；Linux/macOS OneBot 包只需要 Go。
 
-Windows 是 `qq-native` 的唯一支持平台。macOS 构建仅提供 Go Agent runtime，
-必须配置 `QQ_PLATFORM=onebot` 并连接已有的 OneBot 11 服务，不包含 QQNT
-loader、hook 或自动登录能力。
+### 平台支持
+
+| 平台 | 核心 Go bot | QQNT native | OneBot | 发布包 |
+|---|---|---|---|---|
+| Windows 10/11 x64 | 支持 | 支持，唯一 native 平台 | 支持 | `windows-amd64` |
+| Linux amd64/arm64 | 支持 | 不支持 | 支持，需外部 OneBot 11 服务 | `linux-amd64` / `linux-arm64` |
+| macOS amd64/arm64 | 支持 | 不支持 | 支持，需外部 OneBot 11 服务 | `darwin-amd64` / `darwin-arm64` |
+
+Linux 和 macOS 包只包含核心 Go bot，不包含 QQNT loader、hook 或自动登录能力，
+必须设置 `QQ_PLATFORM=onebot`。Linux 解压后可直接执行 `chmod +x cinlan-qq-bot && ./cinlan-qq-bot`；
+Docker 镜像默认使用 OneBot 模式并监听 `:8080`，可通过环境变量覆盖配置。
 
 准备配置：
 
@@ -100,7 +166,7 @@ cmd.exe /k powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.p
 
 群白名单、Persona、工具和知识库授权全部使用你自己的本地配置，不要把真实群号、
 账号、业务资料或访问凭据写入公开仓库。配置方式见
-[docs/public-usage.md](docs/public-usage.md)。
+[docs/公开部署指南.md](docs/公开部署指南.md)。
 
 `start.cmd` 会：
 
@@ -144,7 +210,7 @@ Invoke-RestMethod http://127.0.0.1:18080/status
 
 ## Agent API
 
-Custom API 完整契约见 [docs/custom-agent-api.md](docs/custom-agent-api.md)。最小响应：
+Custom API 完整契约见 [docs/自定义AgentAPI.md](docs/自定义AgentAPI.md)。最小响应：
 
 ```json
 {
@@ -165,11 +231,11 @@ AGENT_MAX_TOOL_ROUNDS=4
 
 只有注册到 `ToolRegistry` 的工具会发送给模型。未注册工具、非法 JSON、超限参数或权限不足都不会执行。
 
-管理员指定文件的配置和群转私聊流程见 [docs/file-delivery.md](docs/file-delivery.md)。
+管理员指定文件的配置和群转私聊流程见 [docs/文件交付.md](docs/文件交付.md)。
 真实网页截图的白名单、网络隔离和 Chrome 配置见
-[docs/web-screenshot.md](docs/web-screenshot.md)。
+[docs/网页截图.md](docs/网页截图.md)。
 面向公开部署的配置、资源隔离和发布前检查见
-[docs/public-usage.md](docs/public-usage.md)。
+[docs/公开部署指南.md](docs/公开部署指南.md)。
 
 ## Public release safety
 
@@ -232,7 +298,9 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `SESSION_COMPRESSION_RETAIN` | `6` | 压缩后保留的最近消息数 |
 | `SESSION_LEARNING_ENABLED` | `true` | 允许启用了 `learning_enabled` 的绑定提取隔离学习记忆 |
 | `BOT_USER_COOLDOWN` | `3s` | 同一 QQ 的跨群消息冷却 |
-| `BOT_USER_RATE_LIMIT` / `BOT_USER_RATE_WINDOW` | `10` / `1m` | 同一 QQ 的滑动窗口消息配额 |
+| `BOT_USER_RATE_LIMIT` / `BOT_USER_RATE_WINDOW` | `10` / `1m` | 同一 QQ 的正式回答滑动窗口消息配额 |
+| `BOT_ATTENTION_TIMEOUT` | `5s` | Binding 启用 AI 判断时，单次回复决策的独立超时 |
+| `BOT_ATTENTION_RATE_LIMIT` / `BOT_ATTENTION_RATE_WINDOW` | `20` / `1m` | 同一 QQ 的 AI 回复决策独立预算 |
 | `MEDIA_TOOL_USER_COOLDOWN` | `30s` | 同一 QQ 生图和截图共用冷却 |
 | `MEDIA_TOOL_USER_LIMIT` / `MEDIA_TOOL_WINDOW` | `10` / `1h` | 同一 QQ 媒体 Tool 滑动窗口配额 |
 | `MEDIA_TOOL_MAX_CONCURRENCY` | `2` | 全局并行生图/截图任务上限 |
@@ -240,9 +308,23 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `HTTP_LISTEN_ADDR` | `127.0.0.1:18080` | 健康检查和 Admin API |
 | `ADMIN_API_TOKEN` | empty | Admin API Bearer token |
 
-完整默认值见 [.env.example](.env.example)，native 协议和启动细节见 [docs/native-runtime.md](docs/native-runtime.md)。
-会话、Persona、Tool、Skill、Knowledge 和 MCP 的隔离模型见
-[docs/session-isolation.md](docs/session-isolation.md)。
+完整默认值见 [.env.example](.env.example)，native 协议和启动细节见 [docs/原生运行时.md](docs/原生运行时.md)。
+群聊与私聊可在 Chat Binding 中选择 `disabled`、`mention_only`、`always` 或 `ai_decide`；
+结构化路由范围、隐私默认值和兼容规则见 [docs/会话隔离.md](docs/会话隔离.md)。
+自然但不冒充真人的 Persona 模板见 [docs/人格模板.md](docs/人格模板.md)。
+自定义 Go 扩展、配置型扩展和各作用域边界见 [docs/自定义扩展.md](docs/自定义扩展.md)。
+平台、功能、验证证据和剩余风险见 [docs/完整性审计.md](docs/完整性审计.md)。
+
+更多专题文档：
+
+- [docs/定时任务.md](docs/定时任务.md)：Cron 定时通知任务与持久化。
+- [docs/MCP接入.md](docs/MCP接入.md)：MCP Streamable HTTP 接入。
+- [docs/技能.md](docs/技能.md)：`SKILL.md` 技能加载。
+- [docs/子Agent.md](docs/子Agent.md)：同步 subagent handoff。
+- [docs/扩展API.md](docs/扩展API.md)：Go 扩展 API（命令、插件注册）。
+- [docs/上游审计.md](docs/上游审计.md) 与
+  [docs/上游迁移矩阵.md](docs/上游迁移矩阵.md)：
+  NapCatQQ/AstrBot clean-room 对照记录（无运行时依赖）。
 
 ## OneBot 兼容模式
 
@@ -255,7 +337,7 @@ ONEBOT_WS_URL=ws://127.0.0.1:3001
 ONEBOT_ACCESS_TOKEN=<token>
 ```
 
-四种网络组合和多账号配置见 [docs/onebot-transports.md](docs/onebot-transports.md)。`compose.yaml` 也是 OneBot 兼容部署，不属于默认 native 主链。
+四种网络组合和多账号配置见 [docs/OneBot传输.md](docs/OneBot传输.md)。`compose.yaml` 也是 OneBot 兼容部署，不属于默认 native 主链。
 
 ## 本地构建
 
@@ -283,7 +365,7 @@ bin/cinlan-qq-hook.dll
 
 ## 发布打包
 
-在公开工作树通过敏感信息检查后，一次生成三个压缩包：
+在公开工作树通过敏感信息检查后，一次生成五个压缩包：
 
 ```powershell
 .\scripts\package-release.ps1 -Version 0.2.0
@@ -293,14 +375,20 @@ bin/cinlan-qq-hook.dll
 
 ```text
 dist/cinlan-qq-bot-0.2.0-windows-amd64.zip
+dist/cinlan-qq-bot-0.2.0-linux-amd64.zip
+dist/cinlan-qq-bot-0.2.0-linux-arm64.zip
 dist/cinlan-qq-bot-0.2.0-darwin-amd64.zip
 dist/cinlan-qq-bot-0.2.0-darwin-arm64.zip
 dist/SHA256SUMS-0.2.0.txt
 ```
 
-Windows 包包含 Go runtime、QQNT loader、hook 和 `runtime/qqnt`。macOS 包
-不包含 Windows 原生组件，解压后先执行 `chmod +x cinlan-qq-bot`，将
-`.env` 的 `QQ_PLATFORM` 改为 `onebot` 后运行 `./cinlan-qq-bot`。
+Windows 包包含 Go runtime、QQNT loader、hook 和 `runtime/qqnt`。Linux 和 macOS 包
+是纯 Go OneBot 包，不包含 Windows 原生组件。解压后执行 `chmod +x cinlan-qq-bot`，
+将 `.env` 的 `QQ_PLATFORM` 改为 `onebot`，配置外部 OneBot 11 服务后运行：
+
+```sh
+./cinlan-qq-bot
+```
 
 打包脚本固定使用公开默认构建，不读取本地业务 build tag；执行前会运行
 `check-public-release.ps1`、Go tests、`go vet` 和 QQNT runtime tests。

@@ -4,6 +4,8 @@ param(
 )
 
 $ErrorActionPreference = "Stop"
+# git emits UTF-8; decode native command output as UTF-8 so non-ASCII paths survive.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root "dist"
 $stageRoot = Join-Path $root ".tmp\release-packages"
@@ -37,7 +39,7 @@ function Copy-TrackedFiles(
     [string]$Destination,
     [string[]]$Paths
 ) {
-    $files = @(& $git ls-files -- @Paths)
+    $files = @(& $git -c core.quotepath=false ls-files -- @Paths)
     if ($LASTEXITCODE -ne 0) {
         throw "git ls-files failed while preparing package files."
     }
@@ -73,8 +75,7 @@ function Build-GoBinary(
         $env:GOARCH = $GoArch
         $env:CGO_ENABLED = "0"
         $env:GOFLAGS = ""
-        & $go.Source build -buildvcs=false -trimpath -ldflags="-s -w" `
-            -o $Output .\cmd\cinlan-qq-bot
+        & $go.Source build -trimpath -ldflags="-s -w" -o $Output .\cmd\cinlan-qq-bot
         if ($LASTEXITCODE -ne 0) {
             throw "Go build failed for $GoOS/$GoArch with exit code $LASTEXITCODE."
         }
@@ -144,14 +145,16 @@ try {
     Compress-Archive -Path (Join-Path $windowsStage "*") `
         -DestinationPath (Join-Path $dist "$windowsName.zip") -Force
 
-    foreach ($arch in @("amd64", "arm64")) {
-        $darwinName = "cinlan-qq-bot-$Version-darwin-$arch"
-        $darwinStage = Join-Path $stageRoot $darwinName
-        New-Item -ItemType Directory -Force -Path $darwinStage | Out-Null
-        Build-GoBinary "darwin" $arch (Join-Path $darwinStage "cinlan-qq-bot")
-        Copy-CommonFiles $darwinStage
-        Compress-Archive -Path (Join-Path $darwinStage "*") `
-            -DestinationPath (Join-Path $dist "$darwinName.zip") -Force
+    foreach ($platform in @("darwin", "linux")) {
+        foreach ($arch in @("amd64", "arm64")) {
+            $packageName = "cinlan-qq-bot-$Version-$platform-$arch"
+            $packageStage = Join-Path $stageRoot $packageName
+            New-Item -ItemType Directory -Force -Path $packageStage | Out-Null
+            Build-GoBinary $platform $arch (Join-Path $packageStage "cinlan-qq-bot")
+            Copy-CommonFiles $packageStage
+            Compress-Archive -Path (Join-Path $packageStage "*") `
+                -DestinationPath (Join-Path $dist "$packageName.zip") -Force
+        }
     }
 
     $archives = Get-ChildItem -LiteralPath $dist -Filter "cinlan-qq-bot-$Version-*.zip"

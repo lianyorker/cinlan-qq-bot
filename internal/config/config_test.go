@@ -142,9 +142,6 @@ func TestLoadCustomAgentConfig(t *testing.T) {
 	if cfg.HTTPListenAddr != "127.0.0.1:18080" {
 		t.Fatalf("HTTPListenAddr = %q, want loopback default", cfg.HTTPListenAddr)
 	}
-	if cfg.AdminUsername != "admin" || cfg.AdminPassword != "admin123" {
-		t.Fatalf("admin defaults = %q/%q", cfg.AdminUsername, cfg.AdminPassword)
-	}
 	if !cfg.GroupAtSender {
 		t.Fatal("GroupAtSender = false, want true")
 	}
@@ -307,8 +304,6 @@ func clearConfigEnvironment(t *testing.T) {
 		"HTTP_LISTEN_ADDR",
 		"LOG_LEVEL",
 		"ADMIN_API_TOKEN",
-		"ADMIN_USERNAME",
-		"ADMIN_PASSWORD",
 		"QQ_PLATFORM",
 		"QQNT_PATH",
 		"QQNT_AUTO_LAUNCH",
@@ -400,6 +395,9 @@ func clearConfigEnvironment(t *testing.T) {
 		"BOT_USER_COOLDOWN",
 		"BOT_USER_RATE_LIMIT",
 		"BOT_USER_RATE_WINDOW",
+		"BOT_ATTENTION_TIMEOUT",
+		"BOT_ATTENTION_RATE_LIMIT",
+		"BOT_ATTENTION_RATE_WINDOW",
 		"MEDIA_TOOL_USER_COOLDOWN",
 		"MEDIA_TOOL_USER_LIMIT",
 		"MEDIA_TOOL_WINDOW",
@@ -471,5 +469,24 @@ func TestLoadWebScreenshotConfig(t *testing.T) {
 		cfg.WebScreenshotHeight != 720 ||
 		cfg.WebScreenshotWait != 2*time.Second {
 		t.Fatalf("web screenshot config = %#v", cfg)
+	}
+}
+
+func TestLoadAttentionConfig(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("QQ_GROUP_ALLOWLIST", "123456")
+	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
+	t.Setenv("SESSION_STORE_PATH", "")
+	t.Setenv("BOT_ATTENTION_TIMEOUT", "4s")
+	t.Setenv("BOT_ATTENTION_RATE_LIMIT", "12")
+	t.Setenv("BOT_ATTENTION_RATE_WINDOW", "2m")
+
+	cfg, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.AttentionTimeout != 4*time.Second ||
+		cfg.AttentionRateLimit != 12 || cfg.AttentionRateWindow != 2*time.Minute {
+		t.Fatalf("attention config = %s/%d/%s", cfg.AttentionTimeout, cfg.AttentionRateLimit, cfg.AttentionRateWindow)
 	}
 }

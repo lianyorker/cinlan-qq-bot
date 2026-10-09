@@ -206,6 +206,14 @@ func (m *MultiAdapter) Name() string {
 	return platform.PlatformQQOneBot
 }
 
+// SetAutoAcceptFriend enables or disables auto-accepting friend requests on
+// every underlying account adapter.
+func (m *MultiAdapter) SetAutoAcceptFriend(enabled bool) {
+	for _, account := range m.accounts {
+		account.adapter.AutoAcceptFriend = enabled
+	}
+}
+
 func (m *MultiAdapter) Connected() bool {
 	for _, account := range m.accounts {
 		if account.adapter.Connected() {

@@ -208,29 +208,6 @@ func TestStatusRejectsMutationMethods(t *testing.T) {
 	}
 }
 
-func TestAdminWebIsEmbeddedAndProtectedByBrowserHeaders(t *testing.T) {
-	server := New(":0", fakeConnection(true), fakeStats{})
-	request := httptest.NewRequest(http.MethodGet, "/admin/", nil)
-	response := httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), "Cinlan Bot 管理后台") {
-		t.Fatalf("admin web response = %d %s", response.Code, response.Body.String())
-	}
-	if response.Header().Get("Content-Security-Policy") == "" ||
-		response.Header().Get("X-Frame-Options") != "DENY" {
-		t.Fatalf("admin web security headers = %#v", response.Header())
-	}
-
-	request = httptest.NewRequest(http.MethodGet, "/admin/js/app.js", nil)
-	response = httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK || !strings.Contains(response.Body.String(), "loadShared") {
-		t.Fatalf("admin app response = %d %s", response.Code, response.Body.String())
-	}
-}
-
 func TestAdminAPIRequiresTokenAndListsRuntime(t *testing.T) {
 	providers := provider.NewRegistry()
 	if err := providers.Register(fakeProvider{}); err != nil {
@@ -272,71 +249,6 @@ func TestAdminAPIRequiresTokenAndListsRuntime(t *testing.T) {
 	}
 	if len(sessionsResponse) != 1 || sessionsResponse[0]["history_count"] != float64(2) {
 		t.Fatalf("sessions response = %#v", sessionsResponse)
-	}
-}
-
-func TestAdminLoginIssuesAndRevokesSessionToken(t *testing.T) {
-	personas := persona.NewRegistry()
-	if err := personas.Register(persona.Profile{
-		Name:         "default",
-		SystemPrompt: "default prompt",
-		Default:      true,
-	}); err != nil {
-		t.Fatalf("Register(persona) error = %v", err)
-	}
-	server := NewWithOptions(":0", fakeConnection(true), fakeStats{}, AdminOptions{
-		Username: "admin",
-		Password: "admin123",
-		Personas: personas,
-	})
-
-	request := httptest.NewRequest(
-		http.MethodPost,
-		"/api/v1/auth/login",
-		strings.NewReader(`{"username":"admin","password":"wrong"}`),
-	)
-	response := httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("invalid login = %d %s", response.Code, response.Body.String())
-	}
-
-	request = httptest.NewRequest(
-		http.MethodPost,
-		"/api/v1/auth/login",
-		strings.NewReader(`{"username":"admin","password":"admin123"}`),
-	)
-	response = httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-	var login struct {
-		Token string `json:"token"`
-	}
-	if response.Code != http.StatusOK || json.Unmarshal(response.Body.Bytes(), &login) != nil || login.Token == "" {
-		t.Fatalf("valid login = %d %s", response.Code, response.Body.String())
-	}
-
-	request = httptest.NewRequest(http.MethodGet, "/api/v1/personas", nil)
-	request.Header.Set("Authorization", "Bearer "+login.Token)
-	response = httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("session authorization = %d %s", response.Code, response.Body.String())
-	}
-
-	request = httptest.NewRequest(http.MethodPost, "/api/v1/auth/logout", nil)
-	request.Header.Set("Authorization", "Bearer "+login.Token)
-	response = httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-	if response.Code != http.StatusNoContent {
-		t.Fatalf("logout = %d %s", response.Code, response.Body.String())
-	}
-
-	request = httptest.NewRequest(http.MethodGet, "/api/v1/personas", nil)
-	request.Header.Set("Authorization", "Bearer "+login.Token)
-	response = httptest.NewRecorder()
-	server.httpServer.Handler.ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("revoked session = %d %s", response.Code, response.Body.String())
 	}
 }
 
@@ -674,6 +586,34 @@ func TestAdminBindingRejectsUnknownScopedTool(t *testing.T) {
 	server.httpServer.Handler.ServeHTTP(response, request)
 	if response.Code != http.StatusBadRequest ||
 		!strings.Contains(response.Body.String(), "tool_not_found") {
+		t.Fatalf("response = %d %s", response.Code, response.Body.String())
+	}
+}
+
+func TestAdminBindingRejectsUnknownReplyPolicyProvider(t *testing.T) {
+	providers := provider.NewRegistry()
+	if err := providers.Register(fakeProvider{}); err != nil {
+		t.Fatal(err)
+	}
+	bindings, err := binding.OpenFile(filepath.Join(t.TempDir(), "bindings.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	server := NewWithOptions(":0", fakeConnection(true), fakeStats{}, AdminOptions{
+		Token:     "secret",
+		Providers: providers,
+		Bindings:  bindings,
+	})
+	payload, _ := json.Marshal(map[string]any{
+		"name": "route", "platform": "*", "self_id": "1",
+		"chat_type": "private", "chat_id": "2",
+		"reply_policy": map[string]any{"mode": "ai_decide", "provider": "missing"},
+	})
+	request := httptest.NewRequest(http.MethodPost, "/api/v1/bindings", strings.NewReader(string(payload)))
+	request.Header.Set("Authorization", "Bearer secret")
+	response := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(response, request)
+	if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "provider_not_found") {
 		t.Fatalf("response = %d %s", response.Code, response.Body.String())
 	}
 }

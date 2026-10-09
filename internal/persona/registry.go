@@ -16,13 +16,23 @@ type Dialogue struct {
 	Assistant string `json:"assistant"`
 }
 
+type RoutingScope struct {
+	Description      string   `json:"description,omitempty"`
+	IncludeTopics    []string `json:"include_topics,omitempty"`
+	ExcludeTopics    []string `json:"exclude_topics,omitempty"`
+	PositiveExamples []string `json:"positive_examples,omitempty"`
+	NegativeExamples []string `json:"negative_examples,omitempty"`
+	Languages        []string `json:"languages,omitempty"`
+}
+
 type Profile struct {
-	Name               string     `json:"name"`
-	Description        string     `json:"description,omitempty"`
-	SystemPrompt       string     `json:"system_prompt,omitempty"`
-	BeginDialogs       []Dialogue `json:"begin_dialogs,omitempty"`
-	CustomErrorMessage string     `json:"custom_error_message,omitempty"`
-	Default            bool       `json:"default,omitempty"`
+	Name               string        `json:"name"`
+	Description        string        `json:"description,omitempty"`
+	SystemPrompt       string        `json:"system_prompt,omitempty"`
+	BeginDialogs       []Dialogue    `json:"begin_dialogs,omitempty"`
+	CustomErrorMessage string        `json:"custom_error_message,omitempty"`
+	RoutingScope       *RoutingScope `json:"routing_scope,omitempty"`
+	Default            bool          `json:"default,omitempty"`
 }
 
 type Registry struct {
@@ -121,6 +131,7 @@ func (r *Registry) Default() (Profile, bool) {
 	defer r.mu.RUnlock()
 	profile, ok := r.profiles[r.defaultName]
 	if ok {
+		profile = cloneProfile(profile)
 		profile.Default = true
 	}
 	return profile, ok
@@ -130,6 +141,9 @@ func (r *Registry) Get(name string) (Profile, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	profile, ok := r.profiles[strings.TrimSpace(name)]
+	if ok {
+		profile = cloneProfile(profile)
+	}
 	return profile, ok
 }
 
@@ -138,6 +152,7 @@ func (r *Registry) List() []Profile {
 	defer r.mu.RUnlock()
 	result := make([]Profile, 0, len(r.profiles))
 	for name, profile := range r.profiles {
+		profile = cloneProfile(profile)
 		profile.Default = name == r.defaultName
 		result = append(result, profile)
 	}
@@ -221,6 +236,14 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	profile.Description = strings.TrimSpace(profile.Description)
 	profile.SystemPrompt = strings.TrimSpace(profile.SystemPrompt)
 	profile.CustomErrorMessage = strings.TrimSpace(profile.CustomErrorMessage)
+	if len(profile.Description) > 4<<10 {
+		return Profile{}, fmt.Errorf("persona %q description exceeds 4 KiB", profile.Name)
+	}
+	var err error
+	profile.RoutingScope, err = normalizeRoutingScope(profile.Name, profile.RoutingScope)
+	if err != nil {
+		return Profile{}, err
+	}
 	if profile.Name == "" || len(profile.Name) > 64 {
 		return Profile{}, errors.New("persona name is empty or exceeds 64 characters")
 	}
@@ -247,6 +270,74 @@ func normalizeProfile(profile Profile) (Profile, error) {
 	}
 	profile.BeginDialogs = dialogs
 	return profile, nil
+}
+
+func normalizeRoutingScope(name string, scope *RoutingScope) (*RoutingScope, error) {
+	if scope == nil {
+		return nil, nil
+	}
+	value := *scope
+	value.Description = strings.TrimSpace(value.Description)
+	if len(value.Description) > 8<<10 {
+		return nil, fmt.Errorf("persona %q routing scope description exceeds 8 KiB", name)
+	}
+	var err error
+	for _, target := range []struct {
+		field  string
+		values *[]string
+		limit  int
+	}{
+		{"include_topics", &value.IncludeTopics, 64},
+		{"exclude_topics", &value.ExcludeTopics, 64},
+		{"positive_examples", &value.PositiveExamples, 32},
+		{"negative_examples", &value.NegativeExamples, 32},
+		{"languages", &value.Languages, 16},
+	} {
+		*target.values, err = normalizeRoutingValues(name, target.field, *target.values, target.limit)
+		if err != nil {
+			return nil, err
+		}
+	}
+	if value.Description == "" && len(value.IncludeTopics) == 0 &&
+		len(value.ExcludeTopics) == 0 && len(value.PositiveExamples) == 0 &&
+		len(value.NegativeExamples) == 0 && len(value.Languages) == 0 {
+		return nil, nil
+	}
+	return &value, nil
+}
+
+func normalizeRoutingValues(name, field string, values []string, limit int) ([]string, error) {
+	if len(values) > limit {
+		return nil, fmt.Errorf("persona %q routing scope has more than %d %s", name, limit, field)
+	}
+	seen := make(map[string]struct{}, len(values))
+	result := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" || len(value) > 1024 {
+			return nil, fmt.Errorf("persona %q routing scope has invalid %s entry", name, field)
+		}
+		if _, exists := seen[value]; exists {
+			continue
+		}
+		seen[value] = struct{}{}
+		result = append(result, value)
+	}
+	return result, nil
+}
+
+func cloneProfile(profile Profile) Profile {
+	profile.BeginDialogs = append([]Dialogue(nil), profile.BeginDialogs...)
+	if profile.RoutingScope != nil {
+		scope := *profile.RoutingScope
+		scope.IncludeTopics = append([]string(nil), scope.IncludeTopics...)
+		scope.ExcludeTopics = append([]string(nil), scope.ExcludeTopics...)
+		scope.PositiveExamples = append([]string(nil), scope.PositiveExamples...)
+		scope.NegativeExamples = append([]string(nil), scope.NegativeExamples...)
+		scope.Languages = append([]string(nil), scope.Languages...)
+		profile.RoutingScope = &scope
+	}
+	return profile
 }
 
 func writeAtomic(path, pattern string, data []byte) error {

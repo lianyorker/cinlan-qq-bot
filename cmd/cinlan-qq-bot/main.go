@@ -238,6 +238,7 @@ func main() {
 				logger.Error("failed to load OneBot accounts", "error", openErr)
 				os.Exit(2)
 			}
+			multiAdapter.SetAutoAcceptFriend(cfg.OneBotAutoAccept)
 			qqAdapter = multiAdapter
 		} else {
 			oneBotURL := cfg.OneBotWSURL
@@ -253,7 +254,9 @@ func main() {
 				ListenAddr:    cfg.OneBotListenAddr,
 				Path:          cfg.OneBotReversePath,
 			}, logger)
-			qqAdapter = onebotplatform.NewAdapter(oneBotClient, logger)
+			oneBotAdapter := onebotplatform.NewAdapter(oneBotClient, logger)
+			oneBotAdapter.AutoAcceptFriend = cfg.OneBotAutoAccept
+			qqAdapter = oneBotAdapter
 		}
 	default:
 		logger.Error("unsupported QQ platform", "platform", cfg.QQPlatform)
@@ -348,6 +351,15 @@ func main() {
 				)
 				os.Exit(2)
 			}
+			if current.ReplyPolicy != nil && current.ReplyPolicy.Provider != "" &&
+				!providerRegistry.Has(current.ReplyPolicy.Provider) {
+				logger.Error(
+					"chat binding reply policy references an unknown provider",
+					"binding", current.Name,
+					"provider", current.ReplyPolicy.Provider,
+				)
+				os.Exit(2)
+			}
 		}
 		botService.SetChatBindings(bindings)
 		logger.Info("chat binding config loaded", "file", cfg.ChatBindingsFile, "bindings", len(bindings.List()))
@@ -364,7 +376,7 @@ func main() {
 		}
 		if entries := fileCatalog.List(); len(entries) > 0 {
 			if registerErr := botService.ToolRegistry().Register(
-				fileCatalog.Tool(qqAdapter, cfg.FileSendTimeout, sessionStore),
+				fileCatalog.Tool(qqAdapter, cfg.FileSendTimeout),
 			); registerErr != nil {
 				logger.Error("failed to register file delivery tool", "error", registerErr)
 				os.Exit(2)
@@ -491,8 +503,6 @@ func main() {
 	}
 	statusServer := statusserver.NewWithOptions(cfg.HTTPListenAddr, qqAdapter, botService, statusserver.AdminOptions{
 		Token:         cfg.AdminAPIToken,
-		Username:      cfg.AdminUsername,
-		Password:      cfg.AdminPassword,
 		Providers:     botService.ProviderRegistry(),
 		Plugins:       botService.PluginRegistry(),
 		PluginRuntime: pluginManager,
@@ -535,9 +545,6 @@ func main() {
 		"providers_file", cfg.ProvidersFile,
 		"admin_api_configured", cfg.AdminAPIToken != "",
 	)
-	if cfg.AdminUsername == "admin" && cfg.AdminPassword == "admin123" {
-		logger.Warn("admin console is using the default credentials")
-	}
 	if cfg.QQPlatform == config.QQPlatformOneBot &&
 		cfg.OneBotAccountsFile == "" &&
 		cfg.OneBotAccessToken == "" {

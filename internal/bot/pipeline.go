@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
+	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
@@ -49,7 +50,7 @@ type flowState struct {
 	allowedSkills  []string
 	knowledgeBases []string
 	mcpServers     []string
-	smartAttention bool
+	replyPolicy    binding.ReplyPolicy
 	learning       bool
 	allowLinks     bool
 	errorReply     string
@@ -119,7 +120,7 @@ func (s *Service) stageWake(_ context.Context, event *pipeline.Context) error {
 		return nil
 	}
 
-	requireMention := s.cfg.RequireMention
+	state.replyPolicy = binding.LegacyReplyPolicy(state.chatType, s.cfg.RequireMention)
 	if s.bindings != nil {
 		current, ok := s.bindings.MatchActor(
 			state.platform,
@@ -147,16 +148,15 @@ func (s *Service) stageWake(_ context.Context, event *pipeline.Context) error {
 			[]string(nil),
 			current.Tools...,
 		)
-		state.smartAttention = current.SmartAttention != nil &&
-			*current.SmartAttention
+		state.replyPolicy = current.EffectiveReplyPolicy(
+			state.chatType,
+			s.cfg.RequireMention,
+		)
 		state.learning = s.cfg.SessionLearning &&
 			current.LearningEnabled != nil &&
 			*current.LearningEnabled
 		if current.AllowLinks != nil {
 			state.allowLinks = *current.AllowLinks
-		}
-		if current.RequireMention != nil {
-			requireMention = *current.RequireMention
 		}
 	}
 
@@ -190,15 +190,24 @@ func (s *Service) stageWake(_ context.Context, event *pipeline.Context) error {
 			chain = parsed
 		}
 	}
+	state.event.Chain = chain
 	state.text, state.eventMentioned = chain.PlainText(state.selfID)
-	if (state.chatType == platform.ChatGroup &&
-		requireMention &&
-		!state.eventMentioned &&
-		!state.smartAttention) ||
-		strings.TrimSpace(state.text) == "" {
+	if strings.TrimSpace(state.text) == "" {
 		state.ignored = true
-		event.Stop("not_mentioned_or_empty")
+		event.Stop("empty_message")
 		return nil
+	}
+	switch state.replyPolicy.Mode {
+	case binding.ReplyModeDisabled:
+		state.ignored = true
+		event.Stop("reply_policy_disabled")
+		return nil
+	case binding.ReplyModeMentionOnly:
+		if !state.eventMentioned {
+			state.ignored = true
+			event.Stop("not_mentioned")
+			return nil
+		}
 	}
 	state.text = strings.TrimSpace(state.text)
 	if state.chatType == platform.ChatPrivate {
@@ -383,7 +392,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
 		}
-		request.SystemPrompt += `群聊客服事实边界：只回答当前 Persona 业务范围内的问题，不承接通用写代码、生图、娱乐闲聊或发给其他用户/机器人的任务。对人物外貌、身份、状态等没有图片、资料或实时工具证据的事实，必须明确说无法判断，禁止迎合或编造。`
+		request.SystemPrompt += `群聊交互边界：结合当前发送者和共享会话历史回答，不抢答发给其他人的内容。对缺少消息、资料或实时工具证据的事实明确说明无法判断，不迎合或编造。`
 	}
 	if appendPrompt, ok := event.Values["agent.system_prompt_append"].(string); ok {
 		appendPrompt = strings.TrimSpace(appendPrompt)

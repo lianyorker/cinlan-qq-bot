@@ -1,4 +1,6 @@
 $ErrorActionPreference = "Stop"
+# git emits UTF-8; decode native command output as UTF-8 so non-ASCII paths survive.
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
 $root = Split-Path -Parent $PSScriptRoot
 $gitCommand = Get-Command git -ErrorAction SilentlyContinue
@@ -17,17 +19,17 @@ if (-not $git) {
 
 Push-Location $root
 try {
-    $tracked = @(& $git ls-files)
+    $tracked = @(& $git -c core.quotepath=false ls-files)
     if ($LASTEXITCODE -ne 0) {
         throw "git ls-files failed"
     }
 
-    $staged = @(& $git diff --cached --name-only --diff-filter=ACMR)
+    $staged = @(& $git -c core.quotepath=false diff --cached --name-only --diff-filter=ACMR)
     if ($LASTEXITCODE -ne 0) {
         throw "git diff --cached failed"
     }
 
-    $untracked = @(& $git ls-files --others --exclude-standard)
+    $untracked = @(& $git -c core.quotepath=false ls-files --others --exclude-standard)
     if ($LASTEXITCODE -ne 0) {
         throw "git ls-files --others failed"
     }

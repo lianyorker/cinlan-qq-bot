@@ -20,12 +20,13 @@ type rawFile struct {
 }
 
 type rawProfile struct {
-	Name               string     `json:"name"`
-	Description        string     `json:"description"`
-	SystemPrompt       string     `json:"system_prompt"`
-	BeginDialogs       []Dialogue `json:"begin_dialogs"`
-	CustomErrorMessage string     `json:"custom_error_message"`
-	Enabled            *bool      `json:"enabled"`
+	Name               string        `json:"name"`
+	Description        string        `json:"description"`
+	SystemPrompt       string        `json:"system_prompt"`
+	BeginDialogs       []Dialogue    `json:"begin_dialogs"`
+	CustomErrorMessage string        `json:"custom_error_message"`
+	RoutingScope       *RoutingScope `json:"routing_scope"`
+	Enabled            *bool         `json:"enabled"`
 }
 
 func LoadFile(path string) ([]Profile, string, error) {
@@ -67,6 +68,7 @@ func LoadFile(path string) ([]Profile, string, error) {
 			SystemPrompt:       strings.TrimSpace(raw.SystemPrompt),
 			BeginDialogs:       raw.BeginDialogs,
 			CustomErrorMessage: strings.TrimSpace(raw.CustomErrorMessage),
+			RoutingScope:       raw.RoutingScope,
 		}
 		profile, err = normalizeProfile(profile)
 		if err != nil {

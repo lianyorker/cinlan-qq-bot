@@ -36,25 +36,35 @@ type Sender interface {
 }
 
 type Stats struct {
-	Received     uint64 `json:"received"`
-	Ignored      uint64 `json:"ignored"`
-	Processed    uint64 `json:"processed"`
-	Replied      uint64 `json:"replied"`
-	AgentErrors  uint64 `json:"agent_errors"`
-	SendErrors   uint64 `json:"send_errors"`
-	RateLimited  uint64 `json:"rate_limited"`
-	HandoffCount uint64 `json:"handoff_count"`
+	Received             uint64 `json:"received"`
+	Ignored              uint64 `json:"ignored"`
+	Processed            uint64 `json:"processed"`
+	Replied              uint64 `json:"replied"`
+	AgentErrors          uint64 `json:"agent_errors"`
+	SendErrors           uint64 `json:"send_errors"`
+	RateLimited          uint64 `json:"rate_limited"`
+	AttentionDecisions   uint64 `json:"attention_decisions"`
+	AttentionReplies     uint64 `json:"attention_replies"`
+	AttentionIgnored     uint64 `json:"attention_ignored"`
+	AttentionErrors      uint64 `json:"attention_errors"`
+	AttentionRateLimited uint64 `json:"attention_rate_limited"`
+	HandoffCount         uint64 `json:"handoff_count"`
 }
 
 type counters struct {
-	received     atomic.Uint64
-	ignored      atomic.Uint64
-	processed    atomic.Uint64
-	replied      atomic.Uint64
-	agentErrors  atomic.Uint64
-	sendErrors   atomic.Uint64
-	rateLimited  atomic.Uint64
-	handoffCount atomic.Uint64
+	received             atomic.Uint64
+	ignored              atomic.Uint64
+	processed            atomic.Uint64
+	replied              atomic.Uint64
+	agentErrors          atomic.Uint64
+	sendErrors           atomic.Uint64
+	rateLimited          atomic.Uint64
+	attentionDecisions   atomic.Uint64
+	attentionReplies     atomic.Uint64
+	attentionIgnored     atomic.Uint64
+	attentionErrors      atomic.Uint64
+	attentionRateLimited atomic.Uint64
+	handoffCount         atomic.Uint64
 }
 
 type Service struct {
@@ -73,12 +83,14 @@ type Service struct {
 	personas     *persona.Registry
 	bindings     *binding.Registry
 
-	stateMu       sync.Mutex
-	lastAccepted  map[string]time.Time
-	requestTimes  map[string][]time.Time
-	seenMessages  map[string]time.Time
-	dedupeCounter uint64
-	rateCounter   uint64
+	stateMu          sync.Mutex
+	lastAccepted     map[string]time.Time
+	requestTimes     map[string][]time.Time
+	attentionTimes   map[string][]time.Time
+	seenMessages     map[string]time.Time
+	dedupeCounter    uint64
+	rateCounter      uint64
+	attentionCounter uint64
 
 	flow *pipeline.Pipeline
 
@@ -115,6 +127,12 @@ func NewWithRuntime(
 	if logger == nil {
 		logger = slog.Default()
 	}
+	if cfg.AttentionTimeout <= 0 {
+		cfg.AttentionTimeout = 5 * time.Second
+	}
+	if cfg.AttentionRateWindow <= 0 {
+		cfg.AttentionRateWindow = time.Minute
+	}
 	if providers == nil {
 		providers = provider.NewRegistry()
 		if agentClient != nil {
@@ -144,6 +162,7 @@ func NewWithRuntime(
 		now:                time.Now,
 		lastAccepted:       make(map[string]time.Time),
 		requestTimes:       make(map[string][]time.Time),
+		attentionTimes:     make(map[string][]time.Time),
 		seenMessages:       make(map[string]time.Time),
 		providers:          providers,
 		plugins:            plugins,
@@ -289,14 +308,19 @@ func (s *Service) RunPlatform(ctx context.Context, events <-chan platform.Event)
 
 func (s *Service) Stats() Stats {
 	return Stats{
-		Received:     s.stats.received.Load(),
-		Ignored:      s.stats.ignored.Load(),
-		Processed:    s.stats.processed.Load(),
-		Replied:      s.stats.replied.Load(),
-		AgentErrors:  s.stats.agentErrors.Load(),
-		SendErrors:   s.stats.sendErrors.Load(),
-		RateLimited:  s.stats.rateLimited.Load(),
-		HandoffCount: s.stats.handoffCount.Load(),
+		Received:             s.stats.received.Load(),
+		Ignored:              s.stats.ignored.Load(),
+		Processed:            s.stats.processed.Load(),
+		Replied:              s.stats.replied.Load(),
+		AgentErrors:          s.stats.agentErrors.Load(),
+		SendErrors:           s.stats.sendErrors.Load(),
+		RateLimited:          s.stats.rateLimited.Load(),
+		AttentionDecisions:   s.stats.attentionDecisions.Load(),
+		AttentionReplies:     s.stats.attentionReplies.Load(),
+		AttentionIgnored:     s.stats.attentionIgnored.Load(),
+		AttentionErrors:      s.stats.attentionErrors.Load(),
+		AttentionRateLimited: s.stats.attentionRateLimited.Load(),
+		HandoffCount:         s.stats.handoffCount.Load(),
 	}
 }
 
@@ -632,6 +656,48 @@ func (s *Service) allowRequest(key string) bool {
 				now.Sub(last) >= s.cfg.UserCooldown &&
 				len(s.requestTimes[currentKey]) == 0 {
 				delete(s.lastAccepted, currentKey)
+			}
+		}
+	}
+	return true
+}
+
+func (s *Service) allowAttentionDecision(key string) bool {
+	if s.cfg.AttentionRateLimit <= 0 {
+		return true
+	}
+	s.stateMu.Lock()
+	defer s.stateMu.Unlock()
+	now := s.now()
+	requests := s.attentionTimes[key]
+	first := 0
+	for first < len(requests) &&
+		now.Sub(requests[first]) >= s.cfg.AttentionRateWindow {
+		first++
+	}
+	if first > 0 {
+		requests = append([]time.Time(nil), requests[first:]...)
+	}
+	if len(requests) >= s.cfg.AttentionRateLimit {
+		s.attentionTimes[key] = requests
+		return false
+	}
+	s.attentionTimes[key] = append(requests, now)
+	s.attentionCounter++
+	if s.attentionCounter%128 == 0 {
+		for currentKey, currentRequests := range s.attentionTimes {
+			first = 0
+			for first < len(currentRequests) &&
+				now.Sub(currentRequests[first]) >= s.cfg.AttentionRateWindow {
+				first++
+			}
+			if first >= len(currentRequests) {
+				delete(s.attentionTimes, currentKey)
+			} else if first > 0 {
+				s.attentionTimes[currentKey] = append(
+					[]time.Time(nil),
+					currentRequests[first:]...,
+				)
 			}
 		}
 	}

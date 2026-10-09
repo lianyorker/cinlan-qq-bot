@@ -68,6 +68,36 @@ func TestCustomAgentPrivateChatContract(t *testing.T) {
 	}
 }
 
+func TestCustomAgentAttentionContractRedactsIdentity(t *testing.T) {
+	var received customRequest
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if err := json.NewDecoder(request.Body).Decode(&received); err != nil {
+			t.Errorf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(writer).Encode(map[string]string{"reply": "ok"})
+	}))
+	defer server.Close()
+
+	client := NewHTTPClient(testAgentConfig("custom", server.URL), discardLogger())
+	input := domain.AgentRequest{
+		RequestID:     "attention:opaque",
+		SessionID:     "maintenance:attention:opaque",
+		Text:          "需要处理吗",
+		Platform:      "qq-onebot",
+		ChatType:      "private",
+		SystemPrompt:  "routing scope only",
+		RestrictTools: true,
+	}
+	if _, err := client.Reply(context.Background(), input); err != nil {
+		t.Fatalf("Reply() error = %v", err)
+	}
+	if received.RequestID != "attention:opaque" || received.SessionID != "maintenance:attention:opaque" ||
+		received.Message.UserID != "" || received.Message.ChatID != "" || received.Message.SelfID != "" ||
+		received.Message.SenderName != "" || len(received.History) != 0 || received.SystemPrompt != "routing scope only" {
+		t.Fatalf("attention payload leaked identity or context: %#v", received)
+	}
+}
+
 func TestOpenAICompatibleContract(t *testing.T) {
 	var received openAIRequest
 	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {

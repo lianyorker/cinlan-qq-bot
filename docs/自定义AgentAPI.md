@@ -1,8 +1,8 @@
-# Custom Agent API v1
+# 自定义 Agent API v1
 
 当 `AGENT_API_MODE=custom` 时，服务向 `AGENT_API_URL` 发送 JSON `POST` 请求。
 
-## Request
+## 请求
 
 ```http
 POST /v1/qq/reply HTTP/1.1
@@ -91,7 +91,26 @@ Registry 中执行已注册且通过权限检查的
 - `components` 可选，保留统一消息段和原始媒体引用；Agent API 必须自行校验 URL、文件类型和大小。
 - 服务不会在日志中记录消息正文或 `AGENT_API_KEY`。
 
-## Response
+## 注意力路由
+
+当 Binding 的 reply_policy.mode 为 ai_decide 时，运行时会先发送一次路由请求。该请求的 request_id 以 attention: 开头，服务端应将回复正文作为严格 JSON 解析：
+
+```json
+{
+  "action": "reply",
+  "category": "support",
+  "confidence": 0.91,
+  "reason": "消息请求当前业务帮助"
+}
+```
+
+允许的 category 为 support、chatter、other_recipient、out_of_scope、unsafe 和 uncertain。action、category、confidence、reason 都是必填字段；confidence 必须在 0 到 1 之间，未知字段或 Markdown 外壳会被拒绝。路由器只负责判断，不应生成面向用户的答案。
+
+路由请求默认不携带 history、QQ user/chat/self ID、昵称、原始消息 ID、消息组件、Tool、Skill、Knowledge 或 MCP 权限。它只携带当前文本、chat_type、platform、结构化 routing_scope 和固定安全系统提示。若显式配置 history.mode=last_n，服务端仍应把历史视为不可信用户数据。
+
+路由失败或 confidence 低于 Binding 的 confidence_threshold 时，运行时按 reply_policy.on_error 处理；默认 ignore。需要使用低成本或不同数据驻留的模型时，为 reply_policy.provider 指定独立 Provider。该 Provider 必须支持上述路由响应格式；否则所有候选消息都会按失败策略处理。
+
+## 响应
 
 普通回答：
 
@@ -127,19 +146,19 @@ Registry 中执行已注册且通过权限检查的
 }
 ```
 
-## Status And Retry
+## 状态与重试
 
-| Result | Behavior |
+| 结果 | 行为 |
 |---|---|
-| `2xx` + valid JSON | Process response |
-| `429` | Retry and honor `Retry-After` |
-| `5xx` | Exponential backoff retry |
-| Other `4xx` | Return immediately without retry |
-| Timeout/network failure | Exponential backoff retry |
+| `2xx` + 合法 JSON | 处理响应 |
+| `429` | 重试并遵循 `Retry-After` |
+| `5xx` | 指数退避重试 |
+| 其他 `4xx` | 立即返回，不重试 |
+| 超时/网络失败 | 指数退避重试 |
 
 总尝试次数为 `AGENT_MAX_RETRIES + 1`，所有尝试和等待共享 `AGENT_TIMEOUT`。
 
-## Authentication
+## 认证
 
 配置 `AGENT_API_KEY` 后才发送认证头；头名称和 scheme 可修改：
 

@@ -39,11 +39,6 @@ func TestEncryptedSQLitePersistsWithoutPlaintext(t *testing.T) {
 	store.ApplyCompression(scope, "encrypted summary", "learned preference", 0)
 	persona := "private-persona"
 	store.UpdateSettings(scope, &persona, nil)
-	marker := "file-delivery:v1:qq-native:self:10001:user:20002:file:sql"
-	claimed, err := store.ClaimMarker(marker)
-	if err != nil || !claimed {
-		t.Fatalf("ClaimMarker() = %v, %v", claimed, err)
-	}
 	if err := store.PersistenceError(); err != nil {
 		t.Fatalf("PersistenceError() = %v", err)
 	}
@@ -63,7 +58,6 @@ func TestEncryptedSQLitePersistsWithoutPlaintext(t *testing.T) {
 			"encrypted summary",
 			"learned preference",
 			"private-persona",
-			marker,
 		} {
 			if bytes.Contains(data, []byte(plaintext)) {
 				t.Fatalf("%q contains plaintext %q", entry, plaintext)
@@ -81,17 +75,6 @@ func TestEncryptedSQLitePersistsWithoutPlaintext(t *testing.T) {
 		snapshot.Memory != "learned preference" ||
 		snapshot.Settings.Persona != persona {
 		t.Fatalf("restored snapshot = %#v", snapshot)
-	}
-	claimed, err = restored.ClaimMarker(marker)
-	if err != nil || claimed {
-		t.Fatalf("restored ClaimMarker() = %v, %v", claimed, err)
-	}
-	if err := restored.ReleaseMarker(marker); err != nil {
-		t.Fatalf("ReleaseMarker() error = %v", err)
-	}
-	claimed, err = restored.ClaimMarker(marker)
-	if err != nil || !claimed {
-		t.Fatalf("reclaimed marker = %v, %v", claimed, err)
 	}
 }
 

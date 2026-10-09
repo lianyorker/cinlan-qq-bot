@@ -29,12 +29,14 @@ type managed struct {
 }
 
 type Info struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description,omitempty"`
-	Enabled     bool            `json:"enabled"`
-	Permission  tool.Permission `json:"permission"`
-	Tool        string          `json:"tool"`
-	Provider    string          `json:"provider,omitempty"`
+	Name           string          `json:"name"`
+	Description    string          `json:"description,omitempty"`
+	Enabled        bool            `json:"enabled"`
+	Permission     tool.Permission `json:"permission"`
+	Tool           string          `json:"tool"`
+	Provider       string          `json:"provider,omitempty"`
+	InheritHistory bool            `json:"inherit_history"`
+	HistoryLimit   int             `json:"history_limit,omitempty"`
 }
 
 // Manager implements synchronous, config-defined handoff tools. It uses a
@@ -175,12 +177,14 @@ func (m *Manager) List() []Info {
 	for _, name := range names {
 		current := m.agents[name]
 		result = append(result, Info{
-			Name:        current.config.Name,
-			Description: current.config.Description,
-			Enabled:     current.config.Active,
-			Permission:  current.config.Permission,
-			Tool:        current.definition.Name,
-			Provider:    current.config.Provider,
+			Name:           current.config.Name,
+			Description:    current.config.Description,
+			Enabled:        current.config.Active,
+			Permission:     current.config.Permission,
+			Tool:           current.definition.Name,
+			Provider:       current.config.Provider,
+			InheritHistory: current.config.InheritHistory,
+			HistoryLimit:   current.config.HistoryLimit,
 		})
 	}
 	return result
@@ -347,7 +351,7 @@ func executeHandoff(
 		GroupID:       call.Actor.GroupID,
 		SelfID:        call.Actor.SelfID,
 		SenderRole:    call.Actor.Role,
-		History:       append([]domain.ChatMessage(nil), call.Actor.History...),
+		History:       subagentHistory(config, call.Actor.History),
 		SystemPrompt:  config.SystemPrompt,
 		PromptContext: strings.TrimSpace(input.Context),
 		AllowedSkills: append([]string(nil), config.Skills...),
@@ -361,6 +365,16 @@ func executeHandoff(
 		"reply":   response.Reply,
 		"handoff": response.Handoff,
 	}}, nil
+}
+
+func subagentHistory(config Config, history []domain.ChatMessage) []domain.ChatMessage {
+	if !config.InheritHistory || config.HistoryLimit <= 0 {
+		return nil
+	}
+	if len(history) > config.HistoryLimit {
+		history = history[len(history)-config.HistoryLimit:]
+	}
+	return append([]domain.ChatMessage(nil), history...)
 }
 
 func cloneProviders(source map[string]*agent.HTTPClient) map[string]*agent.HTTPClient {

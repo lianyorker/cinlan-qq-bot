@@ -532,7 +532,7 @@ func TestSessionSelectsProviderAndPersona(t *testing.T) {
 		t.Fatalf("provider calls primary=%d backup=%d", len(primary.requests), len(backup.requests))
 	}
 	if !strings.HasPrefix(backup.requests[0].SystemPrompt, "sales prompt") ||
-		!strings.Contains(backup.requests[0].SystemPrompt, "群聊客服事实边界") {
+		!strings.Contains(backup.requests[0].SystemPrompt, "群聊交互边界") {
 		t.Fatalf("system prompt = %q", backup.requests[0].SystemPrompt)
 	}
 }
@@ -597,7 +597,7 @@ func TestBindingOverridesSessionProviderAndPersona(t *testing.T) {
 		)
 	}
 	if !strings.HasPrefix(boundAgent.requests[0].SystemPrompt, "bound prompt") ||
-		!strings.Contains(boundAgent.requests[0].SystemPrompt, "群聊客服事实边界") {
+		!strings.Contains(boundAgent.requests[0].SystemPrompt, "群聊交互边界") {
 		t.Fatalf("system prompt = %q", boundAgent.requests[0].SystemPrompt)
 	}
 }

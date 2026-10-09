@@ -12,7 +12,6 @@
       "description": "示例数据库脚本，用户私聊需要获取脚本时自动发送给用户",
       "path": "../files/replace-with-your.sql",
       "display_name": "replace-with-your.sql",
-      "first_delivery_message": "感谢关注本项目。以下是首次领取文件前展示的说明。",
       "enabled": true,
       "private_only": true,
       "allowed_group_ids": [

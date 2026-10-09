@@ -27,6 +27,9 @@ func TestManagerRegistersSynchronousHandoffTool(t *testing.T) {
 			!strings.Contains(string(body), `"chat_id":"3"`) {
 			t.Errorf("subagent request did not preserve chat context: %s", body)
 		}
+		if strings.Contains(string(body), "previous question") {
+			t.Errorf("subagent inherited history without opt-in: %s", body)
+		}
 		_, _ = io.WriteString(writer, `{"reply":"售后子 Agent 已处理"}`)
 	}))
 	defer server.Close()
@@ -160,4 +163,19 @@ func filepathForTest(t *testing.T, content string) string {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	return path
+}
+
+func TestSubagentHistoryRequiresOptInAndAppliesLimit(t *testing.T) {
+	history := []domain.ChatMessage{
+		{Role: "user", Content: "one"},
+		{Role: "assistant", Content: "two"},
+		{Role: "user", Content: "three"},
+	}
+	if got := subagentHistory(Config{}, history); got != nil {
+		t.Fatalf("default history = %#v", got)
+	}
+	got := subagentHistory(Config{InheritHistory: true, HistoryLimit: 2}, history)
+	if len(got) != 2 || got[0].Content != "two" || got[1].Content != "three" {
+		t.Fatalf("limited history = %#v", got)
+	}
 }

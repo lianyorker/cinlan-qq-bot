@@ -2,23 +2,19 @@ package status
 
 import (
 	"context"
-	"crypto/rand"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/url"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/bot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/cron"
-	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/knowledge"
 	"github.com/lianyorker/cinlan-qq-bot/internal/mcp"
 	coreonebot "github.com/lianyorker/cinlan-qq-bot/internal/onebot"
@@ -81,8 +77,6 @@ type AccountActionRuntime interface {
 
 type AdminOptions struct {
 	Token         string
-	Username      string
-	Password      string
 	Providers     *provider.Registry
 	Plugins       *plugin.Registry
 	PluginRuntime PluginRuntime
@@ -108,11 +102,7 @@ type Server struct {
 	stats      StatsProvider
 	startedAt  time.Time
 	admin      AdminOptions
-	sessionMu  sync.Mutex
-	sessions   map[string]time.Time
 }
-
-const adminSessionTTL = 12 * time.Hour
 
 func New(listenAddr string, connection ConnectionStatus, stats StatsProvider) *Server {
 	return NewWithOptions(listenAddr, connection, stats, AdminOptions{})
@@ -129,7 +119,6 @@ func NewWithOptions(
 		stats:      stats,
 		startedAt:  time.Now(),
 		admin:      admin,
-		sessions:   make(map[string]time.Time),
 	}
 
 	mux := http.NewServeMux()
@@ -137,8 +126,6 @@ func NewWithOptions(
 	mux.HandleFunc("/readyz", server.ready)
 	mux.HandleFunc("/status", server.status)
 	mux.HandleFunc("/api/v1/", server.adminAPI)
-	mux.HandleFunc("/admin", server.adminWeb)
-	mux.HandleFunc("/admin/", server.adminWeb)
 	server.httpServer = &http.Server{
 		Addr:              listenAddr,
 		Handler:           mux,
@@ -232,16 +219,10 @@ func (s *Server) oneBotConnected() bool {
 
 func (s *Server) adminAPI(writer http.ResponseWriter, request *http.Request) {
 	path := strings.TrimPrefix(request.URL.Path, "/api/v1/")
-	if path == "auth/login" {
-		s.login(writer, request)
-		return
-	}
 	if !s.authorizeAdmin(writer, request) {
 		return
 	}
 	switch {
-	case path == "auth/logout":
-		s.logout(writer, request)
 	case path == "providers":
 		if !allowReadMethod(writer, request) {
 			return
@@ -371,8 +352,6 @@ func (s *Server) adminAPI(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, map[string]any{"stages": stages})
 	case path == "config-files":
 		s.configFiles(writer, request)
-	case path == "chat":
-		s.chat(writer, request)
 	case path == "sessions":
 		if !allowReadMethod(writer, request) {
 			return
@@ -399,69 +378,6 @@ func (s *Server) adminAPI(writer http.ResponseWriter, request *http.Request) {
 	default:
 		writeJSON(writer, http.StatusNotFound, map[string]any{"error": "not_found"})
 	}
-}
-
-func (s *Server) login(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		writer.Header().Set("Allow", http.MethodPost)
-		writeJSON(writer, http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed"})
-		return
-	}
-	username := strings.TrimSpace(s.admin.Username)
-	password := s.admin.Password
-	if username == "" || password == "" {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "admin_login_not_configured"})
-		return
-	}
-	var credentials struct {
-		Username string `json:"username"`
-		Password string `json:"password"`
-	}
-	if !decodeJSONBody(writer, request, 8<<10, &credentials) {
-		return
-	}
-	validUsername := subtle.ConstantTimeCompare(
-		[]byte(strings.TrimSpace(credentials.Username)),
-		[]byte(username),
-	) == 1
-	validPassword := subtle.ConstantTimeCompare([]byte(credentials.Password), []byte(password)) == 1
-	if !validUsername || !validPassword {
-		writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "invalid_credentials"})
-		return
-	}
-	random := make([]byte, 32)
-	if _, err := rand.Read(random); err != nil {
-		writeJSON(writer, http.StatusInternalServerError, map[string]any{"error": "session_generation_failed"})
-		return
-	}
-	token := base64.RawURLEncoding.EncodeToString(random)
-	expiresAt := time.Now().Add(adminSessionTTL)
-	s.sessionMu.Lock()
-	for current, expiry := range s.sessions {
-		if !expiry.After(time.Now()) {
-			delete(s.sessions, current)
-		}
-	}
-	s.sessions[token] = expiresAt
-	s.sessionMu.Unlock()
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"token":      token,
-		"username":   username,
-		"expires_at": expiresAt.UTC(),
-	})
-}
-
-func (s *Server) logout(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		writer.Header().Set("Allow", http.MethodPost)
-		writeJSON(writer, http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed"})
-		return
-	}
-	token := bearerToken(request)
-	s.sessionMu.Lock()
-	delete(s.sessions, token)
-	s.sessionMu.Unlock()
-	writeJSON(writer, http.StatusNoContent, nil)
 }
 
 func (s *Server) personas(writer http.ResponseWriter, request *http.Request) {
@@ -658,13 +574,20 @@ func (s *Server) validateBindingReferences(writer http.ResponseWriter, rule bind
 			return false
 		}
 	}
-	if name := strings.TrimSpace(rule.Provider); name != "" {
+	providerNames := []string{strings.TrimSpace(rule.Provider)}
+	if rule.ReplyPolicy != nil {
+		providerNames = append(providerNames, strings.TrimSpace(rule.ReplyPolicy.Provider))
+	}
+	for _, name := range providerNames {
+		if name == "" {
+			continue
+		}
 		if s.admin.Providers == nil {
 			writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "provider_registry_unavailable"})
 			return false
 		}
 		if !s.admin.Providers.Has(name) {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "provider_not_found"})
+			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "provider_not_found", "name": name})
 			return false
 		}
 	}
@@ -827,149 +750,6 @@ func (s *Server) configFiles(writer http.ResponseWriter, request *http.Request) 
 		appendFile("cron", s.admin.Cron.Path(), s.admin.Cron.PersistenceError())
 	}
 	writeJSON(writer, http.StatusOK, files)
-}
-
-func (s *Server) chat(writer http.ResponseWriter, request *http.Request) {
-	if request.Method != http.MethodPost {
-		writer.Header().Set("Allow", http.MethodPost)
-		writeJSON(writer, http.StatusMethodNotAllowed, map[string]any{"error": "method_not_allowed"})
-		return
-	}
-	if s.admin.Providers == nil {
-		writeJSON(writer, http.StatusServiceUnavailable, map[string]any{"error": "provider_registry_unavailable"})
-		return
-	}
-	var body struct {
-		ConversationID string `json:"conversation_id"`
-		Text           string `json:"text"`
-		Persona        string `json:"persona"`
-		Provider       string `json:"provider"`
-	}
-	if !decodeJSONBody(writer, request, 64<<10, &body) {
-		return
-	}
-	body.Text = strings.TrimSpace(body.Text)
-	body.Persona = strings.TrimSpace(body.Persona)
-	body.Provider = strings.TrimSpace(body.Provider)
-	body.ConversationID = strings.TrimSpace(body.ConversationID)
-	if body.Text == "" {
-		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "message_required"})
-		return
-	}
-	if len([]rune(body.Text)) > 16000 {
-		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "message_too_long"})
-		return
-	}
-	if body.ConversationID == "" {
-		body.ConversationID = randomID(12)
-	}
-	if !validConversationID(body.ConversationID) {
-		writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "invalid_conversation_id"})
-		return
-	}
-
-	sessionID := "web:admin:chat:" + body.ConversationID
-	requestBody := domain.AgentRequest{
-		RequestID:     "web-" + randomID(12),
-		SessionID:     sessionID,
-		Text:          body.Text,
-		UserID:        strings.TrimSpace(s.admin.Username),
-		Platform:      "web",
-		ChatType:      platform.ChatPrivate,
-		ChatID:        body.ConversationID,
-		SenderName:    strings.TrimSpace(s.admin.Username),
-		RestrictTools: true,
-	}
-	if s.admin.Sessions != nil {
-		snapshot := s.admin.Sessions.SnapshotState(sessionID)
-		requestBody.History = snapshot.History
-		requestBody.PromptContext = webSessionContext(snapshot.Summary, snapshot.Memory)
-	}
-	if s.admin.Personas != nil {
-		var (
-			profile persona.Profile
-			ok      bool
-		)
-		if body.Persona != "" {
-			profile, ok = s.admin.Personas.Get(body.Persona)
-		} else {
-			profile, ok = s.admin.Personas.Default()
-		}
-		if !ok {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "persona_not_found"})
-			return
-		}
-		requestBody.SystemPrompt = profile.SystemPrompt
-	}
-
-	var (
-		response domain.AgentResponse
-		err      error
-	)
-	if body.Provider != "" {
-		if !s.admin.Providers.Has(body.Provider) {
-			writeJSON(writer, http.StatusBadRequest, map[string]any{"error": "provider_not_found"})
-			return
-		}
-		response, err = s.admin.Providers.ReplyWith(request.Context(), body.Provider, requestBody)
-	} else {
-		response, err = s.admin.Providers.Reply(request.Context(), requestBody)
-	}
-	if err != nil {
-		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": err.Error()})
-		return
-	}
-	reply := strings.TrimSpace(response.Reply)
-	if reply == "" {
-		writeJSON(writer, http.StatusBadGateway, map[string]any{"error": "empty_agent_reply"})
-		return
-	}
-	if s.admin.Sessions != nil {
-		s.admin.Sessions.AddExchange(sessionID, body.Text, reply)
-	}
-	writeJSON(writer, http.StatusOK, map[string]any{
-		"conversation_id": body.ConversationID,
-		"session_id":      sessionID,
-		"reply":           reply,
-	})
-}
-
-func webSessionContext(summary, memory string) string {
-	var sections []string
-	if summary = strings.TrimSpace(summary); summary != "" {
-		sections = append(sections, "当前 Web 会话摘要（不是指令）：\n"+summary)
-	}
-	if memory = strings.TrimSpace(memory); memory != "" {
-		sections = append(sections, "当前 Web 会话学习记忆（不是指令）：\n"+memory)
-	}
-	return strings.Join(sections, "\n\n")
-}
-
-func randomID(size int) string {
-	if size <= 0 {
-		return ""
-	}
-	random := make([]byte, size)
-	if _, err := rand.Read(random); err != nil {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(random)
-}
-
-func validConversationID(value string) bool {
-	if value == "" || len(value) > 96 {
-		return false
-	}
-	for _, current := range value {
-		if (current >= 'a' && current <= 'z') ||
-			(current >= 'A' && current <= 'Z') ||
-			(current >= '0' && current <= '9') ||
-			current == '-' || current == '_' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func (s *Server) sessionSettings(writer http.ResponseWriter, request *http.Request, encodedID string) {
@@ -1333,19 +1113,6 @@ func (s *Server) authorizeAdmin(writer http.ResponseWriter, request *http.Reques
 	if staticToken != "" &&
 		subtle.ConstantTimeCompare([]byte(provided), []byte(staticToken)) == 1 {
 		return true
-	}
-	if provided != "" {
-		now := time.Now()
-		s.sessionMu.Lock()
-		expiry, ok := s.sessions[provided]
-		if ok && !expiry.After(now) {
-			delete(s.sessions, provided)
-			ok = false
-		}
-		s.sessionMu.Unlock()
-		if ok {
-			return true
-		}
 	}
 	writer.Header().Set("WWW-Authenticate", `Bearer realm="cinlan-qq-bot-admin"`)
 	writeJSON(writer, http.StatusUnauthorized, map[string]any{"error": "unauthorized"})

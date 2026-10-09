@@ -1,6 +1,7 @@
 .env
 .env.*
 !.env.example
+.idea/
 *.pem
 *.key
 *.p12
@@ -19,3 +20,4 @@
 /cinlan-qq-bot.exe
 coverage.out
 runtime/loader/target/
+/notes/

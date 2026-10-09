@@ -1,6 +1,7 @@
 package subagent
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,5 +44,22 @@ func TestLoadFileRejectsInvalidAgent(t *testing.T) {
 	_, err := LoadFile(path)
 	if err == nil || !strings.Contains(err.Error(), "invalid") {
 		t.Fatalf("LoadFile() error = %v, want invalid name", err)
+	}
+}
+
+func TestLoadFileHistoryPolicyIsExplicit(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "subagents.json")
+	data, _ := json.Marshal(map[string]any{"agents": []map[string]any{{
+		"name": "reviewer", "description": "review", "inherit_history": true, "history_limit": 2,
+	}}})
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	configs, err := LoadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(configs) != 1 || !configs[0].InheritHistory || configs[0].HistoryLimit != 2 {
+		t.Fatalf("history policy = %#v", configs)
 	}
 }

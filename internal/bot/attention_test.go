@@ -2,7 +2,8 @@ package bot
 
 import (
 	"context"
-	"strconv"
+	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -16,14 +17,10 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 )
 
-func TestSmartAttentionRoutesAmbientSupportQuestion(t *testing.T) {
-	agentClient := &fakeAgent{reply: func(
-		request domain.AgentRequest,
-	) (domain.AgentResponse, error) {
+func TestAIDecisionRoutesAmbientSupportQuestionWithoutIdentifiers(t *testing.T) {
+	agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
 		if strings.HasPrefix(request.RequestID, "attention:") {
-			return domain.AgentResponse{
-				Reply: `{"action":"reply","reason":"业务问题"}`,
-			}, nil
+			return attentionResponse("reply", "support", 0.96, "业务问题"), nil
 		}
 		return domain.AgentResponse{Reply: "直接结论"}, nil
 	}}
@@ -35,53 +32,54 @@ func TestSmartAttentionRoutesAmbientSupportQuestion(t *testing.T) {
 	if len(agentClient.requests) != 2 {
 		t.Fatalf("agent requests = %d, want attention + answer", len(agentClient.requests))
 	}
-	if !strings.HasSuffix(
-		agentClient.requests[0].SessionID,
-		":maintenance:attention",
-	) || !agentClient.requests[0].RestrictTools {
-		t.Fatalf("attention request = %#v", agentClient.requests[0])
+	request := agentClient.requests[0]
+	if !strings.HasPrefix(request.SessionID, "maintenance:attention:") ||
+		!request.RestrictTools || len(request.History) != 0 {
+		t.Fatalf("attention request = %#v", request)
+	}
+	if request.MessageID != "" || request.UserID != "" || request.ChatID != "" ||
+		request.GroupID != "" || request.SelfID != "" || request.SenderName != "" ||
+		strings.Contains(request.SessionID, "30003") ||
+		strings.Contains(request.SystemPrompt, "只处理当前测试业务") {
+		t.Fatalf("attention request leaked identifiers or answer prompt: %#v", request)
 	}
 	if len(sender.messages) != 1 || sender.messages[0].text != "直接结论" {
 		t.Fatalf("sent messages = %#v", sender.messages)
 	}
+	stats := service.Stats()
+	if stats.AttentionDecisions != 1 || stats.AttentionReplies != 1 {
+		t.Fatalf("attention stats = %#v", stats)
+	}
 }
 
-func TestSmartAttentionIgnoresChatterAndAcknowledgement(t *testing.T) {
+func TestAIDecisionIgnoresExactAcknowledgementLocally(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 
-	service.handleEvent(context.Background(), testEvent("chatter", "手续费好贵", false))
 	service.handleEvent(context.Background(), testEvent("ack", "好的", true))
 
-	if len(agentClient.requests) != 0 || len(sender.messages) != 0 {
-		t.Fatalf(
-			"ignored messages reached agent: requests=%d messages=%d",
-			len(agentClient.requests),
-			len(sender.messages),
-		)
+	if len(agentClient.requests) != 0 || len(sender.messages) != 0 ||
+		service.Stats().AttentionIgnored != 1 {
+		t.Fatalf("acknowledgement reached agent: requests=%d messages=%d stats=%#v", len(agentClient.requests), len(sender.messages), service.Stats())
 	}
 }
 
-func TestSmartAttentionClassifierCanIgnoreAmbientCandidate(t *testing.T) {
-	agentClient := &fakeAgent{response: domain.AgentResponse{
-		Reply: `{"action":"ignore","reason":"不属于当前业务"}`,
-	}}
+func TestAIDecisionClassifierCanIgnoreCandidate(t *testing.T) {
+	agentClient := &fakeAgent{response: attentionResponse(
+		"ignore", "out_of_scope", 0.91, "不属于当前业务",
+	)}
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 
-	service.handleEvent(context.Background(), testEvent("ignore", "这个错误怎么解决", false))
+	service.handleEvent(context.Background(), testEvent("ignore", "给我写一首诗", true))
 
 	if len(agentClient.requests) != 1 || len(sender.messages) != 0 {
-		t.Fatalf(
-			"attention ignore requests=%d messages=%d",
-			len(agentClient.requests),
-			len(sender.messages),
-		)
+		t.Fatalf("attention ignore requests=%d messages=%d", len(agentClient.requests), len(sender.messages))
 	}
 }
 
-func TestSmartAttentionIgnoresQuestionAddressedToAnotherUser(t *testing.T) {
+func TestAIDecisionIgnoresQuestionAddressedToAnotherUser(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
@@ -104,18 +102,14 @@ func TestSmartAttentionIgnoresQuestionAddressedToAnotherUser(t *testing.T) {
 	service.handlePlatformEvent(context.Background(), event)
 
 	if len(agentClient.requests) != 0 || len(sender.messages) != 0 {
-		t.Fatalf("message addressed to another user reached agent")
+		t.Fatal("message addressed to another user reached agent")
 	}
 }
 
-func TestSmartAttentionDirectMentionWinsOverExtraAtComponent(t *testing.T) {
-	agentClient := &fakeAgent{reply: func(
-		request domain.AgentRequest,
-	) (domain.AgentResponse, error) {
+func TestAIDecisionDirectMentionWinsOverExtraAtComponent(t *testing.T) {
+	agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
 		if strings.HasPrefix(request.RequestID, "attention:") {
-			return domain.AgentResponse{
-				Reply: `{"action":"reply","reason":"support question"}`,
-			}, nil
+			return attentionResponse("reply", "support", 0.93, "support question"), nil
 		}
 		return domain.AgentResponse{Reply: "direct answer"}, nil
 	}}
@@ -129,162 +123,205 @@ func TestSmartAttentionDirectMentionWinsOverExtraAtComponent(t *testing.T) {
 
 	service.handlePlatformEvent(context.Background(), event)
 
-	if len(agentClient.requests) != 2 {
-		t.Fatalf("agent requests = %d, want attention + answer", len(agentClient.requests))
-	}
-	if len(sender.messages) != 1 || sender.messages[0].text != "direct answer" {
-		t.Fatalf("sent messages = %#v", sender.messages)
+	if len(agentClient.requests) != 2 || len(sender.messages) != 1 ||
+		sender.messages[0].text != "direct answer" {
+		t.Fatalf("requests=%#v messages=%#v", agentClient.requests, sender.messages)
 	}
 }
 
-func TestSmartAttentionDirectTechnicalQuestionBypassesClassifier(t *testing.T) {
-	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "direct answer"}}
-	sender := &fakeSender{}
-	service := smartAttentionService(t, agentClient, sender)
-	profile, ok := service.PersonaRegistry().Get("support")
-	if !ok {
-		t.Fatal("support persona was not registered")
-	}
-	profile.Description = "open source community maintainer"
-	if err := service.PersonaRegistry().Upsert(profile); err != nil {
-		t.Fatalf("Upsert persona: %v", err)
-	}
-
-	service.handlePlatformEvent(
-		context.Background(),
-		platformEvent(
-			"direct-technical-question",
-			"定时任务好像是redis 我有必要集成MQ吗",
-			true,
-		),
-	)
-
-	if len(agentClient.requests) != 1 ||
-		strings.HasPrefix(agentClient.requests[0].RequestID, "attention:") {
-		t.Fatalf("agent requests = %#v, want direct answer request", agentClient.requests)
-	}
-	if len(sender.messages) != 1 || sender.messages[0].text != "direct answer" {
-		t.Fatalf("sent messages = %#v", sender.messages)
-	}
-}
-
-func TestSmartAttentionIgnoresTextualMentionAddressedToAnotherBot(t *testing.T) {
-	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
-	sender := &fakeSender{}
-	service := smartAttentionService(t, agentClient, sender)
-	for index, text := range []string{
-		"@菜包（GPT-5.5） 群主帅吗？",
-		"输出一张美女图@菜包（GPT-5.5）",
-	} {
-		service.handlePlatformEvent(
-			context.Background(),
-			platformEvent("textual-at-"+strconv.Itoa(index), text, false),
-		)
-	}
-	if len(agentClient.requests) != 0 || len(sender.messages) != 0 {
-		t.Fatalf(
-			"textual mentions reached agent: requests=%d messages=%d",
-			len(agentClient.requests),
-			len(sender.messages),
-		)
-	}
-}
-
-func TestSmartAttentionClassifiesDirectUnrelatedTask(t *testing.T) {
-	agentClient := &fakeAgent{response: domain.AgentResponse{
-		Reply: `{"action":"ignore","reason":"与客服业务无关"}`,
+func TestAIDecisionDoesNotHardCodeCreationTasks(t *testing.T) {
+	agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
+		if strings.HasPrefix(request.RequestID, "attention:") {
+			return attentionResponse("reply", "support", 0.9, "在当前角色范围内"), nil
+		}
+		return domain.AgentResponse{Reply: "可以实现"}, nil
 	}}
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 
 	service.handlePlatformEvent(
 		context.Background(),
-		platformEvent("direct-unrelated", "给我写一首诗", true),
+		platformEvent("creation", "帮我写一个业务脚本", true),
 	)
 
-	if len(agentClient.requests) != 1 ||
-		!strings.HasPrefix(agentClient.requests[0].RequestID, "attention:") ||
-		len(sender.messages) != 0 {
-		t.Fatalf(
-			"direct unrelated task requests=%#v messages=%#v",
-			agentClient.requests,
-			sender.messages,
-		)
+	if len(agentClient.requests) != 2 || len(sender.messages) != 1 {
+		t.Fatalf("creation task was hard-coded away: requests=%#v messages=%#v", agentClient.requests, sender.messages)
 	}
 }
 
-func TestSmartAttentionDeterministicallyIgnoresGenericCreationTasks(t *testing.T) {
-	for index, text := range []string{
-		"输出一张美女图",
-		"帮我写一个贪吃蛇程序",
-		"做个网站",
+func TestAIDecisionLowConfidenceUsesSafeFallback(t *testing.T) {
+	agentClient := &fakeAgent{response: attentionResponse(
+		"reply", "uncertain", 0.4, "信息不足",
+	)}
+	sender := &fakeSender{}
+	service := smartAttentionService(t, agentClient, sender)
+
+	service.handlePlatformEvent(context.Background(), platformEvent("uncertain", "看看这个", true))
+
+	if len(agentClient.requests) != 1 || len(sender.messages) != 0 {
+		t.Fatalf("low-confidence decision did not fail closed: requests=%#v messages=%#v", agentClient.requests, sender.messages)
+	}
+}
+
+func TestAIDecisionErrorCanFallBackToDirectMention(t *testing.T) {
+	policy := binding.ReplyPolicy{
+		Mode:                binding.ReplyModeAIDecide,
+		OnError:             binding.ReplyOnErrorMentionOnly,
+		ConfidenceThreshold: 0.7,
+	}
+	agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
+		if strings.HasPrefix(request.RequestID, "attention:") {
+			return domain.AgentResponse{}, errors.New("router unavailable")
+		}
+		return domain.AgentResponse{Reply: "fallback answer"}, nil
+	}}
+	sender := &fakeSender{}
+	service := replyPolicyService(t, agentClient, sender, platform.ChatGroup, "30003", policy)
+
+	service.handlePlatformEvent(context.Background(), platformEvent("fallback", "请处理", true))
+
+	if len(agentClient.requests) != 2 || len(sender.messages) != 1 ||
+		service.Stats().AttentionErrors != 1 {
+		t.Fatalf("fallback requests=%#v messages=%#v stats=%#v", agentClient.requests, sender.messages, service.Stats())
+	}
+}
+
+func TestPrivateAIDecisionSupportsReplyAndIgnore(t *testing.T) {
+	for _, test := range []struct {
+		name         string
+		action       string
+		wantRequests int
+		wantMessages int
+	}{
+		{name: "reply", action: "reply", wantRequests: 2, wantMessages: 1},
+		{name: "ignore", action: "ignore", wantRequests: 1, wantMessages: 0},
 	} {
-		agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
-		sender := &fakeSender{}
-		service := smartAttentionService(t, agentClient, sender)
+		t.Run(test.name, func(t *testing.T) {
+			agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
+				if strings.HasPrefix(request.RequestID, "attention:") {
+					category := "support"
+					if test.action == "ignore" {
+						category = "chatter"
+					}
+					return attentionResponse(test.action, category, 0.9, "private decision"), nil
+				}
+				return domain.AgentResponse{Reply: "private answer"}, nil
+			}}
+			sender := &fakeSender{}
+			service := replyPolicyService(t, agentClient, sender, platform.ChatPrivate, "20002", binding.ReplyPolicy{Mode: binding.ReplyModeAIDecide})
 
-		service.handlePlatformEvent(
-			context.Background(),
-			platformEvent("creation-"+strconv.Itoa(index), text, true),
-		)
+			service.handleEvent(context.Background(), testPrivateEvent("private-policy", "在吗", "20002"))
 
-		if len(agentClient.requests) != 0 || len(sender.messages) != 0 {
-			t.Fatalf(
-				"generic creation %q reached agent: requests=%d messages=%d",
-				text,
-				len(agentClient.requests),
-				len(sender.messages),
-			)
+			if len(agentClient.requests) != test.wantRequests || len(sender.messages) != test.wantMessages {
+				t.Fatalf("requests=%#v messages=%#v", agentClient.requests, sender.messages)
+			}
+		})
+	}
+}
+
+func TestAttentionHistoryDefaultsToNoneAndAnonymizesOptIn(t *testing.T) {
+	history := []domain.ChatMessage{
+		{Role: "user", Content: "[Alice (12345)]: first"},
+		{Role: "assistant", Content: "answer"},
+		{Role: "user", Content: "[Bob (67890)]: second"},
+	}
+	if got := attentionHistory(history, binding.AttentionHistoryPolicy{Mode: binding.AttentionHistoryNone}); got != nil {
+		t.Fatalf("default history = %#v, want nil", got)
+	}
+	got := attentionHistory(history, binding.AttentionHistoryPolicy{Mode: binding.AttentionHistoryLastN, Limit: 2})
+	if len(got) != 2 || got[1].Content != "[previous participant]: second" ||
+		strings.Contains(got[1].Content, "67890") {
+		t.Fatalf("anonymized history = %#v", got)
+	}
+}
+
+func TestAttentionDecisionRequiresStrictSchema(t *testing.T) {
+	valid := attentionResponse("reply", "support", 0.9, "needed").Reply
+	if decision, err := decodeAttentionDecision(valid); err != nil || decision.Action != "reply" {
+		t.Fatalf("valid decision = %#v, %v", decision, err)
+	}
+	for _, fields := range []map[string]any{
+		{"action": "reply", "reason": "missing fields"},
+		{"action": "reply", "category": "unknown", "confidence": 0.9, "reason": "x"},
+		{"action": "reply", "category": "support", "confidence": 1.1, "reason": "x"},
+	} {
+		invalid, _ := json.Marshal(fields)
+		if _, err := decodeAttentionDecision(string(invalid)); err == nil {
+			t.Fatalf("invalid decision accepted: %s", invalid)
 		}
 	}
 }
 
-func TestSourceLocationQuestionIsNotTreatedAsCodeCreation(t *testing.T) {
-	if isOutOfScopeCreationTask("订单创建代码在哪") {
-		t.Fatal("source location question was treated as code creation")
+func TestAttentionRateLimitStopsAdditionalRouterCalls(t *testing.T) {
+	agentClient := &fakeAgent{response: attentionResponse(
+		"ignore", "chatter", 0.9, "not needed",
+	)}
+	sender := &fakeSender{}
+	service := smartAttentionService(t, agentClient, sender)
+	service.cfg.AttentionRateLimit = 1
+	service.cfg.AttentionRateWindow = time.Minute
+	service.now = func() time.Time { return time.Unix(100, 0) }
+
+	service.handlePlatformEvent(context.Background(), platformEvent("rate-1", "first?", false))
+	service.handlePlatformEvent(context.Background(), platformEvent("rate-2", "second?", false))
+
+	if len(agentClient.requests) != 1 || service.Stats().AttentionRateLimited != 1 {
+		t.Fatalf("requests=%#v stats=%#v", agentClient.requests, service.Stats())
 	}
 }
 
-func TestSmartAttentionDoesNotInventAppearanceFacts(t *testing.T) {
+func TestAIDecisionIgnoresTextualMentionAddressedToAnotherBot(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
-
 	service.handlePlatformEvent(
 		context.Background(),
-		platformEvent("appearance", "群主帅吗？", true),
+		platformEvent("textual-at", "@另一个机器人 请处理", false),
 	)
-
-	if len(agentClient.requests) != 0 ||
-		len(sender.messages) != 1 ||
-		sender.messages[0].text != "我没看到相关照片或资料，暂时没法判断。" {
-		t.Fatalf(
-			"appearance requests=%#v messages=%#v",
-			agentClient.requests,
-			sender.messages,
-		)
+	if len(agentClient.requests) != 0 || len(sender.messages) != 0 {
+		t.Fatalf("textual mention reached agent: requests=%d messages=%d", len(agentClient.requests), len(sender.messages))
 	}
 }
 
-func TestAppearanceRuleAppliesWhenSmartAttentionDisabled(t *testing.T) {
-	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不应调用"}}
-	sender := &fakeSender{}
-	service := attentionService(t, agentClient, sender, false)
+func attentionResponse(action, category string, confidence float64, reason string) domain.AgentResponse {
+	payload, _ := json.Marshal(map[string]any{
+		"action": action, "category": category, "confidence": confidence, "reason": reason,
+	})
+	return domain.AgentResponse{Reply: string(payload)}
+}
 
-	service.handlePlatformEvent(
-		context.Background(),
-		platformEvent("appearance-without-attention", "群主帅不帅", true),
-	)
-
-	if len(agentClient.requests) != 0 ||
-		len(sender.messages) != 1 ||
-		sender.messages[0].text != "我没看到相关照片或资料，暂时没法判断。" {
-		t.Fatalf(
-			"appearance requests=%#v messages=%#v",
-			agentClient.requests,
-			sender.messages,
-		)
+func replyPolicyService(
+	t *testing.T,
+	agentClient *fakeAgent,
+	sender *fakeSender,
+	chatType, chatID string,
+	policy binding.ReplyPolicy,
+) *Service {
+	t.Helper()
+	cfg := testBotConfig(t)
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	if err := service.PersonaRegistry().Register(persona.Profile{
+		Name:         "support",
+		Description:  "当前测试业务",
+		SystemPrompt: "只处理当前测试业务。",
+		RoutingScope: &persona.RoutingScope{Description: "当前测试业务"},
+	}); err != nil {
+		t.Fatalf("Register persona: %v", err)
 	}
+	bindings, err := binding.NewRegistry([]binding.Rule{{
+		Name:        "policy",
+		Platform:    "*",
+		SelfID:      "10001",
+		ChatType:    chatType,
+		ChatID:      chatID,
+		Persona:     "support",
+		ReplyPolicy: &policy,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	service.SetChatBindings(bindings)
+	return service
 }
 
 func TestMentionedImageReachesMultimodalAgentRequest(t *testing.T) {

@@ -1,4 +1,4 @@
-# OneBot Transports
+# OneBot 传输层
 
 这是可选兼容层。先设置 `QQ_PLATFORM=onebot`；默认 `QQ_PLATFORM=native` 不使用任何 OneBot 服务。
 
@@ -12,7 +12,7 @@
 | `http_sse` | Cinlan `GET /_events` | Cinlan `POST /{action}` | `ONEBOT_HTTP_URL` |
 | `reverse_http` | NapCat HTTP Client `POST` 到 Cinlan | Cinlan `POST /{action}` 到 NapCat HTTP Server | `ONEBOT_HTTP_URL`、reverse listen/path |
 
-## Forward WebSocket
+## Forward WebSocket（正向 WS）
 
 NapCat 启用 WebSocket Server，Cinlan 配置：
 
@@ -22,7 +22,7 @@ ONEBOT_WS_URL=ws://127.0.0.1:3001
 ONEBOT_ACCESS_TOKEN=<shared-token>
 ```
 
-## Reverse WebSocket
+## Reverse WebSocket（反向 WS）
 
 Cinlan 监听后，由 NapCat WebSocket Client 连接：
 
@@ -49,7 +49,7 @@ ONEBOT_ACCESS_TOKEN=<shared-token>
 Cinlan 从 `GET /_events` 读取事件，并把 action 参数作为 JSON body 发送到
 `POST /{action}`。SSE 断线自动退避重连；`429` 会遵循 `Retry-After`。
 
-## Reverse HTTP
+## Reverse HTTP（反向 HTTP）
 
 NapCat 同时启用：
 
@@ -75,7 +75,7 @@ NapCat HTTP Client URL 为 `http://<cinlan-host>:3002/onebot/v11/events`。设�
 `ClientConfig.QuickOperationHandler` 返回 `reply`、`at_sender`、`approve` 等
 OneBot quick-operation 字段。
 
-## Multi-Account
+## 多账号
 
 ```dotenv
 ONEBOT_ACCOUNTS_FILE=examples/onebot-accounts.json

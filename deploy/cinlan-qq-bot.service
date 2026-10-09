@@ -1,0 +1,22 @@
+[Unit]
+Description=Cinlan QQ Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=cinlan
+Group=cinlan
+WorkingDirectory=/opt/cinlan-qq-bot
+EnvironmentFile=/opt/cinlan-qq-bot/.env
+ExecStart=/opt/cinlan-qq-bot/bin/cinlan-qq-bot
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=/opt/cinlan-qq-bot/data
+
+[Install]
+WantedBy=multi-user.target
