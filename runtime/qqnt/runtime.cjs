@@ -18,6 +18,7 @@ const FILE_SEND_CONFIRM_TIMEOUT_MS = 30000;
 const MAX_FRAME_BYTES = parseFrameLimit(
   process.env.CINLAN_QQNT_MAX_FRAME_BYTES,
 );
+const ACTION_TIMEOUT_MS = Number(process.env.CINLAN_QQNT_ACTION_TIMEOUT_MS) || 10000;
 const AVSDK_CALLBACK_NAMES = [
   'onActionToAVSDK',
   'onS2CActionToAVSDK',
@@ -66,11 +67,23 @@ const state = {
   wrapper: null,
   loginService: null,
   loginListenerID: null,
+  loginConnected: false,
+  loginConfirmed: false,
   autoLoginStarted: false,
+  loginQR: null,
+  qrRequest: null,
+  qrResolve: null,
+  qrReject: null,
   session: null,
   msgService: null,
   msgListenerID: null,
   avService: null,
+  buddyService: null,
+  buddyListenerID: null,
+  friendQueue: Promise.resolve(),
+  friendQueued: 0,
+  friendRequests: new Map(),
+  sessionGeneration: 0,
   avListenerID: null,
   avMethods: [],
   avEventSequence: 0,
@@ -97,7 +110,7 @@ async function start() {
   state.started = true;
   state.bootTime = Date.now() / 1000;
   connectIPC();
-  await loadWrapper();
+  try { await loadWrapper(); } catch (error) { reportRuntimeError('wrapper_load', error); return; }
   attachLoginListener();
   state.attachTimer = setInterval(attachSession, 1000);
   state.attachTimer.unref?.();
@@ -136,6 +149,10 @@ function connectIPC() {
           'runtime_status',
           'av_event',
           'inspect_avsdk',
+          'friend_request',
+          'approve_friend',
+          'login_qr',
+          'get_login_qr',
         ],
       },
     }, socket);
@@ -195,8 +212,13 @@ function handleEnvelope(envelope) {
     return;
   }
   if (envelope.type === 'action' && typeof envelope.id === 'string') {
-    Promise.resolve(handleAction(envelope.payload || {}))
+    let actionTimer;
+    const actionTimeout = new Promise((_resolve,reject) => {
+      actionTimer = setTimeout(() => reject(new Error('native action timeout')), ACTION_TIMEOUT_MS);
+    });
+    Promise.race([Promise.resolve(handleAction(envelope.payload || {})), actionTimeout])
       .then((payload) => {
+        clearRuntimeError(`action_${stringValue(envelope.payload?.name)}`);
         sendEnvelope({
           type: 'action_result',
           id: envelope.id,
@@ -205,13 +227,14 @@ function handleEnvelope(envelope) {
         });
       })
       .catch((error) => {
+        reportRuntimeError(`action_${stringValue(envelope.payload?.name)}`, error);
         sendEnvelope({
           type: 'action_result',
           id: envelope.id,
           ok: false,
           error: error instanceof Error ? error.message : String(error),
         });
-      });
+      }).finally(() => clearTimeout(actionTimer));
   }
 }
 
@@ -241,26 +264,65 @@ function attachLoginListener() {
       return;
     }
     const listener = listenerProxy({
-      onQRCodeLoginSucceed: (info) => updateSelf(info),
+      onQRCodeGetPicture: (info) => {
+        try { recordLoginQR(info); } catch (error) { reportRuntimeError('login_qr', error); }
+      },
+      onQRCodeLoginSucceed: (info) => {
+        const uin = stringValue(info?.uin || info?.account);
+        const configured = stringValue(process.env.QQNT_LOGIN_UIN);
+        if (!uin || (configured && configured !== uin)) {
+          reportRuntimeError('login_identity', new Error('QR login account does not match configured UIN'));
+          return;
+        }
+        state.loginConfirmed = true;
+        clearRuntimeError('login_identity');
+        state.loginQR = null;
+        clearRuntimeError('login_qr');
+        clearRuntimeError('login_discovery');
+        updateSelf(info);
+        attachSession();
+        publishLoginQR();
+      },
+      onQRCodeSessionFailed: (...args) => {
+        state.loginQR = null;
+        state.qrReject?.(new Error('QQNT QR session failed'));
+        reportRuntimeError('login_qr', new Error(`QQNT QR session failed: ${args.map(stringValue).join(',')}`));
+        publishLoginQR();
+      },
+      onQRCodeSessionQuickLoginFailed: (...args) => {
+        state.loginConfirmed = false;
+        state.loginQR = null;
+        state.qrReject?.(new Error('QQNT QR quick login failed'));
+        reportRuntimeError('login_qr', new Error(`QQNT QR quick login failed: ${args.map(stringValue).join(',')}`));
+        publishLoginQR();
+      },
       onLoginConnected: () => {
+        state.loginConnected = true;
         void discoverSelfFromLoginList(true);
       },
       onLoginState: (...args) => findAndUpdateSelf(args),
       onLoginRecordUpdate: (...args) => findAndUpdateSelf(args),
       onUserLoggedIn: (uin) => {
         if (uin !== undefined && uin !== null) {
+          state.loginConfirmed = true;
           updateSelf({ uin: String(uin) });
         }
       },
       onLogoutSucceed: () => {
         state.self = { uin: '', uid: '', nick: '' };
+        state.loginConfirmed = false;
+        resetSession();
+        state.loginQR = null;
+        state.autoLoginStarted = false;
+        publishLoginQR();
         publishStatus('waiting_login');
+        if (process.env.CINLAN_QQNT_HEADLESS === 'true') void discoverSelfFromLoginList(true);
       },
     });
-    state.loginListenerID = service.addKernelLoginListener(listener);
     state.loginService = service;
+    state.loginListenerID = service.addKernelLoginListener(listener);
     clearRuntimeError('login_attach');
-    void discoverSelfFromLoginList(true);
+    void discoverSelfFromLoginList(false);
   } catch (error) {
     state.loginService = null;
     reportRuntimeError('login_attach', error);
@@ -285,6 +347,7 @@ async function discoverSelfFromLoginList(allowConfiguredLogin = false) {
       if (!target.isQuickLogin) {
         throw new Error(`configured QQ ${targetUin} does not support quick login`);
       }
+      if (process.env.CINLAN_QQNT_HEADLESS === 'true' && !allowConfiguredLogin) return;
       if (state.self.uin === targetUin && state.msgService) {
         updateSelf(target);
         return;
@@ -296,6 +359,18 @@ async function discoverSelfFromLoginList(allowConfiguredLogin = false) {
       return;
     }
     const automatic = entries.filter((entry) => entry?.isAutoLogin);
+    if (process.env.CINLAN_QQNT_HEADLESS === 'true' && !allowConfiguredLogin) return;
+    if (process.env.CINLAN_QQNT_HEADLESS === 'true' && state.autoLoginStarted) return;
+    if (process.env.CINLAN_QQNT_HEADLESS === 'true' && allowConfiguredLogin && !state.autoLoginStarted) {
+      const candidates = automatic.length === 1 ? automatic : entries;
+      if (candidates.length === 1 && candidates[0].isQuickLogin) {
+        state.autoLoginStarted = true;
+        await quickLogin({uin: stringValue(candidates[0].uin)});
+        return;
+      }
+      await getLoginQR({});
+      return;
+    }
     if (automatic.length === 1) {
       updateSelf(automatic[0]);
     } else if (entries.length === 1) {
@@ -303,30 +378,92 @@ async function discoverSelfFromLoginList(allowConfiguredLogin = false) {
     }
   } catch (error) {
     reportRuntimeError('login_discovery', error);
+    if (process.env.CINLAN_QQNT_HEADLESS === 'true' && state.loginConnected && !state.msgService) {
+      void getLoginQR({}).catch(error => reportRuntimeError('login_qr', error));
+    }
   }
+  if (process.env.CINLAN_QQNT_HEADLESS === 'true' && state.loginConnected && !state.self.uin) {
+    void getLoginQR({}).catch(error => reportRuntimeError('login_qr', error));
+  }
+}
+
+function resetSession() {
+  state.sessionGeneration++;
+  for (const [service, method, id] of [
+    [state.msgService, 'removeKernelMsgListener', state.msgListenerID],
+    [state.avService, 'removeKernelAVSDKListener', state.avListenerID],
+    [state.buddyService, 'removeKernelBuddyListener', state.buddyListenerID],
+  ]) {
+    try { if (id !== null) service?.[method]?.(id); } catch (error) { reportRuntimeError('session_detach', error); }
+  }
+  state.session = null; state.msgService = null; state.msgListenerID = null;
+  state.avService = null; state.avListenerID = null; state.avMethods = [];
+  state.buddyService = null; state.buddyListenerID = null;
+  state.friendRequests.clear(); state.recentMessages.clear();
+}
+
+function recordLoginQR(info) {
+  const png = info?.pngBase64QrcodeData;
+  if (typeof png !== 'string' || png.length > Math.min(512*1024, MAX_FRAME_BYTES/2) ||
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(png) || !Buffer.from(png,'base64').subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
+    throw new Error('QQNT QR callback does not contain a bounded PNG base64');
+  }
+  if (runtimeState() === 'ready') return;
+  state.loginQR = { png_base64: png, expires_at: new Date(Date.now()+60000).toISOString() };
+  state.qrResolve?.();
+  clearRuntimeError('login_qr');
+  publishLoginQR();
+}
+function loginQRStatus() {
+  const expired = state.loginQR && Date.parse(state.loginQR.expires_at) <= Date.now();
+  return { state: runtimeState(), status: state.msgService ? 'ready' : (expired ? 'expired' : state.loginQR ? 'available' : 'unavailable'),
+    ...(state.msgService || expired ? {} : state.loginQR || {}), last_error: latestRuntimeError() };
+}
+function publishLoginQR() { sendEnvelope({type:'login_qr',payload:loginQRStatus()}); }
+async function getLoginQR(params) {
+  if (state.msgService) return loginQRStatus();
+  if (state.qrRequest) return state.qrRequest;
+  if (!state.loginConnected) throw new Error('QQNT login service is not connected yet');
+  if (!params.refresh && state.loginQR && Date.parse(state.loginQR.expires_at) > Date.now()) return loginQRStatus();
+  if (typeof state.loginService?.getQRCodePicture !== 'function') throw new Error('QQNT login service does not expose getQRCodePicture');
+  state.loginQR = null;
+  publishLoginQR();
+  state.qrRequest = (async () => {
+    const picture = new Promise((resolve,reject) => { state.qrResolve = resolve; state.qrReject = reject; });
+    let timer;
+    const timeout = new Promise((_resolve,reject) => { timer = setTimeout(() => reject(new Error('QQNT QR picture callback timeout')),5000); });
+    const request = Promise.resolve().then(() => state.loginService.getQRCodePicture()).then(result => {
+      if (result?.pngBase64QrcodeData) recordLoginQR(result);
+      else if (result && Object.hasOwn(result,'result') && String(result.result) !== '0') throw new Error('QQNT QR request failed');
+    });
+    try {
+      await Promise.race([Promise.all([request,picture]),timeout]);
+      return loginQRStatus();
+    }
+    finally { clearTimeout(timer); state.qrResolve = null; state.qrReject = null; }
+  })().finally(() => { state.qrRequest = null; });
+  return state.qrRequest;
 }
 
 function attachSession() {
   attachLoginListener();
+  if (process.env.CINLAN_QQNT_HEADLESS === 'true' && !state.loginConfirmed) return;
   if (!state.self.uin) {
     return;
   }
   if (state.msgService) {
     void resolveSelfUID();
     attachAVListener();
+    attachFriendListener();
     publishStatus('ready');
     return;
   }
   try {
     const sessionFactory = state.wrapper?.NodeIQQNTWrapperSession;
-    if (!sessionFactory) {
-      return;
-    }
+    if (!sessionFactory) throw new Error('QQNT wrapper does not expose session factory');
     const session = sessionFactory.getNTWrapperSession('nt_1');
     const msgService = session?.getMsgService?.();
-    if (!msgService) {
-      return;
-    }
+    if (!msgService) throw new Error('QQNT message session is unavailable');
     const listener = listenerProxy({
       onRecvMsg: (messages) => {
         if (!Array.isArray(messages)) {
@@ -357,6 +494,7 @@ function attachSession() {
     state.session = session;
     state.msgService = msgService;
     attachAVListener(session);
+    attachFriendListener(session);
     clearRuntimeError('session_attach');
     void resolveSelfUID();
     publishStatus(state.self.uin ? 'ready' : 'waiting_login');
@@ -402,6 +540,107 @@ function availableAVSDKMethods(service) {
       return false;
     }
   });
+}
+
+function attachFriendListener(session = state.session) {
+  if (state.buddyService || !session) return;
+  try {
+    const service = session.getBuddyService?.();
+    if (!service || typeof service.addKernelBuddyListener !== 'function' ||
+        typeof service.approvalFriendRequest !== 'function') {
+      throw new Error('QQNT buddy service is missing listener/approval bindings');
+    }
+    state.buddyListenerID = service.addKernelBuddyListener(listenerProxy({
+      onBuddyReqChange: (info) => enqueueFriendRequests(info),
+    }));
+    state.buddyService = service;
+    if (typeof service.getBuddyReq === 'function') {
+      Promise.resolve(service.getBuddyReq()).then(info => {
+        clearRuntimeError('friend_discovery');
+        if (info?.buddyReqs) enqueueFriendRequests(info);
+      }).catch(error => reportRuntimeError('friend_discovery', error));
+    }
+    clearRuntimeError('friend_attach');
+    publishStatus();
+  } catch (error) {
+    reportRuntimeError('friend_attach', error);
+  }
+}
+
+function enqueueFriendRequests(info) {
+  if (state.friendQueued >= 32) {
+    reportRuntimeError('friend_event', new Error('friend event queue full'));
+    return;
+  }
+  state.friendQueued++;
+  state.friendQueue = state.friendQueue.then(() => handleFriendRequests(info))
+    .then(() => clearRuntimeError('friend_event'))
+    .catch(error => reportRuntimeError('friend_event', error))
+    .finally(() => { state.friendQueued--; });
+}
+
+async function handleFriendRequests(info) {
+  if (!Array.isArray(info?.buddyReqs)) throw new Error('unknown QQNT buddy request callback shape');
+  const generation = state.sessionGeneration;
+  for (const request of info.buddyReqs) {
+    // Outgoing, decided and doubt/spam requests must never be auto-approved.
+    if (request.isInitiator !== false || request.isDecide !== false || request.isDoubt === true) continue;
+    if (stringValue(request.reqTime).length > 20 || stringValue(request.friendUid).length > 128) throw new Error('oversized friend request identity');
+    const uid = stringValue(request.friendUid);
+    const reqTime = stringValue(request.reqTime);
+    if (!uid || !/^[0-9]+$/.test(reqTime)) throw new Error('invalid QQNT friend request identity');
+    const key = `${uid}:${reqTime}`;
+    if (state.friendRequests.has(key)) continue;
+    const profile = state.session?.getProfileService?.();
+    const mapping = await profile?.getUinByUid?.('cinlan-qq-bot', [uid]);
+    if (generation !== state.sessionGeneration) throw new Error('friend session changed during UID lookup');
+    const uin = stringValue(mapping instanceof Map ? mapping.get(uid) : mapping?.[uid]);
+    if (!/^[1-9][0-9]{0,19}$/.test(uin)) throw new Error('cannot resolve friend request UID to UIN');
+    const flag = crypto.randomBytes(24).toString('hex');
+    const entry = { uid, reqTime, flag, approved: false, at: Date.now() };
+    state.friendRequests.set(key, entry);
+    while (state.friendRequests.size > 512) state.friendRequests.delete(state.friendRequests.keys().next().value);
+    if (!sendEnvelope({ type: 'friend_request', payload: {
+      uin, uid, flag, comment: stringValue(request.extWords).slice(0, 1024),
+      nickname: stringValue(request.friendNick).slice(0, 128),
+    } })) {
+      state.friendRequests.delete(key);
+      throw new Error('friend request IPC delivery failed');
+    }
+  }
+}
+
+function checkOperateResult(result, operation) {
+  if (!result || !Object.hasOwn(result, 'result') || String(result.result) !== '0') {
+    throw new Error(`${operation} failed: ${stringValue(result?.errMsg || result?.result) || 'unknown response'}`);
+  }
+}
+
+async function approveFriend(params) {
+  if (typeof params.approve !== 'boolean' || typeof params.flag !== 'string' ||
+      typeof params.remark !== 'string' || params.remark.length > 128) {
+    throw new Error('approve_friend requires flag, boolean approve and remark (max 128 chars)');
+  }
+  if (!state.buddyService) throw new Error('QQNT buddy service is not ready');
+  const request = [...state.friendRequests.values()].find(r => r.flag === params.flag);
+  if (!request || request.approved || Date.now() - request.at > 24 * 3600 * 1000) {
+    throw new Error('approve_friend flag is unknown, expired or already decided');
+  }
+  if (request.pending) throw new Error('approve_friend is already pending');
+  request.pending = true;
+  try {
+    const result = await state.buddyService.approvalFriendRequest({
+      friendUid: request.uid, accept: params.approve, refuseMsg: '', reqTime: request.reqTime,
+    });
+    checkOperateResult(result, 'QQNT friend approval');
+    request.approved = true;
+    if (params.approve && params.remark) {
+      const remarkResult = await state.buddyService.setBuddyRemark({ uid: request.uid, remark: params.remark, signInfo: '' });
+      checkOperateResult(remarkResult, 'QQNT friend remark');
+    }
+    clearRuntimeError('action_approve_friend');
+    return { approved: params.approve };
+  } finally { request.pending = false; }
 }
 
 function recordAVEvent(callback, args) {
@@ -587,6 +826,7 @@ function updateSelf(info) {
   };
   if (accountChanged) {
     state.selfUIDLookupUin = '';
+    if (state.msgService) resetSession();
   }
   const changed =
     next.uin !== state.self.uin ||
@@ -1091,6 +1331,10 @@ async function handleAction(payload) {
       return runtimeStatus();
     case 'inspect_avsdk':
       return inspectAVSDK();
+    case 'approve_friend':
+      return approveFriend(params);
+    case 'get_login_qr':
+      return getLoginQR(params);
     case 'get_login_list':
       return getLoginList();
     case 'quick_login':
@@ -1141,6 +1385,7 @@ async function quickLogin(params) {
   if (stringValue(result?.result) !== '0' || errorMessage) {
     throw new Error(errorMessage || `QQNT quick login failed with result ${stringValue(result?.result)}`);
   }
+  state.loginConfirmed = true;
   updateSelf(account);
   attachSession();
   return {
@@ -1813,6 +2058,7 @@ function publishStatus(forcedState, socket) {
     avsdk_available: Boolean(state.avService),
     avsdk_listener_attached: state.avListenerID !== null,
     avsdk_methods: [...state.avMethods],
+    friend_listener_attached: Boolean(state.buddyService),
     last_error: latestRuntimeError(),
   };
   const fingerprint = JSON.stringify(payload);
@@ -1976,6 +2222,13 @@ module.exports = { start };
 if (process.env.CINLAN_QQNT_TEST_EXPORTS === '1') {
   module.exports.__test = {
     state,
+    handleEnvelope,
+    getLoginQR,
+    recordLoginQR,
+    loginQRStatus,
+    handleFriendRequests,
+    attachFriendListener,
+    approveFriend,
     buildAtElement,
     buildImageElement,
     convertElements,

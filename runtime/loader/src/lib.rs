@@ -41,6 +41,19 @@ type GetProcAddressFn = unsafe extern "system" fn(Hmodule, *const c_char) -> *mu
 static ORIGINAL_CREATE_FILE_W: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static ORIGINAL_GET_PROC_ADDRESS: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
 static QQNT_PATCHED: AtomicBool = AtomicBool::new(false);
+static HEADLESS: AtomicBool = AtomicBool::new(false);
+static ORIGINAL_CREATE_WINDOW: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static ORIGINAL_SHOW_WINDOW: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static ORIGINAL_SET_WINDOW_POS: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+static ORIGINAL_SET_WINDOW_PLACEMENT: AtomicPtr<c_void> = AtomicPtr::new(null_mut());
+const WS_CHILD: u32 = 0x4000_0000;
+const WS_VISIBLE: u32 = 0x1000_0000;
+const SWP_SHOWWINDOW: u32 = 0x40;
+
+#[link(name = "user32")]
+extern "system" {
+    fn GetWindowLongW(window: Handle, index: i32) -> i32;
+}
 
 #[link(name = "kernel32")]
 extern "system" {
@@ -57,6 +70,23 @@ extern "system" {
     fn GetEnvironmentVariableW(name: *const u16, value: *mut u16, size: Dword) -> Dword;
     fn GetModuleHandleA(name: *const c_char) -> Hmodule;
     fn GetProcAddress(module: Hmodule, name: *const c_char) -> *mut c_void;
+    fn LoadLibraryW(name: *const u16) -> Hmodule;
+    fn CreateFileW(
+        name: *const u16,
+        access: Dword,
+        share: Dword,
+        security: *mut c_void,
+        disposition: Dword,
+        flags: Dword,
+        template: Handle,
+    ) -> Handle;
+    fn WriteFile(
+        file: Handle,
+        buffer: *const u8,
+        size: Dword,
+        written: *mut Dword,
+        overlapped: *mut c_void,
+    ) -> Bool;
     fn VirtualAlloc(
         address: *mut c_void,
         size: usize,
@@ -83,24 +113,33 @@ pub unsafe extern "system" fn DllMain(
 ) -> Bool {
     if reason == DLL_PROCESS_ATTACH {
         DisableThreadLibraryCalls(module);
-        install_hook();
+        HEADLESS.store(
+            read_environment("CINLAN_QQNT_HEADLESS")
+                .map(|v| String::from_utf16_lossy(&v[..v.len() - 1]) == "true")
+                .unwrap_or(false),
+            Ordering::Release,
+        );
+        if !install_hook() {
+            write_hook_status("error: startup IAT/stat hook failed");
+            return 0;
+        }
     }
     1
 }
 
-unsafe fn install_hook() {
+unsafe fn install_hook() -> bool {
     let main_module = GetModuleHandleA(null());
     if main_module.is_null() {
-        return;
+        return false;
     }
 
     let kernelbase = GetModuleHandleA(c"kernelbase.dll".as_ptr());
     if kernelbase.is_null() {
-        return;
+        return false;
     }
     let create_file = GetProcAddress(kernelbase, c"CreateFileW".as_ptr());
     if create_file.is_null() {
-        return;
+        return false;
     }
     ORIGINAL_CREATE_FILE_W.store(create_file, Ordering::Release);
 
@@ -112,19 +151,23 @@ unsafe fn install_hook() {
     ) {
         ORIGINAL_GET_PROC_ADDRESS.store(original, Ordering::Release);
     } else {
-        return;
+        return false;
     }
 
     // Windows 11 libuv resolves the patched main entry through this path-based
     // stat API. Keep the compatibility shim inline because it is dynamically
     // resolved and therefore has no stable QQ.exe IAT slot.
     let stat_target = GetProcAddress(kernelbase, c"GetFileInformationByName".as_ptr());
-    if !stat_target.is_null() {
-        let _ = inline_hook(
+    if !stat_target.is_null()
+        && inline_hook(
             stat_target as *mut u8,
             hook_get_file_information_by_name as *mut c_void,
-        );
+        )
+        .is_none()
+    {
+        return false;
     }
+    true
 }
 
 unsafe extern "system" fn hook_get_proc_address(
@@ -138,22 +181,24 @@ unsafe extern "system" fn hook_get_proc_address(
     if !module.is_null()
         && symbol as usize > u16::MAX as usize
         && ascii_equal(symbol.cast(), b"ExportedContentMain\0")
+        && !patch_qqnt(module)
     {
-        patch_qqnt(module);
+        return null_mut();
     }
     let call: GetProcAddressFn = mem::transmute(original);
     call(module, symbol)
 }
 
-unsafe fn patch_qqnt(module: Hmodule) {
-    if QQNT_PATCHED.swap(true, Ordering::AcqRel) {
-        return;
+unsafe fn patch_qqnt(module: Hmodule) -> bool {
+    if QQNT_PATCHED.load(Ordering::Acquire) {
+        return true;
     }
     let guard = match patch_content_guard(module) {
         Some(address) => address,
         None => {
             QQNT_PATCHED.store(false, Ordering::Release);
-            return;
+            write_hook_status("error: QQNT startup guard signature/patch failed");
+            return false;
         }
     };
 
@@ -165,11 +210,294 @@ unsafe fn patch_qqnt(module: Hmodule) {
     ) {
         Some(original) => {
             ORIGINAL_CREATE_FILE_W.store(original, Ordering::Release);
+            if HEADLESS.load(Ordering::Acquire) && !install_window_hooks(module) {
+                restore_content_guard(guard);
+                write_hook_status("error: QQNT headless delay-IAT patch failed");
+                return false;
+            }
+            write_hook_status("ready");
+            QQNT_PATCHED.store(true, Ordering::Release);
+            true
         }
         None => {
             restore_content_guard(guard);
             QQNT_PATCHED.store(false, Ordering::Release);
+            write_hook_status("error: QQNT CreateFileW IAT patch failed");
+            false
         }
+    }
+}
+
+unsafe fn write_hook_status(message: &str) {
+    let Some(path) = read_environment("CINLAN_QQNT_HOOK_STATUS_PATH") else {
+        return;
+    };
+    let file = CreateFileW(
+        path.as_ptr(),
+        0x4000_0000,
+        7,
+        null_mut(),
+        2,
+        0x80,
+        null_mut(),
+    );
+    if file == (-1_isize) as Handle {
+        return;
+    }
+    let mut written = 0;
+    WriteFile(
+        file,
+        message.as_ptr(),
+        message.len() as u32,
+        &mut written,
+        null_mut(),
+    );
+    CloseHandle(file);
+}
+
+fn suppress_window(headless: bool, style: u32) -> bool {
+    headless && style & WS_CHILD == 0
+}
+fn creation_style(headless: bool, style: u32) -> u32 {
+    if suppress_window(headless, style) {
+        style & !WS_VISIBLE
+    } else {
+        style
+    }
+}
+
+// QQNT imports USER32 through the PE delay-import table, not the ordinary IAT.
+// Resolve originals from USER32 and replace all relevant slots before ContentMain.
+unsafe fn install_window_hooks(module: Hmodule) -> bool {
+    let user32: Vec<u16> = "user32.dll".encode_utf16().chain(Some(0)).collect();
+    let user32 = LoadLibraryW(user32.as_ptr());
+    if user32.is_null() {
+        return false;
+    }
+    for (name, detour, original) in [
+        (
+            c"CreateWindowExW",
+            hook_create_window as *mut c_void,
+            &ORIGINAL_CREATE_WINDOW,
+        ),
+        (
+            c"ShowWindow",
+            hook_show_window as *mut c_void,
+            &ORIGINAL_SHOW_WINDOW,
+        ),
+        (
+            c"SetWindowPos",
+            hook_set_window_pos as *mut c_void,
+            &ORIGINAL_SET_WINDOW_POS,
+        ),
+        (
+            c"SetWindowPlacement",
+            hook_set_window_placement as *mut c_void,
+            &ORIGINAL_SET_WINDOW_PLACEMENT,
+        ),
+    ] {
+        let pointer = GetProcAddress(user32, name.as_ptr());
+        if pointer.is_null() {
+            return false;
+        }
+        original.store(pointer, Ordering::Release);
+        if !patch_delay_iat(module, name.to_bytes_with_nul(), detour) {
+            return false;
+        }
+    }
+    // Include dynamically resolved USER32 calls as well as delay-IAT calls.
+    if patch_iat(
+        module,
+        b"KERNEL32.dll\0",
+        b"GetProcAddress\0",
+        hook_window_get_proc_address as *mut c_void,
+    )
+    .is_none()
+    {
+        return false;
+    }
+    true
+}
+
+unsafe extern "system" fn hook_window_get_proc_address(
+    module: Hmodule,
+    symbol: *const c_char,
+) -> *mut c_void {
+    let call: GetProcAddressFn = mem::transmute(ORIGINAL_GET_PROC_ADDRESS.load(Ordering::Acquire));
+    let user32 = GetModuleHandleA(c"user32.dll".as_ptr());
+    if HEADLESS.load(Ordering::Acquire)
+        && !user32.is_null()
+        && module == user32
+        && symbol as usize > u16::MAX as usize
+    {
+        for (name, hook) in [
+            (
+                b"CreateWindowExW\0".as_slice(),
+                hook_create_window as *mut c_void,
+            ),
+            (b"ShowWindow\0".as_slice(), hook_show_window as *mut c_void),
+            (
+                b"SetWindowPos\0".as_slice(),
+                hook_set_window_pos as *mut c_void,
+            ),
+            (
+                b"SetWindowPlacement\0".as_slice(),
+                hook_set_window_placement as *mut c_void,
+            ),
+        ] {
+            if ascii_equal(symbol.cast(), name) {
+                return hook;
+            }
+        }
+    }
+    call(module, symbol)
+}
+
+unsafe fn patch_delay_iat(module: Hmodule, symbol: &[u8], replacement: *mut c_void) -> bool {
+    let base = module as *mut u8;
+    let nt = read_u32(base.add(0x3c)) as usize;
+    let optional = base.add(nt + 24);
+    let rva = read_u32(optional.add(112 + 13 * 8)) as usize;
+    if rva == 0 {
+        return false;
+    }
+    let mut d = base.add(rva);
+    while read_u32(d.add(4)) != 0 {
+        if read_u32(d) != 1 {
+            return false;
+        } // Only RVA-based x64 descriptors.
+        if ascii_equal_ci(base.add(read_u32(d.add(4)) as usize), b"USER32.dll\0") {
+            let names = read_u32(d.add(16)) as usize;
+            let slots = read_u32(d.add(12)) as usize;
+            let mut i = 0;
+            loop {
+                let name = read_u64(base.add(names + i * 8));
+                if name == 0 {
+                    break;
+                }
+                if name & (1 << 63) == 0 && ascii_equal(base.add(name as usize + 2), symbol) {
+                    let slot = base.add(slots + i * 8) as *mut *mut c_void;
+                    let mut old = 0;
+                    if VirtualProtect(slot.cast(), 8, PAGE_READWRITE, &mut old) == 0 {
+                        return false;
+                    }
+                    slot.write(replacement);
+                    let mut ignored = 0;
+                    VirtualProtect(slot.cast(), 8, old, &mut ignored);
+                    return true;
+                }
+                i += 1;
+            }
+        }
+        d = d.add(32);
+    }
+    false
+}
+
+unsafe extern "system" fn hook_create_window(
+    ex: u32,
+    class: *const u16,
+    name: *const u16,
+    style: u32,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    parent: Handle,
+    menu: Handle,
+    instance: Handle,
+    param: *mut c_void,
+) -> Handle {
+    let call: unsafe extern "system" fn(
+        u32,
+        *const u16,
+        *const u16,
+        u32,
+        i32,
+        i32,
+        i32,
+        i32,
+        Handle,
+        Handle,
+        Handle,
+        *mut c_void,
+    ) -> Handle = mem::transmute(ORIGINAL_CREATE_WINDOW.load(Ordering::Acquire));
+    call(
+        ex,
+        class,
+        name,
+        creation_style(HEADLESS.load(Ordering::Acquire), style),
+        x,
+        y,
+        w,
+        h,
+        parent,
+        menu,
+        instance,
+        param,
+    )
+}
+unsafe extern "system" fn hook_show_window(window: Handle, command: i32) -> Bool {
+    let call: unsafe extern "system" fn(Handle, i32) -> Bool =
+        mem::transmute(ORIGINAL_SHOW_WINDOW.load(Ordering::Acquire));
+    let hide = suppress_window(
+        HEADLESS.load(Ordering::Acquire),
+        GetWindowLongW(window, -16) as u32,
+    );
+    call(window, if hide { 0 } else { command })
+}
+unsafe extern "system" fn hook_set_window_pos(
+    window: Handle,
+    after: Handle,
+    x: i32,
+    y: i32,
+    w: i32,
+    h: i32,
+    flags: u32,
+) -> Bool {
+    let call: unsafe extern "system" fn(Handle, Handle, i32, i32, i32, i32, u32) -> Bool =
+        mem::transmute(ORIGINAL_SET_WINDOW_POS.load(Ordering::Acquire));
+    let hide = suppress_window(
+        HEADLESS.load(Ordering::Acquire),
+        GetWindowLongW(window, -16) as u32,
+    );
+    call(
+        window,
+        after,
+        x,
+        y,
+        w,
+        h,
+        if hide { flags & !SWP_SHOWWINDOW } else { flags },
+    )
+}
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct WindowPlacement {
+    length: u32,
+    flags: u32,
+    show_cmd: u32,
+    min_position: [i32; 2],
+    max_position: [i32; 2],
+    normal_rect: [i32; 4],
+}
+unsafe extern "system" fn hook_set_window_placement(
+    window: Handle,
+    placement: *const WindowPlacement,
+) -> Bool {
+    let call: unsafe extern "system" fn(Handle, *const WindowPlacement) -> Bool =
+        mem::transmute(ORIGINAL_SET_WINDOW_PLACEMENT.load(Ordering::Acquire));
+    if !placement.is_null()
+        && suppress_window(
+            HEADLESS.load(Ordering::Acquire),
+            GetWindowLongW(window, -16) as u32,
+        )
+    {
+        let mut hidden = *placement;
+        hidden.show_cmd = 0;
+        call(window, &hidden)
+    } else {
+        call(window, placement)
     }
 }
 
@@ -665,7 +993,54 @@ unsafe fn read_u64(address: *const u8) -> u64 {
 
 #[cfg(test)]
 mod tests {
-    use super::{content_guard_pattern, wide_path_ends_with};
+    use super::{
+        content_guard_pattern, creation_style, suppress_window, wide_path_ends_with, WS_CHILD,
+        WS_VISIBLE,
+    };
+
+    #[test]
+    fn headless_preserves_children_and_default_behavior() {
+        for style in [0, WS_VISIBLE, WS_CHILD, WS_CHILD | WS_VISIBLE] {
+            assert_eq!(creation_style(false, style), style);
+            assert!(!suppress_window(false, style));
+        }
+        assert_eq!(creation_style(true, WS_VISIBLE), 0);
+        assert_eq!(
+            creation_style(true, WS_CHILD | WS_VISIBLE),
+            WS_CHILD | WS_VISIBLE
+        );
+        assert!(suppress_window(true, 0));
+    }
+
+    #[test]
+    fn delay_iat_patch_requires_known_symbol_and_rva_descriptor() {
+        let mut image = vec![0u8; 4096];
+        image[0x3c..0x40].copy_from_slice(&0x80u32.to_le_bytes());
+        let directory = 0x80 + 24 + 112 + 13 * 8;
+        image[directory..directory + 4].copy_from_slice(&0x200u32.to_le_bytes());
+        for (offset, value) in [
+            (0x200, 1u32),
+            (0x204, 0x280),
+            (0x20c, 0x300),
+            (0x210, 0x340),
+        ] {
+            image[offset..offset + 4].copy_from_slice(&value.to_le_bytes());
+        }
+        image[0x280..0x28b].copy_from_slice(b"USER32.dll\0");
+        image[0x340..0x348].copy_from_slice(&0x380u64.to_le_bytes());
+        image[0x382..0x38d].copy_from_slice(b"ShowWindow\0");
+        let module = image.as_mut_ptr().cast();
+        let target = 0x1234usize as *mut std::ffi::c_void;
+        assert!(!unsafe { super::patch_delay_iat(module, b"Unknown\0", target) });
+        assert_eq!(unsafe { super::read_u64(image.as_ptr().add(0x300)) }, 0);
+        assert!(unsafe { super::patch_delay_iat(module, b"ShowWindow\0", target) });
+        assert_eq!(
+            unsafe { super::read_u64(image.as_ptr().add(0x300)) },
+            0x1234
+        );
+        image[0x200] = 0;
+        assert!(!unsafe { super::patch_delay_iat(module, b"ShowWindow\0", target) });
+    }
 
     fn wide_null(value: &str) -> Vec<u16> {
         value.encode_utf16().chain(Some(0)).collect()

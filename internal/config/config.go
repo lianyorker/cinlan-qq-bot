@@ -91,6 +91,8 @@ type Config struct {
 	QQNTActionTTL         time.Duration
 	QQNTHandshakeTTL      time.Duration
 	QQNTMaxFrameBytes     int
+	QQNTAutoAcceptFriend  bool
+	QQNTHeadless          bool
 	QQNTImageAllowedRoots []string
 	QQNTImageMaxBytes     int64
 
@@ -268,6 +270,8 @@ func Load() (Config, error) {
 	)
 	cfg.QQNTAutoLaunch = parseBool("QQNT_AUTO_LAUNCH", true, &errs)
 	cfg.QQNTAllowRunning = parseBool("QQNT_ALLOW_RUNNING", false, &errs)
+	cfg.QQNTAutoAcceptFriend = parseBool("QQNT_AUTO_ACCEPT_FRIEND", false, &errs)
+	cfg.QQNTHeadless = parseBool("QQNT_HEADLESS", false, &errs)
 	cfg.QQNTActionTTL = parseDuration("QQNT_ACTION_TIMEOUT", 10*time.Second, true, &errs)
 	cfg.QQNTHandshakeTTL = parseDuration("QQNT_HANDSHAKE_TIMEOUT", 10*time.Second, true, &errs)
 	cfg.QQNTMaxFrameBytes = parseInt(
@@ -482,6 +486,9 @@ func (c Config) Validate() error {
 		))
 	}
 	if c.QQPlatform == QQPlatformNative {
+		if c.QQNTHeadless && strings.TrimSpace(c.AdminAPIToken) == "" {
+			errs = append(errs, errors.New("ADMIN_API_TOKEN is required for QQNT_HEADLESS login API"))
+		}
 		if err := validateLoopbackAddress(c.QQNTIPCListenAddr, "QQNT_IPC_LISTEN_ADDR"); err != nil {
 			errs = append(errs, err)
 		}

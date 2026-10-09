@@ -26,16 +26,25 @@ type helloPayload struct {
 }
 
 type runtimeStatus struct {
-	State                 string   `json:"state"`
-	SelfID                string   `json:"self_id"`
-	SelfUID               string   `json:"self_uid"`
-	Nickname              string   `json:"nickname"`
-	WrapperLoaded         bool     `json:"wrapper_loaded"`
-	SessionAttached       bool     `json:"session_attached"`
-	AVSDKAvailable        bool     `json:"avsdk_available"`
-	AVSDKListenerAttached bool     `json:"avsdk_listener_attached"`
-	AVSDKMethods          []string `json:"avsdk_methods"`
-	LastError             string   `json:"last_error"`
+	State                  string   `json:"state"`
+	SelfID                 string   `json:"self_id"`
+	SelfUID                string   `json:"self_uid"`
+	Nickname               string   `json:"nickname"`
+	WrapperLoaded          bool     `json:"wrapper_loaded"`
+	SessionAttached        bool     `json:"session_attached"`
+	AVSDKAvailable         bool     `json:"avsdk_available"`
+	AVSDKListenerAttached  bool     `json:"avsdk_listener_attached"`
+	AVSDKMethods           []string `json:"avsdk_methods"`
+	LastError              string   `json:"last_error"`
+	FriendListenerAttached bool     `json:"friend_listener_attached"`
+}
+
+type FriendRequest struct {
+	UIN      string `json:"uin"`
+	UID      string `json:"uid"`
+	Flag     string `json:"flag"`
+	Comment  string `json:"comment"`
+	Nickname string `json:"nickname"`
 }
 
 type AVArgumentSummary struct {

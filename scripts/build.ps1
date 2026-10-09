@@ -53,6 +53,8 @@ try {
             throw "Cargo tests failed with exit code $LASTEXITCODE."
         }
         if (Get-Command node -ErrorAction SilentlyContinue) {
+            & node --test (Join-Path $root "runtime\qqnt\runtime.test.cjs")
+            if ($LASTEXITCODE -ne 0) { throw "QQNT runtime Node tests failed." }
             foreach ($script in @("runtime\qqnt\load-cinlan.cjs", "runtime\qqnt\runtime.cjs")) {
                 & node --check (Join-Path $root $script)
                 if ($LASTEXITCODE -ne 0) {

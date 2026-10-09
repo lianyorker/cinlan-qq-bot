@@ -9,6 +9,105 @@ const test = require('node:test');
 process.env.CINLAN_QQNT_TEST_EXPORTS = '1';
 const { __test } = require('./runtime.cjs');
 
+test('QR callbacks, refresh, expiry and ready never enter message channel', async () => {
+  const previous = {loginConnected: __test.state.loginConnected,loginQR: __test.state.loginQR, loginService: __test.state.loginService, msgService: __test.state.msgService, socket: __test.state.socket, wrapper: __test.state.wrapper};
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAwMCAO+aS9sAAAAASUVORK5CYII=';
+  const frames = []; let calls = 0;
+  __test.state.msgService = null; __test.state.wrapper = {}; __test.state.loginQR = null;
+  __test.state.loginConnected = true;
+  __test.state.socket = { writable: true, write: s => frames.push(JSON.parse(s)) };
+  __test.state.loginService = {getQRCodePicture: async () => {calls++; __test.recordLoginQR({pngBase64QrcodeData: png}); return {result: 0};}};
+  try {
+    assert.equal((await __test.getLoginQR({})).png_base64, png);
+    await __test.getLoginQR({}); assert.equal(calls,1);
+    await __test.getLoginQR({refresh:true}); assert.equal(calls,2);
+    __test.state.loginQR.expires_at = new Date(Date.now()-1).toISOString();
+    assert.equal(__test.loginQRStatus().status,'expired');
+    assert.equal(__test.loginQRStatus().png_base64,undefined);
+    await __test.getLoginQR({}); assert.equal(calls,3);
+    __test.state.msgService = {};
+    assert.equal((await __test.getLoginQR({})).status,'ready');
+    assert.equal(__test.loginQRStatus().png_base64,undefined);
+    assert.ok(frames.every(f=>f.type === 'login_qr' || f.type === 'runtime_status'));
+    assert.throws(()=>__test.recordLoginQR({pngBase64QrcodeData:'evil'}),/PNG/);
+  } finally { Object.assign(__test.state,previous); }
+});
+
+test('friend approval rejects errors and allows refusal without leaking to messages', async () => {
+  const previous = __test.state.buddyService;
+  __test.state.friendRequests.set('test',{uid:'u_test',reqTime:'1',flag:'test',at:Date.now()});
+  try {
+    __test.state.buddyService = {approvalFriendRequest:async ()=>({result:1,errMsg:'denied'})};
+    await assert.rejects(__test.approveFriend({flag:'test',approve:true,remark:''}),/denied/);
+    let got;
+    __test.state.buddyService = {approvalFriendRequest:async p=>{got=p;return {result:0};}};
+    await __test.approveFriend({flag:'test',approve:false,remark:''});
+    assert.equal(got.accept,false);
+  } finally {__test.state.buddyService=previous; __test.state.friendRequests.delete('test');}
+});
+
+test('action failures publish last_error and correlated failure result', async () => {
+  const socket = __test.state.socket; const buddy = __test.state.buddyService;
+  const frames=[];
+  __test.state.socket={writable:true,write:s=>frames.push(JSON.parse(s))};
+  __test.state.buddyService={};
+  try {
+    __test.handleEnvelope({v:1,type:'action',id:'test-id',payload:{name:'approve_friend',params:{flag:'unknown',approve:true,remark:''}}});
+    await new Promise(resolve=>setImmediate(resolve));
+    const result=frames.find(f=>f.type==='action_result');
+    assert.equal(result.id,'test-id');assert.equal(result.ok,false);
+    assert.ok(frames.some(f=>f.type==='runtime_status' && f.payload.last_error.includes('action_approve_friend')));
+  } finally {__test.state.socket=socket;__test.state.buddyService=buddy;__test.state.errors.delete('action_approve_friend');}
+});
+
+test('headless login waits for connection and does not attach a cached identity', async () => {
+  const previous = {wrapper:__test.state.wrapper,loginService:__test.state.loginService,self:__test.state.self,
+    msgService:__test.state.msgService,autoLoginStarted:__test.state.autoLoginStarted,loginConfirmed:__test.state.loginConfirmed,loginConnected:__test.state.loginConnected};
+  const oldEnv = process.env.CINLAN_QQNT_HEADLESS;
+  const oldUin = process.env.QQNT_LOGIN_UIN;
+  process.env.CINLAN_QQNT_HEADLESS='true';delete process.env.QQNT_LOGIN_UIN;
+  __test.state.wrapper={};__test.state.self={uin:'',uid:'',nick:''};__test.state.msgService=null;
+  __test.state.autoLoginStarted=false;__test.state.loginConfirmed=false;__test.state.loginConnected=false;
+  let calls=0;
+  __test.state.loginService={getLoginList:async()=>({LocalLoginInfoList:[{uin:'10001',isQuickLogin:true}]}),
+    quickLoginWithUin:async()=>{calls++;return {result:0};}};
+  try {
+    await __test.discoverSelfFromLoginList(false);
+    assert.equal(__test.state.self.uin,'');assert.equal(calls,0);
+    await assert.rejects(__test.getLoginQR({}),/not connected/);
+    __test.state.loginConnected=true;
+    await __test.discoverSelfFromLoginList(true);
+    assert.equal(calls,1);assert.equal(__test.state.loginConfirmed,true);
+    assert.equal(__test.state.self.uin,'10001');
+  } finally {
+    Object.assign(__test.state,previous);
+    if(oldEnv===undefined)delete process.env.CINLAN_QQNT_HEADLESS;else process.env.CINLAN_QQNT_HEADLESS=oldEnv;
+    if(oldUin===undefined)delete process.env.QQNT_LOGIN_UIN;else process.env.QQNT_LOGIN_UIN=oldUin;
+  }
+});
+
+test('friend callback is independent, incoming-only, deduplicated and approves observed flag', async () => {
+  const previous = { session: __test.state.session, socket: __test.state.socket, buddyService: __test.state.buddyService };
+  const frames = []; const approvals = [];
+  __test.state.friendRequests.clear();
+  __test.state.socket = { writable: true, write: frame => frames.push(JSON.parse(frame)) };
+  __test.state.session = { getProfileService: () => ({getUinByUid: async () => new Map([['u_friend', '20002']])}) };
+  __test.state.buddyService = { approvalFriendRequest: async request => { approvals.push(request); return {result: 0}; } };
+  try {
+    const req = { isInitiator: false, isDecide: false, friendUid: 'u_friend', reqTime: '123', extWords: 'hello', friendNick: 'tester' };
+    await __test.handleFriendRequests({buddyReqs: [req, {...req, isInitiator: true}, {...req, isDecide: true}, {...req,isDoubt:true}]});
+    await __test.handleFriendRequests({buddyReqs: [req]});
+    assert.equal(frames.length, 1);
+    assert.equal(frames[0].type, 'friend_request');
+    assert.equal(frames[0].payload.uin, '20002');
+    const flag = frames[0].payload.flag;
+    await assert.rejects(__test.approveFriend({flag: 'unknown',approve:true,remark:''}), /unknown/);
+    await __test.approveFriend({flag,approve:true,remark:''});
+    assert.deepEqual(approvals, [{friendUid:'u_friend',accept:true,refuseMsg:'',reqTime:'123'}]);
+    await assert.rejects(__test.approveFriend({flag,approve:true,remark:''}), /decided/);
+  } finally { Object.assign(__test.state, previous); __test.state.friendRequests.clear(); }
+});
+
 test('convertElements keeps text whose QQNT at target is numeric zero', () => {
   const previousSelf = { ...__test.state.self };
   __test.state.self = {
@@ -705,6 +804,8 @@ test('login listener starts configured quick login', async () => {
     wrapper: __test.state.wrapper,
     loginService: __test.state.loginService,
     loginListenerID: __test.state.loginListenerID,
+    loginConnected: __test.state.loginConnected,
+    loginConfirmed: __test.state.loginConfirmed,
     autoLoginStarted: __test.state.autoLoginStarted,
     session: __test.state.session,
     msgService: __test.state.msgService,
@@ -712,8 +813,10 @@ test('login listener starts configured quick login', async () => {
   };
   const previousUIN = process.env.QQNT_LOGIN_UIN;
   let quickLoginCalls = 0;
+  let listener;
   const loginService = {
-    addKernelLoginListener() {
+    addKernelLoginListener(value) {
+      listener = value;
       return 1;
     },
     async getLoginList() {
@@ -748,6 +851,9 @@ test('login listener starts configured quick login', async () => {
 
   try {
     __test.attachLoginListener();
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(quickLoginCalls, 0);
+    listener.onLoginConnected();
     await new Promise((resolve) => setImmediate(resolve));
     assert.equal(quickLoginCalls, 1);
     assert.equal(__test.state.self.uin, '10000001');

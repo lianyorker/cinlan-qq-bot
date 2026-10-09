@@ -7,6 +7,7 @@ use std::io;
 use std::mem::{self, MaybeUninit};
 use std::path::{Path, PathBuf};
 use std::ptr::null_mut;
+use std::time::{Duration, Instant};
 
 type Bool = i32;
 type Dword = u32;
@@ -128,6 +129,7 @@ fn run() -> io::Result<()> {
         "CINLAN_QQNT_WRAPPER_PATH",
         "CINLAN_QQNT_IPC_ADDR",
         "CINLAN_QQNT_IPC_TOKEN",
+        "CINLAN_QQNT_HOOK_STATUS_PATH",
     ] {
         if env::var_os(key).is_none() {
             return Err(invalid(&format!("{key} is required")));
@@ -171,14 +173,23 @@ fn run() -> io::Result<()> {
     }
     let process = unsafe { process.assume_init() };
 
-    let launch_result = inject_library(process.process, &hook_path).and_then(|_| {
-        let result = unsafe { ResumeThread(process.thread) };
-        if result == u32::MAX {
-            Err(io::Error::last_os_error())
-        } else {
-            Ok(())
-        }
-    });
+    let launch_result = inject_library(process.process, &hook_path)
+        .map_err(|error| {
+            let status = env::var_os("CINLAN_QQNT_HOOK_STATUS_PATH")
+                .and_then(|path| std::fs::read_to_string(path).ok());
+            match status {
+                Some(status) if status.starts_with("error:") => invalid(&status),
+                _ => error,
+            }
+        })
+        .and_then(|_| {
+            let result = unsafe { ResumeThread(process.thread) };
+            if result == u32::MAX {
+                Err(io::Error::last_os_error())
+            } else {
+                wait_hook_status()
+            }
+        });
 
     if launch_result.is_err() {
         unsafe {
@@ -193,6 +204,28 @@ fn run() -> io::Result<()> {
 
     println!("cinlan QQNT runtime launched, pid={}", process.process_id);
     Ok(())
+}
+
+fn wait_hook_status() -> io::Result<()> {
+    let path = env::var_os("CINLAN_QQNT_HOOK_STATUS_PATH")
+        .ok_or_else(|| invalid("hook status path missing"))?;
+    let deadline = Instant::now() + Duration::from_secs(15);
+    loop {
+        if let Ok(status) = std::fs::read_to_string(&path) {
+            if status == "ready" {
+                return Ok(());
+            }
+            if status.starts_with("error:") {
+                return Err(invalid(&status));
+            }
+        }
+        if Instant::now() >= deadline {
+            return Err(invalid(
+                "QQNT hook status timeout; refusing unverified startup",
+            ));
+        }
+        std::thread::sleep(Duration::from_millis(50));
+    }
 }
 
 fn inject_library(process: Handle, hook_path: &Path) -> io::Result<()> {
@@ -310,4 +343,16 @@ fn require_file(path: &Path, label: &str) -> io::Result<()> {
 
 fn invalid(message: &str) -> io::Error {
     io::Error::new(io::ErrorKind::InvalidInput, message)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn windows_argument_quotes_preserve_spaces_and_trailing_backslash() {
+        assert_eq!(super::quote_windows_argument("QQ.exe"), "QQ.exe");
+        assert_eq!(
+            super::quote_windows_argument("D:\\QQ dir\\"),
+            "\"D:\\QQ dir\\\\\""
+        );
+    }
 }

@@ -63,6 +63,13 @@ func (a *Adapter) launch(ctx context.Context, address, token string) error {
 
 	launchCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
 	defer cancel()
+	statusFile, err := os.CreateTemp(filepath.Dir(patchPath), ".qqnt-hook-*.status")
+	if err != nil {
+		return fmt.Errorf("create QQNT hook status file: %w", err)
+	}
+	statusPath := statusFile.Name()
+	statusFile.Close()
+	defer os.Remove(statusPath)
 	command := exec.CommandContext(launchCtx, loader, current.QQExecutable, hook)
 	command.Env = append(os.Environ(),
 		"CINLAN_QQNT_PATCH_PACKAGE="+patchPath,
@@ -73,6 +80,9 @@ func (a *Adapter) launch(ctx context.Context, address, token string) error {
 		"CINLAN_QQNT_IPC_ADDR="+address,
 		"CINLAN_QQNT_IPC_TOKEN="+token,
 		"CINLAN_QQNT_MAX_FRAME_BYTES="+strconv.Itoa(a.cfg.MaxFrameBytes),
+		"CINLAN_QQNT_HEADLESS="+strconv.FormatBool(a.cfg.Headless),
+		"CINLAN_QQNT_ACTION_TIMEOUT_MS="+strconv.FormatInt(a.cfg.ActionTimeout.Milliseconds(), 10),
+		"CINLAN_QQNT_HOOK_STATUS_PATH="+statusPath,
 		"CINLAN_QQNT_SEND_IMAGE_ROOTS="+strings.Join(a.cfg.ImageSendRoots, ";"),
 		"CINLAN_QQNT_SEND_IMAGE_MAX_BYTES="+strconv.FormatInt(a.cfg.ImageMaxBytes, 10),
 	)

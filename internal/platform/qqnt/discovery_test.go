@@ -53,6 +53,26 @@ func TestWritePatchedPackageChangesOnlyTarget(t *testing.T) {
 	}
 }
 
+func TestInspectInstallationUsesActivatedVersion(t *testing.T) {
+	root := t.TempDir()
+	qq := filepath.Join(root, "QQ.exe")
+	writeTestFile(t, qq, []byte("fixture"))
+	writeTestVersion(t, root, "old", "old", "1")
+	writeTestVersion(t, root, "pending-update", "pending-update", "2")
+	config := filepath.Join(root, "versions", "config.json")
+	writeTestFile(t, config, []byte(`{"curVersion":"old"}`))
+	got, err := inspectInstallation(qq)
+	if err != nil || got.Version != "old" {
+		t.Fatalf("active installation = %#v, %v", got, err)
+	}
+	for _, content := range []string{`{"curVersion":"missing"}`, `{"curVersion":"../old"}`, `invalid`} {
+		writeTestFile(t, config, []byte(content))
+		if _, err := inspectInstallation(qq); err == nil {
+			t.Fatalf("accepted config %s", content)
+		}
+	}
+}
+
 func writeTestVersion(t *testing.T, root, directory, version, build string) string {
 	t.Helper()
 	appDir := filepath.Join(root, "versions", directory, "resources", "app")

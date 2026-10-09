@@ -40,6 +40,20 @@ func inspectInstallation(qqExecutable string) (installation, error) {
 	if err != nil {
 		return installation{}, fmt.Errorf("read QQ versions directory: %w", err)
 	}
+	activeVersion := ""
+	launcherConfig, configErr := os.ReadFile(filepath.Join(versionRoot, "config.json"))
+	if configErr == nil {
+		var launcher struct {
+			Current string `json:"curVersion"`
+		}
+		if len(launcherConfig) > maximumQQPackageBytes || json.Unmarshal(launcherConfig, &launcher) != nil ||
+			launcher.Current == "" || filepath.Base(launcher.Current) != launcher.Current || launcher.Current == ".." {
+			return installation{}, fmt.Errorf("invalid QQNT launcher curVersion")
+		}
+		activeVersion = launcher.Current
+	} else if !os.IsNotExist(configErr) {
+		return installation{}, fmt.Errorf("read QQNT launcher config: %w", configErr)
+	}
 
 	var (
 		selected      installation
@@ -47,6 +61,9 @@ func inspectInstallation(qqExecutable string) (installation, error) {
 	)
 	for _, entry := range entries {
 		if !entry.IsDir() {
+			continue
+		}
+		if activeVersion != "" && entry.Name() != activeVersion {
 			continue
 		}
 		appDir := filepath.Join(versionRoot, entry.Name(), "resources", "app")
@@ -76,6 +93,9 @@ func inspectInstallation(qqExecutable string) (installation, error) {
 		}
 	}
 	if selected.AppDir == "" {
+		if activeVersion != "" {
+			return installation{}, fmt.Errorf("QQNT active version %s has no usable wrapper/package", activeVersion)
+		}
 		return installation{}, fmt.Errorf(
 			"no usable QQNT version was found under %s",
 			versionRoot,

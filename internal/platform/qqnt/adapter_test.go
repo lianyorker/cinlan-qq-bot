@@ -2,6 +2,7 @@ package qqnt
 
 import (
 	"bufio"
+	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -15,6 +16,85 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
+
+func TestFriendRequestIndependentChannel(t *testing.T) {
+	for _, mode := range []string{"disabled", "approved", "rejected", "timeout"} {
+		t.Run(mode, func(t *testing.T) {
+			var logs bytes.Buffer
+			adapter, err := NewAdapter(Config{Token: "fixture-token", AutoAcceptFriend: mode != "disabled", ActionTimeout: 60 * time.Millisecond}, slog.New(slog.NewTextHandler(&logs, nil)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			listener, err := net.Listen("tcp", "127.0.0.1:0")
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer listener.Close()
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				c, e := listener.Accept()
+				if e != nil {
+					done <- e
+					return
+				}
+				done <- adapter.serveConnection(ctx, c)
+			}()
+			c, err := net.Dial("tcp", listener.Addr().String())
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer c.Close()
+			_ = c.SetDeadline(time.Now().Add(time.Second))
+			scanner := bufio.NewScanner(c)
+			writeTestEnvelope(t, c, envelope{Type: "hello", Token: "fixture-token", Payload: mustJSON(t, helloPayload{Runtime: "cinlan-qqnt"})})
+			scanTestEnvelope(t, scanner)
+			request := FriendRequest{UIN: "20002", UID: "u_friend", Flag: "request-flag", Comment: "test", Nickname: "tester"}
+			writeTestEnvelope(t, c, envelope{Type: "friend_request", Payload: mustJSON(t, request)})
+			if mode != "disabled" {
+				action := scanTestEnvelope(t, scanner)
+				var payload actionPayload
+				if err := decodePayload(action.Payload, &payload); err != nil {
+					t.Fatal(err)
+				}
+				if payload.Name != "approve_friend" || payload.Params["flag"] != request.Flag || payload.Params["approve"] != true || payload.Params["remark"] != "" {
+					t.Fatalf("action = %#v", payload)
+				}
+				if mode != "timeout" {
+					writeTestEnvelope(t, c, envelope{Type: "action_result", ID: action.ID, OK: mode == "approved", Error: "approval failed", Payload: mustJSON(t, map[string]bool{"approved": true})})
+				}
+			}
+			// A status frame is a reader barrier and proves approval did not deadlock IPC.
+			writeTestEnvelope(t, c, envelope{Type: "runtime_status", Payload: mustJSON(t, runtimeStatus{State: "waiting_login", WrapperLoaded: true})})
+			eventually(t, time.Second, func() bool { return adapter.RuntimeInfo().State == "waiting_login" })
+			if got := adapter.RuntimeInfo().LastFriendRequest; got == nil || *got != request {
+				t.Fatalf("request = %#v", got)
+			}
+			select {
+			case event := <-adapter.Events():
+				t.Fatalf("request leaked into pipeline: %#v", event)
+			default:
+			}
+			if mode == "disabled" {
+				_ = c.SetReadDeadline(time.Now().Add(80 * time.Millisecond))
+				if scanner.Scan() {
+					t.Fatal("auto-approval despite default false")
+				}
+			}
+			time.Sleep(100 * time.Millisecond)
+			cancel()
+			c.Close()
+			<-done
+			if mode == "approved" && !strings.Contains(logs.String(), "auto-accepted") {
+				t.Fatal(logs.String())
+			}
+			if (mode == "rejected" || mode == "timeout") && !strings.Contains(logs.String(), "auto-accept failed") {
+				t.Fatal(logs.String())
+			}
+		})
+	}
+}
 
 func TestAdapterRuntimeRoundTrip(t *testing.T) {
 	address := availableAddress(t)

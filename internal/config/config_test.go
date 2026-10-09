@@ -147,6 +147,35 @@ func TestLoadCustomAgentConfig(t *testing.T) {
 	}
 }
 
+func TestNativeHeadlessFlags(t *testing.T) {
+	clearConfigEnvironment(t)
+	t.Setenv("QQ_GROUP_ALLOWLIST", "123")
+	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
+	base, err := Load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if base.QQNTHeadless || base.QQNTAutoAcceptFriend {
+		t.Fatal("unsafe enabled default")
+	}
+	t.Setenv("QQNT_HEADLESS", "true")
+	t.Setenv("QQNT_AUTO_ACCEPT_FRIEND", "true")
+	t.Setenv("ADMIN_API_TOKEN", "test-token")
+	cfg, err := Load()
+	if err != nil || !cfg.QQNTHeadless || !cfg.QQNTAutoAcceptFriend {
+		t.Fatalf("flags = %#v, %v", cfg, err)
+	}
+	t.Setenv("QQNT_HEADLESS", "invalid")
+	if _, err := Load(); err == nil {
+		t.Fatal("accepted invalid bool")
+	}
+	cfg.AdminAPIToken = ""
+	cfg.QQPlatform = QQPlatformNative
+	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "ADMIN_API_TOKEN") {
+		t.Fatalf("headless without admin token = %v", err)
+	}
+}
+
 func TestLoadRequiresExplicitGroupAllowlist(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
@@ -308,6 +337,8 @@ func clearConfigEnvironment(t *testing.T) {
 		"QQNT_PATH",
 		"QQNT_AUTO_LAUNCH",
 		"QQNT_ALLOW_RUNNING",
+		"QQNT_AUTO_ACCEPT_FRIEND",
+		"QQNT_HEADLESS",
 		"QQNT_LOADER_PATH",
 		"QQNT_HOOK_PATH",
 		"QQNT_LOAD_PATH",

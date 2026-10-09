@@ -130,3 +130,53 @@ cargo clippy --manifest-path runtime/loader/Cargo.toml --all-targets -- -D warni
 会话附加、IPC 和 Agent pipeline；官方 QQNT 仍负责账号登录与 QQ 协议。版本
 `9.9.31-49738` 的静态接口、构建、真实 QQNT 启动和 wrapper/session ready
 已验证；真实群消息收发及私聊 pipeline 仍未验证/完成。
+
+## 10. Headless Implementation Audit (2026-10-09)
+
+本轮仅使用官方 QQNT PE/binding 的只读检查和自有源码，不读取、复制或反编译
+NapCat/LLOneBot。用户提供的 `docs/原生无头化方案.md` 保持未修改。
+
+版本核实纠正：`9.9.36-53644` 已在 versions 中落盘，但官方
+`versions/config.json.curVersion` 和现有 QQ renderer app-path 都为
+`9.9.31-49738`。discovery 现在优先激活版本；不修改官方 config.json。
+
+官方接口证据（可运行 `scripts/inspect-qqnt-bindings.cjs` 复核）：
+
+| Binding / converter | 9.9.31 RVA | 9.9.36 RVA | 观察 |
+|---|---|---|---|
+| approvalFriendRequest | `0xEBCED8` | `0x1072D44` | argc == 1；参数转换字段 friendUid/accept/refuseMsg/reqTime |
+| approval 参数转换 | `0xEBD160` | `0x1072FDA` | 精确对象字段，非第三方示例猜测 |
+| onBuddyReqChange | `0x202BAD1` | `0x24D2885` | 官方 NodeIKernelBuddyListener 回调 |
+| onQRCodeGetPicture | `0x1E5AD5B` | `0x22869A5` | 官方 login listener 回调 |
+| QR 数据转换 | `0x1E5AEBC` | `0x2286B18` | pngBase64QrcodeData/qrcodeUrl/expireTime/pollTimeInterval |
+
+USER32 CreateWindowExW/ShowWindow/SetWindowPos/SetWindowPlacement 位于 QQNT.dll
+delay-import table，而非普通 import table。hook 对这四条显示路径及动态解析定向；
+默认关闭；失败阻止 ContentMain 启动，loader 15 秒内等待 hook 状态文件并 fail-closed。
+
+实现与自动化验证：friend_request 独立 IPC、随机 flag 缓存、好友审批/remark、
+有界 Go 自动同意 worker；login_qr IPC、Bearer QR/status API、刷新、PNG 校验、
+ready/断连清空；登录等待 onLoginConnected，headless 不信任未确认的缓存账号身份。
+
+验证结果：`go test ./...`、`go vet ./...`、Node tests（28 项）、`node --check`、Rust tests
+（lib 5 项 + loader 1 项）、`cargo clippy --all-targets -- -D warnings` 通过；release 构建通过。`go test -race` 未运行成功，
+当前 CGO_ENABLED=0，缺少可用 C compiler，错误为 `-race requires cgo`。
+
+官方当前激活版本文件本轮 SHA256：
+
+自有新 release hook SHA256：
+`BDD8BDE73E6115691F604063CE6A5F55DE80EF36803277A35987792AADC04106`。
+这是构建产物 hash，未经过本轮真实冷启动。
+
+- package.json: `56387B6EC1B4D129D3790C09FB5C5949A6E92F01CAE162D7DEF4A49D9ED402E3`
+- wrapper.node: `A1E59891E743C271D641EE011F47AA887D9F7DFAE6B3BB9292A03AF759DEC203`
+- QQNT.dll: `8EC0A4088F4ED2B4C37805F03757E1AAC47AA96C55779CD7136D9EFF475B1805`
+
+`scripts/verify-qqnt-files.ps1` baseline + Compare 通过，仅证明本轮只读检查和构建
+没有改写官方文件，不等于经过新 hook 冷启动后的 hash 验收。
+
+实机测试状态：用户授权关闭/restart QQ 后，执行平台拒绝冷启动命令，整个命令
+没有执行；原有 QQ 进程未被关闭，不换方式绕过。**以下均未验证**：新 hook 冷启动
+耗时、所有子进程窗口抑制、headless=false UI 回归、真实扫码/过期刷新/quick login、
+真实好友申请/审批、双方好友关系、deliver_file、event -> Agent -> sendMsg、
+Windows 无交互桌面/Session 0。验收不能标记完成。人工复测按 docs/原生运行时.md。

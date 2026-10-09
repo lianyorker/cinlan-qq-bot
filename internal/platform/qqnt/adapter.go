@@ -28,6 +28,7 @@ const (
 )
 
 var avIntegerPattern = regexp.MustCompile(`^-?[0-9]{1,128}$`)
+var friendUINPattern = regexp.MustCompile(`^[1-9][0-9]{0,19}$`)
 
 type Config struct {
 	ListenAddr       string
@@ -37,6 +38,8 @@ type Config struct {
 	MaxFrameBytes    int
 	AutoLaunch       bool
 	AllowRunning     bool
+	AutoAcceptFriend bool
+	Headless         bool
 
 	QQExecutable     string
 	LoaderPath       string
@@ -49,23 +52,25 @@ type Config struct {
 }
 
 type RuntimeInfo struct {
-	Connected             bool            `json:"connected"`
-	Ready                 bool            `json:"ready"`
-	State                 string          `json:"state"`
-	SelfID                string          `json:"self_id"`
-	SelfUID               string          `json:"self_uid"`
-	Nickname              string          `json:"nickname"`
-	Runtime               string          `json:"runtime"`
-	PID                   int             `json:"pid"`
-	QQVersion             string          `json:"qq_version"`
-	Capabilities          []string        `json:"capabilities"`
-	WrapperLoaded         bool            `json:"wrapper_loaded"`
-	SessionAttached       bool            `json:"session_attached"`
-	AVSDKAvailable        bool            `json:"avsdk_available"`
-	AVSDKListenerAttached bool            `json:"avsdk_listener_attached"`
-	AVSDKMethods          []string        `json:"avsdk_methods,omitempty"`
-	LastAVEvent           *AVEventSummary `json:"last_av_event,omitempty"`
-	LastError             string          `json:"last_error"`
+	Connected              bool            `json:"connected"`
+	Ready                  bool            `json:"ready"`
+	State                  string          `json:"state"`
+	SelfID                 string          `json:"self_id"`
+	SelfUID                string          `json:"self_uid"`
+	Nickname               string          `json:"nickname"`
+	Runtime                string          `json:"runtime"`
+	PID                    int             `json:"pid"`
+	QQVersion              string          `json:"qq_version"`
+	Capabilities           []string        `json:"capabilities"`
+	WrapperLoaded          bool            `json:"wrapper_loaded"`
+	SessionAttached        bool            `json:"session_attached"`
+	AVSDKAvailable         bool            `json:"avsdk_available"`
+	AVSDKListenerAttached  bool            `json:"avsdk_listener_attached"`
+	AVSDKMethods           []string        `json:"avsdk_methods,omitempty"`
+	LastAVEvent            *AVEventSummary `json:"last_av_event,omitempty"`
+	LastError              string          `json:"last_error"`
+	FriendListenerAttached bool            `json:"friend_listener_attached"`
+	LastFriendRequest      *FriendRequest  `json:"last_friend_request,omitempty"`
 }
 
 type actionResult struct {
@@ -93,6 +98,7 @@ type Adapter struct {
 
 	statusMu sync.RWMutex
 	status   RuntimeInfo
+	loginQR  LoginQR
 }
 
 func NewAdapter(cfg Config, logger *slog.Logger) (*Adapter, error) {
@@ -155,6 +161,10 @@ func (a *Adapter) RuntimeInfo() RuntimeInfo {
 	info.Capabilities = append([]string(nil), info.Capabilities...)
 	info.AVSDKMethods = append([]string(nil), info.AVSDKMethods...)
 	info.LastAVEvent = cloneAVEvent(info.LastAVEvent)
+	if info.LastFriendRequest != nil {
+		request := *info.LastFriendRequest
+		info.LastFriendRequest = &request
+	}
 	return info
 }
 
@@ -175,6 +185,9 @@ func (a *Adapter) Run(ctx context.Context) error {
 	a.logger.Info("QQNT IPC listener ready", "address", listener.Addr().String())
 	if a.cfg.AutoLaunch {
 		if err := a.launch(ctx, listener.Addr().String(), a.token); err != nil {
+			a.statusMu.Lock()
+			a.status.LastError = err.Error()
+			a.statusMu.Unlock()
 			return err
 		}
 	}
@@ -269,12 +282,8 @@ func (a *Adapter) Call(
 		return nil, err
 	}
 
-	waitCtx := ctx
-	var cancel context.CancelFunc
-	if _, hasDeadline := ctx.Deadline(); !hasDeadline {
-		waitCtx, cancel = context.WithTimeout(ctx, a.cfg.ActionTimeout)
-		defer cancel()
-	}
+	waitCtx, cancel := context.WithTimeout(ctx, a.cfg.ActionTimeout)
+	defer cancel()
 	select {
 	case <-waitCtx.Done():
 		return nil, fmt.Errorf("QQNT action %q: %w", action, waitCtx.Err())
@@ -340,6 +349,35 @@ func (a *Adapter) serveConnection(ctx context.Context, connection net.Conn) erro
 		"pid", details.PID,
 		"qq_version", details.QQVersion,
 	)
+	// Action waits must not block the reader that delivers their replies.
+	friendCtx, cancelFriends := context.WithCancel(ctx)
+	friendQueue := make(chan FriendRequest, 32)
+	friendDone := make(chan struct{})
+	go func() {
+		defer close(friendDone)
+		for {
+			select {
+			case <-friendCtx.Done():
+				return
+			case request := <-friendQueue:
+				if friendCtx.Err() != nil {
+					return
+				}
+				_, err := a.Call(friendCtx, "approve_friend", map[string]any{
+					"flag": request.Flag, "approve": true, "remark": "",
+				})
+				if err != nil {
+					a.statusMu.Lock()
+					a.status.LastError = err.Error()
+					a.statusMu.Unlock()
+					a.logger.Error("QQNT friend request auto-accept failed", "uin", request.UIN, "error", err)
+				} else {
+					a.logger.Info("QQNT friend request auto-accepted", "uin", request.UIN)
+				}
+			}
+		}
+	}()
+	defer func() { cancelFriends(); <-friendDone }()
 
 	for scanner.Scan() {
 		current, decodeErr := decodeEnvelope(scanner.Bytes())
@@ -368,6 +406,37 @@ func (a *Adapter) serveConnection(ctx context.Context, connection net.Conn) erro
 			}
 		case "action_result":
 			a.handleActionResult(current)
+		case "friend_request":
+			var request FriendRequest
+			if err := decodePayload(current.Payload, &request); err != nil ||
+				!friendUINPattern.MatchString(request.UIN) || request.UID == "" ||
+				request.Flag == "" || len(request.Flag) > 256 || len(request.UID) > 128 ||
+				len(request.Comment) > 4096 || len(request.Nickname) > 512 {
+				a.logger.Warn("ignored invalid QQNT friend request")
+				continue
+			}
+			a.statusMu.Lock()
+			a.status.LastFriendRequest = &request
+			a.statusMu.Unlock()
+			a.logger.Info("QQNT friend request observed", "uin", request.UIN)
+			if a.cfg.AutoAcceptFriend {
+				select {
+				case friendQueue <- request:
+				default:
+					a.logger.Error("QQNT friend auto-accept queue full", "uin", request.UIN)
+				}
+			}
+		case "login_qr":
+			var qr LoginQR
+			if err := decodePayload(current.Payload, &qr); err != nil {
+				return err
+			}
+			if err := validateLoginQR(qr); err != nil {
+				return err
+			}
+			a.statusMu.Lock()
+			a.loginQR = qr
+			a.statusMu.Unlock()
 		case "hello":
 			return fmt.Errorf("QQNT runtime sent duplicate hello")
 		default:
@@ -388,7 +457,7 @@ func (a *Adapter) handleStatus(raw json.RawMessage) error {
 	ready := current.State == "ready" &&
 		current.SelfID != "" &&
 		current.WrapperLoaded &&
-		current.SessionAttached
+		current.SessionAttached && (!a.cfg.AutoAcceptFriend || current.FriendListenerAttached)
 	a.ready.Store(ready)
 	a.statusMu.Lock()
 	a.status.State = current.State
@@ -397,6 +466,7 @@ func (a *Adapter) handleStatus(raw json.RawMessage) error {
 	a.status.Nickname = current.Nickname
 	a.status.WrapperLoaded = current.WrapperLoaded
 	a.status.SessionAttached = current.SessionAttached
+	a.status.FriendListenerAttached = current.FriendListenerAttached
 	a.status.AVSDKAvailable = current.AVSDKAvailable
 	a.status.AVSDKListenerAttached = current.AVSDKListenerAttached
 	a.status.AVSDKMethods = append(
@@ -405,6 +475,9 @@ func (a *Adapter) handleStatus(raw json.RawMessage) error {
 	)
 	a.status.LastError = current.LastError
 	a.status.Ready = ready
+	if ready {
+		a.loginQR = LoginQR{State: "ready", Status: "ready"}
+	}
 	a.statusMu.Unlock()
 	a.logger.Info(
 		"QQNT runtime status changed",
@@ -549,6 +622,10 @@ func (a *Adapter) write(current envelope) error {
 	if connection == nil {
 		return fmt.Errorf("QQNT runtime is not connected")
 	}
+	if err := connection.SetWriteDeadline(time.Now().Add(a.cfg.ActionTimeout)); err != nil {
+		return err
+	}
+	defer connection.SetWriteDeadline(time.Time{})
 	if _, err := connection.Write(encoded); err != nil {
 		return fmt.Errorf("write QQNT IPC frame: %w", err)
 	}
@@ -571,6 +648,7 @@ func (a *Adapter) setConnection(connection net.Conn, hello helloPayload) {
 		QQVersion:    hello.QQVersion,
 		Capabilities: append([]string(nil), hello.Capabilities...),
 	}
+	a.loginQR = LoginQR{}
 	a.statusMu.Unlock()
 }
 
@@ -588,6 +666,7 @@ func (a *Adapter) clearConnection(connection net.Conn, cause error) {
 	a.status.Connected = false
 	a.status.Ready = false
 	a.status.State = "disconnected"
+	a.loginQR = LoginQR{}
 	a.statusMu.Unlock()
 	a.failPending(cause)
 }

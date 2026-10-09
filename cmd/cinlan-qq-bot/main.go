@@ -213,6 +213,8 @@ func main() {
 			MaxFrameBytes:    cfg.QQNTMaxFrameBytes,
 			AutoLaunch:       cfg.QQNTAutoLaunch,
 			AllowRunning:     cfg.QQNTAllowRunning,
+			AutoAcceptFriend: cfg.QQNTAutoAcceptFriend,
+			Headless:         cfg.QQNTHeadless,
 			QQExecutable:     cfg.QQNTPath,
 			LoaderPath:       cfg.QQNTLoaderPath,
 			HookPath:         cfg.QQNTHookPath,
