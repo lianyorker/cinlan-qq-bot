@@ -23,6 +23,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/mcp"
 	"github.com/lianyorker/cinlan-qq-bot/internal/media"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+	"github.com/lianyorker/cinlan-qq-bot/internal/moderation"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	onebotplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/onebot"
@@ -304,6 +305,16 @@ func main() {
 	}
 	if fetcher, ok := qqAdapter.(bot.MessageFetcher); ok {
 		botService.SetMessageFetcher(fetcher)
+	}
+	if moderator, ok := qqAdapter.(bot.GroupModerator); ok {
+		botService.SetGroupModerator(moderator)
+	}
+	if warnStore, warnErr := moderation.Open(
+		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "moderation.json"),
+	); warnErr != nil {
+		logger.Warn("moderation store unavailable", "error", warnErr)
+	} else {
+		botService.SetModerationStore(warnStore)
 	}
 	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
 		Cooldown:      cfg.MediaToolCooldown,

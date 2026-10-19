@@ -364,6 +364,58 @@ func (m *MultiAdapter) UploadPrivateFile(
 	return err
 }
 
+// RecallMessage withdraws a message via delete_msg on the account
+// identified by selfID. Requires admin rights.
+func (m *MultiAdapter) RecallMessage(
+	ctx context.Context,
+	selfID, messageID string,
+) error {
+	_, err := m.CallFor(ctx, selfID, "delete_msg", map[string]any{
+		"message_id": numericID(messageID),
+	})
+	return err
+}
+
+// BanMember mutes a group member for duration via set_group_ban.
+func (m *MultiAdapter) BanMember(
+	ctx context.Context,
+	selfID, groupID, userID string,
+	duration time.Duration,
+) error {
+	seconds := int64(duration / time.Second)
+	if seconds < 0 {
+		seconds = 0
+	}
+	_, err := m.CallFor(ctx, selfID, "set_group_ban", map[string]any{
+		"group_id": numericID(groupID),
+		"user_id":  numericID(userID),
+		"duration": seconds,
+	})
+	return err
+}
+
+// KickMember removes a group member via set_group_kick (rejoin allowed).
+func (m *MultiAdapter) KickMember(
+	ctx context.Context,
+	selfID, groupID, userID string,
+) error {
+	_, err := m.CallFor(ctx, selfID, "set_group_kick", map[string]any{
+		"group_id":           numericID(groupID),
+		"user_id":            numericID(userID),
+		"reject_add_request": false,
+	})
+	return err
+}
+
+// numericID returns value parsed as int64 when numeric, else the raw string —
+// OneBot actions accept numeric ids as numbers.
+func numericID(value string) any {
+	if id, err := strconv.ParseInt(strings.TrimSpace(value), 10, 64); err == nil {
+		return id
+	}
+	return strings.TrimSpace(value)
+}
+
 // FetchMessage returns the parsed chain of a message fetched via get_msg on
 // the account identified by selfID.
 func (m *MultiAdapter) FetchMessage(

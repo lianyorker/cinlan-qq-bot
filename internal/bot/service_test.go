@@ -393,9 +393,9 @@ func TestPipelineStagesAndCustomCommand(t *testing.T) {
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "agent"}}
 	sender := &fakeSender{}
 	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
-	if got := service.PipelineStages(); len(got) != 11 ||
+	if got := service.PipelineStages(); len(got) != 12 ||
 		got[0] != "wake" || got[1] != "security" ||
-		got[4] != "attention" || got[len(got)-1] != "respond" {
+		got[5] != "attention" || got[len(got)-1] != "respond" {
 		t.Fatalf("pipeline stages = %#v", got)
 	}
 	if err := service.CommandRegistry().Register(command.Definition{

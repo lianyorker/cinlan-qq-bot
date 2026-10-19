@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
@@ -117,6 +118,40 @@ func (a *Adapter) UploadPrivateFile(
 	}
 	_, err := a.client.UploadPrivateFile(ctx, userID, filePath, name)
 	return err
+}
+
+// RecallMessage withdraws a message via delete_msg. Requires admin rights.
+func (a *Adapter) RecallMessage(
+	ctx context.Context,
+	selfID, messageID string,
+) error {
+	if a.client == nil {
+		return fmt.Errorf("onebot adapter has no client")
+	}
+	return a.client.DeleteMessage(ctx, messageID)
+}
+
+// BanMember mutes a group member for duration via set_group_ban.
+func (a *Adapter) BanMember(
+	ctx context.Context,
+	selfID, groupID, userID string,
+	duration time.Duration,
+) error {
+	if a.client == nil {
+		return fmt.Errorf("onebot adapter has no client")
+	}
+	return a.client.SetGroupBan(ctx, groupID, userID, duration)
+}
+
+// KickMember removes a group member via set_group_kick (rejoin allowed).
+func (a *Adapter) KickMember(
+	ctx context.Context,
+	selfID, groupID, userID string,
+) error {
+	if a.client == nil {
+		return fmt.Errorf("onebot adapter has no client")
+	}
+	return a.client.SetGroupKick(ctx, groupID, userID, false)
 }
 
 // FetchMessage returns the parsed chain of a message fetched via get_msg.

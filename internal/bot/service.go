@@ -18,6 +18,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+	"github.com/lianyorker/cinlan-qq-bot/internal/moderation"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
@@ -47,6 +48,18 @@ type FileSender interface {
 // is not part of the inbound chain.
 type MessageFetcher interface {
 	FetchMessage(ctx context.Context, selfID, messageID string) (message.Chain, error)
+}
+
+// GroupModerator performs deterministic moderation actions (recall, mute,
+// kick) through the platform adapter. Requires bot-side admin rights.
+type GroupModerator interface {
+	RecallMessage(ctx context.Context, selfID, messageID string) error
+	BanMember(
+		ctx context.Context,
+		selfID, groupID, userID string,
+		duration time.Duration,
+	) error
+	KickMember(ctx context.Context, selfID, groupID, userID string) error
 }
 
 type Stats struct {
@@ -82,25 +95,27 @@ type counters struct {
 }
 
 type Service struct {
-	cfg          config.Config
-	agent        agent.Client
-	sender       Sender
-	fileSender   FileSender
-	chainFetcher MessageFetcher
-	sessions     *session.Store
-	logger       *slog.Logger
-	stats        counters
-	now          func() time.Time
-	providers    *provider.Registry
-	plugins      *plugin.Registry
-	messageGuard plugin.BeforeHook
-	commands     *command.Registry
-	tools        *tool.Registry
-	personas     *persona.Registry
-	bindings     *binding.Registry
-	chatPrefs    *chatprefs.Store
-	memeDir      string
-	keywordTools []keywordTool
+	cfg            config.Config
+	agent          agent.Client
+	sender         Sender
+	fileSender     FileSender
+	chainFetcher   MessageFetcher
+	groupModerator GroupModerator
+	warnStore      *moderation.Store
+	sessions       *session.Store
+	logger         *slog.Logger
+	stats          counters
+	now            func() time.Time
+	providers      *provider.Registry
+	plugins        *plugin.Registry
+	messageGuard   plugin.BeforeHook
+	commands       *command.Registry
+	tools          *tool.Registry
+	personas       *persona.Registry
+	bindings       *binding.Registry
+	chatPrefs      *chatprefs.Store
+	memeDir        string
+	keywordTools   []keywordTool
 
 	stateMu          sync.Mutex
 	lastAccepted     map[string]time.Time
@@ -263,6 +278,17 @@ func (s *Service) SetFileSender(sender FileSender) {
 // 生图 when the user replies to an image instead of attaching one.
 func (s *Service) SetMessageFetcher(fetcher MessageFetcher) {
 	s.chainFetcher = fetcher
+}
+
+// SetGroupModerator wires recall/mute/kick actions used by the moderation
+// stage for pattern-matched spam.
+func (s *Service) SetGroupModerator(moderator GroupModerator) {
+	s.groupModerator = moderator
+}
+
+// SetModerationStore wires the persistent spam-warning counter.
+func (s *Service) SetModerationStore(store *moderation.Store) {
+	s.warnStore = store
 }
 
 // EventImageRefs returns image references from the message itself and, when

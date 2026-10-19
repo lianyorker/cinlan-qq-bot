@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -47,6 +48,90 @@ type ReplyPolicy struct {
 	History             AttentionHistoryPolicy `json:"history,omitempty"`
 }
 
+// Moderation policy actions.
+const (
+	ModerationActionBan      = "ban"       // recall + warn, mute on limit (default)
+	ModerationActionKick     = "kick"      // recall + warn, kick on limit
+	ModerationActionWarnOnly = "warn_only" // recall + warn, never mute/kick
+)
+
+const (
+	defaultModerationWarnLimit  = 3
+	defaultModerationBanSeconds = 86400
+)
+
+// ModerationPolicy is a deterministic spam-ladder config: messages matching
+// any pattern are recalled and the sender warned; on the Nth warning the
+// configured action fires. Admins, owners and whitelisted users are exempt
+// (enforced by the caller).
+type ModerationPolicy struct {
+	Patterns   []string `json:"patterns"`
+	Action     string   `json:"action,omitempty"`
+	WarnLimit  int      `json:"warn_limit,omitempty"`
+	BanSeconds int64    `json:"ban_seconds,omitempty"`
+
+	compileOnce sync.Once
+	compileErr  error
+	compiled    []*regexp.Regexp
+}
+
+func (p *ModerationPolicy) compile() error {
+	p.compileOnce.Do(func() {
+		for _, raw := range p.Patterns {
+			re, err := regexp.Compile(raw)
+			if err != nil {
+				p.compileErr = fmt.Errorf(
+					"moderation pattern %q: %w", raw, err,
+				)
+				return
+			}
+			p.compiled = append(p.compiled, re)
+		}
+	})
+	return p.compileErr
+}
+
+// Matches reports whether text hits any spam pattern.
+func (p *ModerationPolicy) Matches(text string) bool {
+	if p == nil || len(p.Patterns) == 0 || p.compile() != nil {
+		return false
+	}
+	for _, re := range p.compiled {
+		if re.MatchString(text) {
+			return true
+		}
+	}
+	return false
+}
+
+// EffectiveAction returns the post-limit action, defaulting to mute.
+func (p *ModerationPolicy) EffectiveAction() string {
+	switch strings.ToLower(strings.TrimSpace(p.Action)) {
+	case ModerationActionKick:
+		return ModerationActionKick
+	case ModerationActionWarnOnly:
+		return ModerationActionWarnOnly
+	default:
+		return ModerationActionBan
+	}
+}
+
+// EffectiveWarnLimit returns the warning ladder height (default 3).
+func (p *ModerationPolicy) EffectiveWarnLimit() int {
+	if p.WarnLimit > 0 {
+		return p.WarnLimit
+	}
+	return defaultModerationWarnLimit
+}
+
+// EffectiveBanSeconds returns the mute duration in seconds (default 24h).
+func (p *ModerationPolicy) EffectiveBanSeconds() int64 {
+	if p.BanSeconds > 0 {
+		return p.BanSeconds
+	}
+	return defaultModerationBanSeconds
+}
+
 // AllowsUser reports whether the user is on the policy's whitelist — their
 // ambient messages bypass the attention classifier like direct mentions.
 func (p ReplyPolicy) AllowsUser(userID string) bool {
@@ -59,24 +144,25 @@ func (p ReplyPolicy) AllowsUser(userID string) bool {
 }
 
 type Rule struct {
-	Name            string       `json:"name"`
-	Platform        string       `json:"platform"`
-	SelfID          string       `json:"self_id"`
-	ChatType        string       `json:"chat_type"`
-	ChatID          string       `json:"chat_id,omitempty"`
-	ChatIDs         []string     `json:"chat_ids,omitempty"`
-	UserIDs         []string     `json:"user_ids,omitempty"`
-	Persona         string       `json:"persona,omitempty"`
-	Provider        string       `json:"provider,omitempty"`
-	Tools           []string     `json:"tools,omitempty"`
-	Skills          []string     `json:"skills,omitempty"`
-	KnowledgeBases  []string     `json:"knowledge_bases,omitempty"`
-	MCPServers      []string     `json:"mcp_servers,omitempty"`
-	RequireMention  *bool        `json:"require_mention,omitempty"`
-	SmartAttention  *bool        `json:"smart_attention,omitempty"`
-	ReplyPolicy     *ReplyPolicy `json:"reply_policy,omitempty"`
-	LearningEnabled *bool        `json:"learning_enabled,omitempty"`
-	AllowLinks      *bool        `json:"allow_links,omitempty"`
+	Name            string            `json:"name"`
+	Platform        string            `json:"platform"`
+	SelfID          string            `json:"self_id"`
+	ChatType        string            `json:"chat_type"`
+	ChatID          string            `json:"chat_id,omitempty"`
+	ChatIDs         []string          `json:"chat_ids,omitempty"`
+	UserIDs         []string          `json:"user_ids,omitempty"`
+	Persona         string            `json:"persona,omitempty"`
+	Provider        string            `json:"provider,omitempty"`
+	Moderation      *ModerationPolicy `json:"moderation,omitempty"`
+	Tools           []string          `json:"tools,omitempty"`
+	Skills          []string          `json:"skills,omitempty"`
+	KnowledgeBases  []string          `json:"knowledge_bases,omitempty"`
+	MCPServers      []string          `json:"mcp_servers,omitempty"`
+	RequireMention  *bool             `json:"require_mention,omitempty"`
+	SmartAttention  *bool             `json:"smart_attention,omitempty"`
+	ReplyPolicy     *ReplyPolicy      `json:"reply_policy,omitempty"`
+	LearningEnabled *bool             `json:"learning_enabled,omitempty"`
+	AllowLinks      *bool             `json:"allow_links,omitempty"`
 }
 
 type Registry struct {

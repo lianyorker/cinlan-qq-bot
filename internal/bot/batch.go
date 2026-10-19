@@ -3,6 +3,7 @@ package bot
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
@@ -24,6 +25,19 @@ func (s *Service) runPlatformWorker(
 	ctx context.Context,
 	queue <-chan platform.Event,
 ) {
+	// Each event is handled on its own goroutine so a slow generation
+	// request never blocks other users or chats. The wait group drains
+	// in-flight handlers before the worker exits.
+	var waitGroup sync.WaitGroup
+	defer waitGroup.Wait()
+	spawn := func(event platform.Event) {
+		waitGroup.Add(1)
+		go func() {
+			defer waitGroup.Done()
+			s.handlePlatformEvent(ctx, event)
+		}()
+	}
+
 	if s.cfg.GroupBatchWindow <= 0 {
 		for {
 			select {
@@ -33,9 +47,7 @@ func (s *Service) runPlatformWorker(
 				if !ok {
 					return
 				}
-				// Each event is handled on its own goroutine so a slow
-				// generation request never blocks other users or chats.
-				go s.handlePlatformEvent(ctx, event)
+				spawn(event)
 			}
 		}
 	}
@@ -57,7 +69,7 @@ func (s *Service) runPlatformWorker(
 		}
 		current.timer.Stop()
 		delete(pending, key)
-		go s.handlePlatformEvent(ctx, current.event)
+		spawn(current.event)
 	}
 
 	for {
@@ -78,7 +90,7 @@ func (s *Service) runPlatformWorker(
 				if current, exists := pending[key]; exists {
 					flush(key, current.version)
 				}
-				go s.handlePlatformEvent(ctx, event)
+				spawn(event)
 				continue
 			}
 			current, exists := pending[key]

@@ -72,7 +72,8 @@ func TestAIDecisionClassifierCanIgnoreCandidate(t *testing.T) {
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 
-	service.handleEvent(context.Background(), testEvent("ignore", "给我写一首诗", true))
+	// Ambient message: the classifier gets to say ignore.
+	service.handleEvent(context.Background(), testEvent("ignore", "给我写一首诗", false))
 
 	if len(agentClient.requests) != 1 || len(sender.messages) != 0 {
 		t.Fatalf("attention ignore requests=%d messages=%d", len(agentClient.requests), len(sender.messages))
@@ -123,7 +124,8 @@ func TestAIDecisionDirectMentionWinsOverExtraAtComponent(t *testing.T) {
 
 	service.handlePlatformEvent(context.Background(), event)
 
-	if len(agentClient.requests) != 2 || len(sender.messages) != 1 ||
+	// Direct mention bypasses the classifier — one answer call only.
+	if len(agentClient.requests) != 1 || len(sender.messages) != 1 ||
 		sender.messages[0].text != "direct answer" {
 		t.Fatalf("requests=%#v messages=%#v", agentClient.requests, sender.messages)
 	}
@@ -139,9 +141,10 @@ func TestAIDecisionDoesNotHardCodeCreationTasks(t *testing.T) {
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 
+	// Ambient message: the classifier decides creation tasks are in scope.
 	service.handlePlatformEvent(
 		context.Background(),
-		platformEvent("creation", "帮我写一个业务脚本", true),
+		platformEvent("creation", "帮我写一个业务脚本", false),
 	)
 
 	if len(agentClient.requests) != 2 || len(sender.messages) != 1 {
@@ -156,7 +159,8 @@ func TestAIDecisionLowConfidenceUsesSafeFallback(t *testing.T) {
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 
-	service.handlePlatformEvent(context.Background(), platformEvent("uncertain", "看看这个", true))
+	// Ambient message: low-confidence classification fails closed.
+	service.handlePlatformEvent(context.Background(), platformEvent("uncertain", "看看这个", false))
 
 	if len(agentClient.requests) != 1 || len(sender.messages) != 0 {
 		t.Fatalf("low-confidence decision did not fail closed: requests=%#v messages=%#v", agentClient.requests, sender.messages)
@@ -178,11 +182,19 @@ func TestAIDecisionErrorCanFallBackToDirectMention(t *testing.T) {
 	sender := &fakeSender{}
 	service := replyPolicyService(t, agentClient, sender, platform.ChatGroup, "30003", policy)
 
-	service.handlePlatformEvent(context.Background(), platformEvent("fallback", "请处理", true))
+	// Ambient (non-mention) message: the classifier error falls back to the
+	// mention_only policy, which ignores it.
+	service.handlePlatformEvent(context.Background(), platformEvent("fallback", "请处理", false))
 
-	if len(agentClient.requests) != 2 || len(sender.messages) != 1 ||
+	if len(agentClient.requests) != 1 || len(sender.messages) != 0 ||
 		service.Stats().AttentionErrors != 1 {
 		t.Fatalf("fallback requests=%#v messages=%#v stats=%#v", agentClient.requests, sender.messages, service.Stats())
+	}
+
+	// A direct mention bypasses the classifier entirely and still answers.
+	service.handlePlatformEvent(context.Background(), platformEvent("fallback-2", "请处理", true))
+	if len(agentClient.requests) != 2 || len(sender.messages) != 1 {
+		t.Fatalf("mention bypass requests=%#v messages=%#v", agentClient.requests, sender.messages)
 	}
 }
 

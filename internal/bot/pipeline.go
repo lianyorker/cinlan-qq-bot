@@ -54,6 +54,7 @@ type flowState struct {
 	knowledgeBases []string
 	mcpServers     []string
 	replyPolicy    binding.ReplyPolicy
+	moderation     *binding.ModerationPolicy
 	learning       bool
 	allowLinks     bool
 	errorReply     string
@@ -71,6 +72,7 @@ func (s *Service) newPipeline() *pipeline.Pipeline {
 		pipeline.StageFunc{StageName: "wake", Handler: s.stageWake},
 		pipeline.StageFunc{StageName: "security", Handler: s.stageSecurity},
 		pipeline.StageFunc{StageName: "command", Handler: s.stageCommand},
+		pipeline.StageFunc{StageName: "moderation", Handler: s.stageModeration},
 		pipeline.StageFunc{StageName: "session", Handler: s.stageSession},
 		pipeline.StageFunc{StageName: "attention", Handler: s.stageAttention},
 		pipeline.StageFunc{StageName: "rate_limit", Handler: s.stageRateLimit},
