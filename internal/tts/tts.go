@@ -6,6 +6,7 @@ package tts
 import (
 	"context"
 	"fmt"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -15,11 +16,16 @@ import (
 
 // Config configures a voice provider.
 type Config struct {
-	// Mode: "edge" (default), "command", or "off".
+	// Mode: "edge" (default), "openai", "command", or "off".
 	Mode string
-	// Voice is the Edge voice name, e.g. zh-CN-XiaoyiNeural.
+	// Voice is the voice name, e.g. zh-CN-XiaoyiNeural (edge) or nova (openai).
 	Voice string
-	// Rate/Pitch map to SSML prosody (e.g. "+10%", "+2Hz").
+	// APIURL/APIKey/Model are used in "openai" mode — APIURL is the full
+	// /audio/speech endpoint.
+	APIURL string
+	APIKey string
+	Model  string
+	// Rate/Pitch map to SSML prosody (edge only, e.g. "+10%", "+2Hz").
 	Rate  string
 	Pitch string
 	// Command is used in "command" mode, e.g.
@@ -46,6 +52,26 @@ func New(cfg Config) (Provider, error) {
 			rate:    cfg.Rate,
 			pitch:   cfg.Pitch,
 			timeout: cfg.Timeout,
+		}, nil
+	case "openai":
+		if strings.TrimSpace(cfg.APIURL) == "" {
+			return nil, fmt.Errorf("tts openai mode needs VOICE_API_URL")
+		}
+		voice := strings.TrimSpace(cfg.Voice)
+		if voice == "" || strings.HasPrefix(voice, "zh-CN-") {
+			voice = "nova"
+		}
+		model := strings.TrimSpace(cfg.Model)
+		if model == "" {
+			model = "tts-1-hd"
+		}
+		return &openaiProvider{
+			apiURL:  cfg.APIURL,
+			apiKey:  cfg.APIKey,
+			model:   model,
+			voice:   voice,
+			timeout: cfg.Timeout,
+			client:  &http.Client{Timeout: cfg.Timeout},
 		}, nil
 	case "command":
 		if strings.TrimSpace(cfg.Command) == "" {

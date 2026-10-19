@@ -53,8 +53,8 @@ func (p *edgeProvider) Synthesize(
 
 	connID := randHex(16)
 	wsURL := fmt.Sprintf(
-		"%s?TrustedClientToken=%s&Sec-MS-GEC=%s"+
-			"&Sec-MS-GEC-Version=%s&ConnectionId=%s",
+		"%s?Ocp-Apim-Subscription-Key=%s&Sec-MS-GEC=%s"+
+			"&Sec-MS-GEC-Version=%s&X-ConnectionId=%s",
 		edgeVoiceURL,
 		edgeTrustedClientToken,
 		edgeSecMSGEC(),
@@ -64,7 +64,28 @@ func (p *edgeProvider) Synthesize(
 	header := http.Header{}
 	header.Set("User-Agent", edgeUserAgent)
 	header.Set("Origin", "chrome-extension://jdiccldimpdaibmpdkjnbmckianbfold")
-	conn, resp, err := websocket.DefaultDialer.DialContext(ctx, wsURL, header)
+	header.Set("Pragma", "no-cache")
+	header.Set("Cache-Control", "no-cache")
+	header.Set("Accept-Language", "en-US,en;q=0.9")
+	var (
+		conn *websocket.Conn
+		resp *http.Response
+		err  error
+	)
+	// Microsoft's free endpoint occasionally rejects a perfectly valid
+	// handshake with 403 — retry a few times with a short backoff.
+	for attempt := 0; attempt < 3; attempt++ {
+		conn, resp, err = websocket.DefaultDialer.DialContext(ctx, wsURL, header)
+		if err == nil {
+			break
+		}
+		if attempt < 2 {
+			select {
+			case <-ctx.Done():
+			case <-time.After(time.Duration(400*(attempt+1)) * time.Millisecond):
+			}
+		}
+	}
 	if err != nil {
 		status := ""
 		if resp != nil {

@@ -320,6 +320,9 @@ func main() {
 	if voiceProvider, voiceErr := tts.New(tts.Config{
 		Mode:    cfg.VoiceMode,
 		Voice:   cfg.VoiceName,
+		APIURL:  cfg.VoiceAPIURL,
+		APIKey:  cfg.VoiceAPIKey,
+		Model:   cfg.VoiceModel,
 		Command: cfg.VoiceCommand,
 		Timeout: cfg.VoiceTimeout,
 	}); voiceErr != nil {

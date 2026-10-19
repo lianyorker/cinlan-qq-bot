@@ -149,6 +149,9 @@ type Config struct {
 
 	VoiceMode     string
 	VoiceName     string
+	VoiceAPIURL   string
+	VoiceAPIKey   string
+	VoiceModel    string
 	VoiceCommand  string
 	VoiceDir      string
 	VoiceMaxRunes int
@@ -352,6 +355,15 @@ func Load() (Config, error) {
 
 	cfg.VoiceMode = envOr("VOICE_MODE", "edge")
 	cfg.VoiceName = envOr("VOICE_NAME", "zh-CN-XiaoyiNeural")
+	cfg.VoiceAPIURL = envOrAllowEmpty("VOICE_API_URL", "")
+	cfg.VoiceAPIKey = envOrAllowEmpty("VOICE_API_KEY", "")
+	if cfg.VoiceAPIKey == "" {
+		cfg.VoiceAPIKey = cfg.ImageAPIKey
+	}
+	if cfg.VoiceAPIKey == "" {
+		cfg.VoiceAPIKey = cfg.AgentAPIKey
+	}
+	cfg.VoiceModel = envOr("VOICE_MODEL", "tts-1-hd")
 	cfg.VoiceCommand = envOrAllowEmpty("VOICE_COMMAND", "")
 	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
 	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)
