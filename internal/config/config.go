@@ -146,7 +146,15 @@ type Config struct {
 	ImageMaxBytes  int64
 	ImageTimeout   time.Duration
 	ImageRetention time.Duration
-	ImageEnhance   bool
+
+	VoiceMode     string
+	VoiceName     string
+	VoiceCommand  string
+	VoiceDir      string
+	VoiceMaxRunes int
+	VoiceCooldown time.Duration
+	VoiceTimeout  time.Duration
+	ImageEnhance  bool
 
 	WebScreenshotEnabled      bool
 	WebScreenshotBrowserPath  string
@@ -341,6 +349,14 @@ func Load() (Config, error) {
 	cfg.ImageMaxBytes = parseInt64("IMAGE_MAX_BYTES", 20<<20, 1, &errs)
 	cfg.ImageTimeout = parseDuration("IMAGE_TIMEOUT", 2*time.Minute, true, &errs)
 	cfg.ImageRetention = parseDuration("IMAGE_RETENTION", 24*time.Hour, true, &errs)
+
+	cfg.VoiceMode = envOr("VOICE_MODE", "edge")
+	cfg.VoiceName = envOr("VOICE_NAME", "zh-CN-XiaoyiNeural")
+	cfg.VoiceCommand = envOrAllowEmpty("VOICE_COMMAND", "")
+	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
+	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)
+	cfg.VoiceCooldown = parseDuration("VOICE_COOLDOWN", 45*time.Second, true, &errs)
+	cfg.VoiceTimeout = parseDuration("VOICE_TIMEOUT", 15*time.Second, true, &errs)
 	cfg.ImageEnhance = parseBool("IMAGE_ENHANCE_PROMPT", true, &errs)
 
 	cfg.WebScreenshotEnabled = parseBool("WEB_SCREENSHOT_ENABLED", false, &errs)

@@ -600,11 +600,18 @@ func (g *ImageGenerator) download(ctx context.Context, value string) ([]byte, er
 }
 
 func (g *ImageGenerator) store(data []byte, extension string) (string, error) {
-	randomName := make([]byte, 16)
+	randomName := make([]byte, 4)
 	if _, err := rand.Read(randomName); err != nil {
 		return "", errors.New("generate image file name")
 	}
-	name := hex.EncodeToString(randomName) + extension
+	// Timestamped names sort chronologically and stay unique under
+	// concurrent generations via the short random suffix.
+	name := fmt.Sprintf(
+		"%s-%s%s",
+		g.now().Format("20060102150405"),
+		hex.EncodeToString(randomName),
+		extension,
+	)
 	path := filepath.Join(g.outputDir, name)
 	temp, err := os.CreateTemp(g.outputDir, ".generated-*.tmp")
 	if err != nil {

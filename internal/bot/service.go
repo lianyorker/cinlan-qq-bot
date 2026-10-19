@@ -102,6 +102,8 @@ type Service struct {
 	chainFetcher   MessageFetcher
 	groupModerator GroupModerator
 	warnStore      *moderation.Store
+	voiceProvider  voiceSynth
+	voiceBudget    voiceBudget
 	sessions       *session.Store
 	logger         *slog.Logger
 	stats          counters
@@ -289,6 +291,12 @@ func (s *Service) SetGroupModerator(moderator GroupModerator) {
 // SetModerationStore wires the persistent spam-warning counter.
 func (s *Service) SetModerationStore(store *moderation.Store) {
 	s.warnStore = store
+}
+
+// SetVoiceProvider wires the TTS backend for [[VOICE]] reply clips; nil
+// disables voice replies.
+func (s *Service) SetVoiceProvider(provider voiceSynth) {
+	s.voiceProvider = provider
 }
 
 // EventImageRefs returns image references from the message itself and, when

@@ -647,6 +647,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		state.replyPolicy.AllowsUser(state.userID) {
 		request.SystemPrompt += "对他保持尊重和耐心，禁止毒舌、嘲讽、阴阳怪气或人身攻击，正常认真解答。"
 	}
+	if s.voiceProvider != nil {
+		request.SystemPrompt += "\n\n" + voicePromptNote
+	}
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
@@ -870,6 +873,8 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if state.ignored || state.reply == "" {
 		return nil
 	}
+	var voiceClips []string
+	state.reply, voiceClips = extractVoiceMarkers(state.reply)
 	chain := state.outbound
 	if chain.Empty() {
 		chain = message.Chain{message.Text(state.reply)}
@@ -923,6 +928,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		) {
 			return nil
 		}
+		s.deliverVoiceClips(ctx, state, voiceClips)
 		if state.agentErr == nil && !state.securityDenied {
 			s.recordExchange(ctx, state)
 		}
@@ -953,6 +959,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	) {
 		return nil
 	}
+	s.deliverVoiceClips(ctx, state, voiceClips)
 	if state.agentErr == nil && !state.securityDenied {
 		s.recordExchange(ctx, state)
 	}

@@ -1,0 +1,100 @@
+// Package tts synthesizes text into voice files for QQ record messages.
+// The default provider talks to Edge's readaloud TTS over WebSocket
+// (free, no key); a shell command provider is available as a fallback.
+package tts
+
+import (
+	"context"
+	"fmt"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strings"
+	"time"
+)
+
+// Config configures a voice provider.
+type Config struct {
+	// Mode: "edge" (default), "command", or "off".
+	Mode string
+	// Voice is the Edge voice name, e.g. zh-CN-XiaoyiNeural.
+	Voice string
+	// Rate/Pitch map to SSML prosody (e.g. "+10%", "+2Hz").
+	Rate  string
+	Pitch string
+	// Command is used in "command" mode, e.g.
+	// "edge-tts --voice zh-CN-XiaoyiNeural --write-media {out} --text {text}".
+	Command string
+	Timeout time.Duration
+}
+
+// Provider synthesizes text to an audio file.
+type Provider interface {
+	Synthesize(ctx context.Context, text, outPath string) error
+}
+
+// New builds a provider from config; nil means voice is disabled.
+func New(cfg Config) (Provider, error) {
+	switch strings.ToLower(strings.TrimSpace(cfg.Mode)) {
+	case "", "edge":
+		voice := strings.TrimSpace(cfg.Voice)
+		if voice == "" {
+			voice = "zh-CN-XiaoyiNeural"
+		}
+		return &edgeProvider{
+			voice:   voice,
+			rate:    cfg.Rate,
+			pitch:   cfg.Pitch,
+			timeout: cfg.Timeout,
+		}, nil
+	case "command":
+		if strings.TrimSpace(cfg.Command) == "" {
+			return nil, fmt.Errorf("tts command mode needs a command template")
+		}
+		return &commandProvider{tmpl: cfg.Command, timeout: cfg.Timeout}, nil
+	case "off", "none", "disabled":
+		return nil, nil
+	default:
+		return nil, fmt.Errorf("unknown tts mode %q", cfg.Mode)
+	}
+}
+
+// commandProvider shells out to an installed TTS CLI (e.g. edge-tts).
+type commandProvider struct {
+	tmpl    string
+	timeout time.Duration
+}
+
+func (p *commandProvider) Synthesize(
+	ctx context.Context,
+	text, outPath string,
+) error {
+	if p.timeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, p.timeout)
+		defer cancel()
+	}
+	line := strings.ReplaceAll(p.tmpl, "{text}", shellQuote(text))
+	line = strings.ReplaceAll(line, "{out}", shellQuote(outPath))
+	if err := os.MkdirAll(filepath.Dir(outPath), 0o755); err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, "sh", "-c", line)
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("tts command failed: %v: %s", err, trunc(out, 200))
+	}
+	return nil
+}
+
+func shellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", `'\''`) + "'"
+}
+
+func trunc(value []byte, limit int) string {
+	text := strings.TrimSpace(string(value))
+	if len([]rune(text)) > limit {
+		return string([]rune(text)[:limit])
+	}
+	return text
+}

@@ -36,6 +36,7 @@ import (
 	statusserver "github.com/lianyorker/cinlan-qq-bot/internal/status"
 	"github.com/lianyorker/cinlan-qq-bot/internal/subagent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
+	"github.com/lianyorker/cinlan-qq-bot/internal/tts"
 )
 
 func main() {
@@ -315,6 +316,22 @@ func main() {
 		logger.Warn("moderation store unavailable", "error", warnErr)
 	} else {
 		botService.SetModerationStore(warnStore)
+	}
+	if voiceProvider, voiceErr := tts.New(tts.Config{
+		Mode:    cfg.VoiceMode,
+		Voice:   cfg.VoiceName,
+		Command: cfg.VoiceCommand,
+		Timeout: cfg.VoiceTimeout,
+	}); voiceErr != nil {
+		logger.Warn("voice tts unavailable", "error", voiceErr)
+	} else if voiceProvider != nil {
+		botService.SetVoiceProvider(voiceProvider)
+		logger.Info(
+			"voice tts enabled",
+			"mode", cfg.VoiceMode,
+			"voice", cfg.VoiceName,
+			"output_dir", cfg.VoiceDir,
+		)
 	}
 	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
 		Cooldown:      cfg.MediaToolCooldown,
