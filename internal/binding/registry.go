@@ -65,10 +65,12 @@ const (
 // configured action fires. Admins, owners and whitelisted users are exempt
 // (enforced by the caller).
 type ModerationPolicy struct {
-	Patterns   []string `json:"patterns"`
-	Action     string   `json:"action,omitempty"`
-	WarnLimit  int      `json:"warn_limit,omitempty"`
-	BanSeconds int64    `json:"ban_seconds,omitempty"`
+	Patterns     []string `json:"patterns"`
+	Action       string   `json:"action,omitempty"`
+	WarnLimit    int      `json:"warn_limit,omitempty"`
+	BanSeconds   int64    `json:"ban_seconds,omitempty"`
+	LLMCheck     bool     `json:"llm_check,omitempty"`
+	LLMThreshold float64  `json:"llm_threshold,omitempty"`
 
 	compileOnce sync.Once
 	compileErr  error
@@ -130,6 +132,15 @@ func (p *ModerationPolicy) EffectiveBanSeconds() int64 {
 		return p.BanSeconds
 	}
 	return defaultModerationBanSeconds
+}
+
+// EffectiveLLMThreshold returns the confidence bar the LLM spam judge must
+// clear before a message is recalled (default 0.9 — errs on the safe side).
+func (p *ModerationPolicy) EffectiveLLMThreshold() float64 {
+	if p.LLMThreshold > 0 && p.LLMThreshold <= 1 {
+		return p.LLMThreshold
+	}
+	return 0.9
 }
 
 // AllowsUser reports whether the user is on the policy's whitelist — their

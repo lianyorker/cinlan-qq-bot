@@ -2,21 +2,49 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
+	"regexp"
 	"strings"
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
+	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
 
-// stageModeration enforces the binding's deterministic spam ladder:
-// pattern match → recall the message → warn the sender → on the Nth warning
-// apply the configured action (mute/kick). Group admins, owners and
-// whitelisted users are never moderated, and the classifier is never asked —
-// detection is pattern-only so it can't hallucinate a kick.
+// moderationSuspectPattern triggers the LLM spam judge on messages that look
+// like common spam vectors but did not match the strict recall patterns. A
+// hit only costs one cheap classification call — the judge decides.
+var moderationSuspectPattern = regexp.MustCompile(
+	`(?i)代充|代练|代挂|代购|代写|代做|代理|低价|联系我|私聊|微信|加[我vV][xX]?|vx[:：]|v信|` +
+		`扫码|二维码|倍率|中转|手机号|色情|裸|陪玩|陪聊|资源|福利|进群|群号|` +
+		`推广|引流|接单|赚钱|兼职|优惠|特价|免费领|出售|转让|回收|卖号|刷单|日结`,
+)
+
+const spamJudgeSystemPrompt = `你是群消息反垃圾审核员。判断下面这条群聊消息是否为垃圾广告、引流、诈骗、色情、刷屏或转发垃圾内容。
+
+只输出JSON：{"spam":true|false,"confidence":0.0~1.0,"reason":"一句话"}
+
+判定垃圾的常见特征：代充/代练/卖号、低价出售、留联系方式引流、不明链接、兼职刷单、色情资源、转发广告卡片、纯图片广告、连续营销话术。
+正常聊天、提问、技术讨论、分享资源给群友、表情包互动不算垃圾。
+宁可漏判不可误判：拿不准就 spam:false 且 confidence 低于0.5。`
+
+type spamVerdict struct {
+	Spam       bool     `json:"spam"`
+	Confidence *float64 `json:"confidence"`
+	Reason     string   `json:"reason"`
+}
+
+// stageModeration enforces the binding's spam ladder:
+// strict pattern match → recall + warn + action on limit (no LLM involved);
+// with llm_check enabled, suspicious-but-unmatched messages go to the LLM
+// spam judge, which only recalls when confident — the ban/kick decision
+// still comes from the deterministic warning counter, never the model.
+// Group admins, owners and whitelisted users are never moderated.
 func (s *Service) stageModeration(
 	ctx context.Context,
 	event *pipeline.Context,
@@ -35,7 +63,28 @@ func (s *Service) stageModeration(
 		state.replyPolicy.AllowsUser(state.userID) {
 		return nil
 	}
-	if !pol.Matches(state.text) {
+
+	detected, reason := pol.Matches(state.text), ""
+	if !detected && pol.LLMCheck &&
+		moderationSuspicious(state.event.Chain, state.text) {
+		spam, judgeReason, err := s.classifySpam(
+			ctx, state, pol.EffectiveLLMThreshold(),
+		)
+		if err != nil {
+			s.logger.Warn(
+				"spam classification failed",
+				"chat", state.chatID,
+				"user", state.userID,
+				"error", err.Error(),
+			)
+			return nil
+		}
+		if spam {
+			detected = true
+			reason = judgeReason
+		}
+	}
+	if !detected {
 		return nil
 	}
 
@@ -61,6 +110,8 @@ func (s *Service) stageModeration(
 		"spam message recalled",
 		"chat", state.chatID,
 		"user", state.userID,
+		"via", map[bool]string{true: "llm", false: "pattern"}[reason != ""],
+		"reason", reason,
 		"warning", fmt.Sprintf("%d/%d", count, limit),
 		"action", action,
 	)
@@ -125,4 +176,94 @@ func (s *Service) stageModeration(
 	state.ignored = true
 	event.Stop("moderation")
 	return nil
+}
+
+// moderationSuspicious reports whether a message carries spam vectors —
+// links, forward/share cards, image-only content, or spam-adjacent
+// vocabulary — worth one LLM classification call.
+func moderationSuspicious(chain message.Chain, text string) bool {
+	if outboundLinkPattern.MatchString(text) {
+		return true
+	}
+	images := 0
+	for _, component := range chain {
+		switch component.Type {
+		case message.TypeImage:
+			images++
+		case message.TypeJson, message.TypeXml:
+			// Rich cards/forwards are a classic spam vector.
+			return true
+		}
+	}
+	trimmed := strings.TrimSpace(text)
+	if images > 0 && len([]rune(trimmed)) <= 8 {
+		// Image-only or image plus a couple of words — often ad pictures.
+		return true
+	}
+	if images >= 3 {
+		return true
+	}
+	if trimmed == "" {
+		return false
+	}
+	return moderationSuspectPattern.MatchString(trimmed)
+}
+
+// classifySpam asks the model whether the message is spam. The verdict only
+// ever recalls/warns — ban/kick decisions stay with the warning counter.
+func (s *Service) classifySpam(
+	ctx context.Context,
+	state *flowState,
+	threshold float64,
+) (bool, string, error) {
+	if s.agent == nil {
+		return false, "", errors.New("no agent available for spam classification")
+	}
+	decisionCtx, cancel := context.WithTimeout(ctx, s.cfg.AttentionTimeout)
+	defer cancel()
+	request := domain.AgentRequest{
+		RequestID: "moderation:" + opaqueAttentionID(
+			state.sessionID, state.messageID,
+		),
+		SessionID: "maintenance:moderation:" + opaqueAttentionID(
+			state.sessionID, "",
+		),
+		Text:          state.text,
+		Platform:      state.platform,
+		ChatType:      state.chatType,
+		RestrictTools: true,
+		SystemPrompt:  spamJudgeSystemPrompt,
+		Chain:         state.event.Chain.Clone(),
+	}
+	response, err := s.agent.Reply(decisionCtx, request)
+	if err != nil {
+		return false, "", err
+	}
+	verdict, err := decodeSpamVerdict(response.Reply)
+	if err != nil {
+		return false, "", err
+	}
+	if verdict.Confidence == nil ||
+		*verdict.Confidence < threshold {
+		return false, "", nil
+	}
+	return verdict.Spam, strings.TrimSpace(verdict.Reason), nil
+}
+
+// decodeSpamVerdict parses the judge's JSON reply, tolerating surrounding
+// prose by extracting the first JSON object.
+func decodeSpamVerdict(value string) (spamVerdict, error) {
+	value = strings.TrimSpace(value)
+	start := strings.Index(value, "{")
+	end := strings.LastIndex(value, "}")
+	if start < 0 || end <= start {
+		return spamVerdict{}, errors.New("spam verdict is not JSON")
+	}
+	var verdict spamVerdict
+	if err := json.Unmarshal(
+		[]byte(value[start:end+1]), &verdict,
+	); err != nil {
+		return spamVerdict{}, fmt.Errorf("decode spam verdict: %w", err)
+	}
+	return verdict, nil
 }
