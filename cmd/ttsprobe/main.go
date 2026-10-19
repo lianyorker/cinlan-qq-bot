@@ -83,9 +83,7 @@ func dash(key, model, voice, text, base string) {
 			"task_group": "aigc", "task": "tts",
 			"function": "SpeechSynthesizer", "model": model,
 			"parameters": map[string]any{
-				"volume": 50, "text_type": "PlainText", "voice": voice,
-				"sample_rate": 22050, "format": "mp3",
-				"speech_rate": 1.0, "pitch_rate": 1.0,
+				"voice": voice, "format": "mp3", "sample_rate": 22050,
 			},
 			"input": map[string]any{"text": text},
 		},
@@ -121,6 +119,13 @@ func truncate(text string, limit int) string {
 		return text
 	}
 	return string(runes[:limit]) + "…"
+}
+
+func envOr(key, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(key)); v != "" {
+		return v
+	}
+	return fallback
 }
 
 func randHex(n int) string {
