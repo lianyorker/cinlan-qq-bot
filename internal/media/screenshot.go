@@ -178,43 +178,68 @@ func (s *WebScreenshot) capture(
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return tool.Result{}, errors.New("decode web screenshot arguments: trailing JSON data")
 	}
-	target, err := normalizeScreenshotURL(arguments.URL, s.allowedHosts)
+	outputPath, err := s.CaptureURL(ctx, arguments.URL)
 	if err != nil {
 		return tool.Result{}, err
 	}
+
+	response := domain.AgentResponse{
+		Reply: "网页截图好了。",
+		Chain: message.Chain{
+			message.Text("网页截图好了。"),
+			message.Image(outputPath),
+		},
+	}
+	return tool.Result{
+		Content: map[string]any{
+			"status": "sent",
+			"width":  s.width,
+			"height": s.height,
+		},
+		Response: &response,
+	}, nil
+}
+
+// CaptureURL captures the page at value (must be an allowed HTTPS URL) and
+// returns the validated PNG path. The caller owns the file lifecycle
+// relative to Retention cleanup.
+func (s *WebScreenshot) CaptureURL(
+	ctx context.Context,
+	value string,
+) (string, error) {
+	target, err := normalizeScreenshotURL(value, s.allowedHosts)
+	if err != nil {
+		return "", err
+	}
 	target, err = s.preflight(ctx, target)
 	if err != nil {
-		return tool.Result{}, err
+		return "", err
 	}
 	_ = s.cleanupExpired()
 
 	proxy, err := startPublicWebProxy()
 	if err != nil {
-		return tool.Result{}, errors.New("start restricted web screenshot network")
+		return "", errors.New("start restricted web screenshot network")
 	}
 	defer proxy.Close()
 
 	profileDir, err := os.MkdirTemp(s.outputDir, ".chrome-profile-")
 	if err != nil {
-		return tool.Result{}, fmt.Errorf("create web screenshot browser profile: %w", err)
+		return "", fmt.Errorf("create web screenshot browser profile: %w", err)
 	}
 	defer os.RemoveAll(profileDir)
 	if err := os.Chmod(profileDir, 0o700); err != nil {
-		return tool.Result{}, fmt.Errorf("protect web screenshot browser profile: %w", err)
+		return "", fmt.Errorf("protect web screenshot browser profile: %w", err)
 	}
 
 	outputPath, err := s.newOutputPath()
 	if err != nil {
-		return tool.Result{}, err
+		return "", err
 	}
-	defer func() {
-		if _, statErr := os.Stat(outputPath); statErr == nil {
-			return
-		}
-		_ = os.Remove(outputPath)
-	}()
 	args := []string{
 		"--headless=new",
+		"--no-sandbox",
+		"--disable-setuid-sandbox",
 		"--disable-gpu",
 		"--hide-scrollbars",
 		"--incognito",
@@ -248,31 +273,15 @@ func (s *WebScreenshot) capture(
 	); err != nil {
 		_ = os.Remove(outputPath)
 		if errors.Is(commandContext.Err(), context.DeadlineExceeded) {
-			return tool.Result{}, errors.New("web screenshot browser timed out")
+			return "", errors.New("web screenshot browser timed out")
 		}
-		return tool.Result{}, errors.New("web screenshot browser failed")
+		return "", errors.New("web screenshot browser failed")
 	}
 	if err := s.validateOutput(outputPath); err != nil {
 		_ = os.Remove(outputPath)
-		return tool.Result{}, err
+		return "", err
 	}
-
-	response := domain.AgentResponse{
-		Reply: "网页截图好了。",
-		Chain: message.Chain{
-			message.Text("网页截图好了。"),
-			message.Image(outputPath),
-		},
-	}
-	return tool.Result{
-		Content: map[string]any{
-			"status": "sent",
-			"url":    target,
-			"width":  s.width,
-			"height": s.height,
-		},
-		Response: &response,
-	}, nil
+	return outputPath, nil
 }
 
 func (s *WebScreenshot) preflightURL(

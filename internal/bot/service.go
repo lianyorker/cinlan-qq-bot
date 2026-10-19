@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"regexp"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -13,6 +14,7 @@ import (
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
+	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
@@ -33,6 +35,12 @@ const (
 
 type Sender interface {
 	Send(context.Context, platform.Outbound) error
+}
+
+// FileSender uploads a local file to a private chat with the given user.
+type FileSender interface {
+	UploadPrivateFile(ctx context.Context, selfID, userID, filePath, name string) error
+	IsFriend(ctx context.Context, selfID, userID string) (bool, error)
 }
 
 type Stats struct {
@@ -71,6 +79,7 @@ type Service struct {
 	cfg          config.Config
 	agent        agent.Client
 	sender       Sender
+	fileSender   FileSender
 	sessions     *session.Store
 	logger       *slog.Logger
 	stats        counters
@@ -82,6 +91,8 @@ type Service struct {
 	tools        *tool.Registry
 	personas     *persona.Registry
 	bindings     *binding.Registry
+	chatPrefs    *chatprefs.Store
+	keywordTools []keywordTool
 
 	stateMu          sync.Mutex
 	lastAccepted     map[string]time.Time
@@ -198,6 +209,91 @@ func (s *Service) SetMessageGuard(guard plugin.BeforeHook) {
 
 func (s *Service) CommandRegistry() *command.Registry {
 	return s.commands
+}
+
+// SetChatPrefs wires the per-chat preference store (notification switch and
+// remembered notes) used by the pipeline and admin commands.
+func (s *Service) SetChatPrefs(store *chatprefs.Store) {
+	s.chatPrefs = store
+}
+
+func (s *Service) ChatPrefs() *chatprefs.Store {
+	return s.chatPrefs
+}
+
+type keywordTool struct {
+	pattern   *regexp.Regexp
+	tool      string
+	binding   string // optional: only fire for this binding name
+	reply     string // optional: fixed text reply instead of a tool call
+	promptArg string // optional: pass text after the match as this JSON argument
+	filePath  string // optional: upload this file in private chat on match
+}
+
+// SetFileSender wires the private-file upload path used by keyword file
+// replies (e.g. delivering an .sql file to a user in private chat).
+func (s *Service) SetFileSender(sender FileSender) {
+	s.fileSender = sender
+}
+
+// RegisterKeywordTool maps a message pattern directly to a registered tool,
+// bypassing the model. The tool still must be listed in the chat binding's
+// tools allowlist for the intercept to fire.
+func (s *Service) RegisterKeywordTool(pattern *regexp.Regexp, toolName string) {
+	if pattern == nil || strings.TrimSpace(toolName) == "" {
+		return
+	}
+	s.keywordTools = append(s.keywordTools, keywordTool{
+		pattern: pattern,
+		tool:    toolName,
+	})
+}
+
+// RegisterKeywordPromptTool maps a message pattern to a tool call whose
+// named argument receives the text remaining after the matched keyword.
+// The tool still must be listed in the chat binding's tools allowlist.
+func (s *Service) RegisterKeywordPromptTool(
+	pattern *regexp.Regexp,
+	toolName string,
+	argName string,
+) {
+	if pattern == nil || strings.TrimSpace(toolName) == "" ||
+		strings.TrimSpace(argName) == "" {
+		return
+	}
+	s.keywordTools = append(s.keywordTools, keywordTool{
+		pattern:   pattern,
+		tool:      toolName,
+		promptArg: argName,
+	})
+}
+
+// RegisterKeywordReply sends a fixed reply when a message matches the pattern
+// inside the given binding, bypassing the model entirely.
+func (s *Service) RegisterKeywordReply(pattern *regexp.Regexp, bindingName, text string) {
+	if pattern == nil || strings.TrimSpace(bindingName) == "" || strings.TrimSpace(text) == "" {
+		return
+	}
+	s.keywordTools = append(s.keywordTools, keywordTool{
+		pattern: pattern,
+		binding: bindingName,
+		reply:   text,
+	})
+}
+
+// RegisterKeywordFile delivers a local file in private chat on match and
+// falls back to the fixed reply text everywhere else (or when the upload
+// path is unavailable).
+func (s *Service) RegisterKeywordFile(pattern *regexp.Regexp, filePath, text string) {
+	if pattern == nil || strings.TrimSpace(filePath) == "" ||
+		strings.TrimSpace(text) == "" {
+		return
+	}
+	s.keywordTools = append(s.keywordTools, keywordTool{
+		pattern:  pattern,
+		filePath: filePath,
+		reply:    text,
+	})
 }
 
 func (s *Service) ToolRegistry() *tool.Registry {
@@ -488,6 +584,63 @@ func (s *Service) sendTextParts(
 			ReplyTo:  messageID,
 			Quote:    quote,
 			Chain:    chain,
+		})
+		if err != nil {
+			s.stats.sendErrors.Add(1)
+			s.logger.Error(
+				"failed to send reply",
+				"chat_type", chatType,
+				"chat_id", chatID,
+				"message_id", messageID,
+				"part", index+1,
+				"error", err,
+			)
+			return false
+		}
+		s.stats.replied.Add(1)
+	}
+	return true
+}
+
+// sendChains sends pre-built chains one message at a time with the same
+// delay/at/quote behaviour as sendTextParts. Used when replies contain
+// non-text segments such as QQ faces.
+func (s *Service) sendChains(
+	ctx context.Context,
+	selfID, chatType, chatID, userID, senderName, messageID string,
+	chains []message.Chain,
+) bool {
+	if s.sender == nil {
+		s.stats.sendErrors.Add(1)
+		s.logger.Error("failed to send reply", "reason", "sender_not_configured")
+		return false
+	}
+	for index, chain := range chains {
+		if len(chain) == 0 {
+			continue
+		}
+		if index > 0 {
+			previous, _ := chains[index-1].PlainText("")
+			if !waitForReplyPart(ctx, s.replyPartDelay(previous)) {
+				return false
+			}
+		}
+		quote := s.cfg.QuoteReply && index == 0
+		outbound := chain.Clone()
+		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
+			index == 0 && !quote {
+			outbound = append(
+				message.Chain{message.AtNamed(userID, senderName)},
+				outbound...,
+			)
+		}
+		err := s.sender.Send(ctx, platform.Outbound{
+			ChatType: chatType,
+			ChatID:   chatID,
+			SelfID:   selfID,
+			ReplyTo:  messageID,
+			Quote:    quote,
+			Chain:    outbound,
 		})
 		if err != nil {
 			s.stats.sendErrors.Add(1)

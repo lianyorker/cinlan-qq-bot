@@ -70,7 +70,9 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		s.stats.attentionIgnored.Add(1)
 		return ignoreForAttention(event, state, "addressed_to_another_user")
 	}
-	if direct && containsInspectableAttachment(state.event.Chain) {
+	if direct {
+		// A direct mention already expresses intent — reply without letting
+		// the ambient classifier veto it.
 		return nil
 	}
 	if !s.allowAttentionDecision(state.rateLimitID) {

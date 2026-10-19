@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"os"
 	"os/signal"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync"
 	"syscall"
@@ -20,6 +22,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/knowledge"
 	"github.com/lianyorker/cinlan-qq-bot/internal/mcp"
 	"github.com/lianyorker/cinlan-qq-bot/internal/media"
+	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	onebotplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/onebot"
@@ -241,6 +244,7 @@ func main() {
 				os.Exit(2)
 			}
 			multiAdapter.SetAutoAcceptFriend(cfg.OneBotAutoAccept)
+			multiAdapter.SetFriendWelcome(cfg.FriendWelcomeText, cfg.FriendFilePath)
 			qqAdapter = multiAdapter
 		} else {
 			oneBotURL := cfg.OneBotWSURL
@@ -258,6 +262,8 @@ func main() {
 			}, logger)
 			oneBotAdapter := onebotplatform.NewAdapter(oneBotClient, logger)
 			oneBotAdapter.AutoAcceptFriend = cfg.OneBotAutoAccept
+			oneBotAdapter.FriendWelcomeText = cfg.FriendWelcomeText
+			oneBotAdapter.FriendFilePath = cfg.FriendFilePath
 			qqAdapter = oneBotAdapter
 		}
 	default:
@@ -293,6 +299,9 @@ func main() {
 		providerRegistry,
 		plugin.NewRegistry(),
 	)
+	if fileSender, ok := qqAdapter.(bot.FileSender); ok {
+		botService.SetFileSender(fileSender)
+	}
 	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
 		Cooldown:      cfg.MediaToolCooldown,
 		Limit:         cfg.MediaToolLimit,
@@ -392,6 +401,25 @@ func main() {
 		logger.Error("failed to register local extensions", "error", extensionErr)
 		os.Exit(2)
 	}
+	mediaLimiter.Notify = func(name string, actor tool.Actor, used, limit int) {
+		if name != "generate_image" || actor.ChatID == "" {
+			return
+		}
+		notice := fmt.Sprintf("正在生图，请稍等~")
+		if limit > 0 && used > 0 {
+			notice = fmt.Sprintf("正在生图，请稍等~\n今日额度：%d/%d", used, limit)
+		}
+		if err := qqAdapter.Send(context.Background(), platform.Outbound{
+			ChatType: actor.ChatType,
+			ChatID:   actor.ChatID,
+			SelfID:   actor.SelfID,
+			ReplyTo:  actor.MessageID,
+			Quote:    true,
+			Chain:    message.Chain{message.Text(notice)},
+		}); err != nil {
+			logger.Debug("media notify send failed", "error", err.Error())
+		}
+	}
 	if imageGenerator != nil {
 		if registerErr := botService.ToolRegistry().Register(
 			mediaLimiter.Wrap(imageGenerator.Tool()),
@@ -399,7 +427,34 @@ func main() {
 			logger.Error("failed to register image generation tool", "error", registerErr)
 			os.Exit(2)
 		}
+		botService.RegisterKeywordPromptTool(
+			regexp.MustCompile(`生图|画图|画一张|画个|帮我画|来一张|生成图片`),
+			"generate_image",
+			"prompt",
+		)
 		logger.Info("image generation tool enabled")
+	}
+	if iqChart, iqErr := media.NewIQChart(media.IQChartConfig{
+		APIBase:   cfg.IQChartAPIBase,
+		Interval:  cfg.IQChartInterval,
+		OutputDir: filepath.Join("data", "model-iq"),
+		FontPath:  cfg.IQChartFontPath,
+		Logger:    logger,
+	}); iqErr != nil {
+		logger.Warn("model iq chart disabled", "error", iqErr)
+	} else {
+		if registerErr := botService.ToolRegistry().Register(
+			iqChart.Tool(),
+		); registerErr != nil {
+			logger.Error("failed to register model iq chart tool", "error", registerErr)
+		} else {
+			botService.RegisterKeywordTool(
+				regexp.MustCompile(`(?i)模型\s*iq|iq\s*天梯|雷达分`),
+				"model_iq_chart",
+			)
+			go iqChart.Run(ctx)
+			logger.Info("model iq chart enabled", "interval", cfg.IQChartInterval)
+		}
 	}
 	if webScreenshot != nil {
 		if registerErr := botService.ToolRegistry().Register(

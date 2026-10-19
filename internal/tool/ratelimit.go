@@ -2,6 +2,8 @@ package tool
 
 import (
 	"context"
+	"fmt"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -22,6 +24,9 @@ type MediaLimiter struct {
 	window        time.Duration
 	maxConcurrent int
 	now           func() time.Time
+	// Notify is invoked right after a request is admitted, before the
+	// handler runs. used is the accepted-call count inside the window.
+	Notify func(toolName string, actor Actor, used, limit int)
 
 	mu       sync.Mutex
 	actors   map[string]*mediaActor
@@ -57,22 +62,69 @@ func (l *MediaLimiter) Wrap(definition Definition) Definition {
 		ctx context.Context,
 		call Call,
 	) (Result, error) {
-		release, response := l.acquire(call.Actor)
+		release, refund, response := l.acquire(call.Actor)
 		if response != nil {
 			return Result{Response: response}, nil
 		}
 		defer release()
-		return handler(ctx, call)
+		if l.Notify != nil {
+			l.Notify(definition.Name, call.Actor, l.usedCount(call.Actor), l.limit)
+		}
+		result, err := handler(ctx, call)
+		if err != nil || result.Error != "" {
+			reason := result.Error
+			if err != nil {
+				reason = err.Error()
+			}
+			slog.Default().Warn("media tool failed",
+				"tool", definition.Name,
+				"user", call.Actor.UserID,
+				"error", reason,
+			)
+			refund()
+			return Result{Response: terminalMediaResponse(
+				l.failureText(definition.Name),
+			)}, nil
+		}
+		return result, nil
 	}
 	return definition
 }
 
-func (l *MediaLimiter) acquire(actor Actor) (func(), *domain.AgentResponse) {
-	now := l.now()
-	key := actor.Platform + ":self:" + actor.SelfID + ":user:" + actor.UserID
-	if actor.UserID == "" {
-		key = actor.Platform + ":session:" + actor.SessionID
+// failureText picks a user-facing failure notice per media tool.
+func (l *MediaLimiter) failureText(name string) string {
+	switch name {
+	case "generate_image":
+		return "生图失败了，稍后再试试～"
+	case "capture_webpage":
+		return "截图失败了，稍后再试试～"
+	default:
+		return "生成失败了，稍后再试试～"
 	}
+}
+
+func (l *MediaLimiter) usedCount(actor Actor) int {
+	key := actorKey(actor)
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	state := l.actors[key]
+	if state == nil {
+		return 0
+	}
+	l.pruneActorLocked(l.now(), state)
+	return len(state.accepted)
+}
+
+func actorKey(actor Actor) string {
+	if actor.UserID == "" {
+		return actor.Platform + ":session:" + actor.SessionID
+	}
+	return actor.Platform + ":self:" + actor.SelfID + ":user:" + actor.UserID
+}
+
+func (l *MediaLimiter) acquire(actor Actor) (func(), func(), *domain.AgentResponse) {
+	now := l.now()
+	key := actorKey(actor)
 
 	l.mu.Lock()
 	defer l.mu.Unlock()
@@ -88,23 +140,35 @@ func (l *MediaLimiter) acquire(actor Actor) (func(), *domain.AgentResponse) {
 	}
 	if l.cooldown > 0 && len(state.accepted) > 0 &&
 		now.Sub(state.accepted[len(state.accepted)-1]) < l.cooldown {
-		return nil, terminalMediaResponse("操作太频繁了，稍等一会再试。")
+		return nil, nil, terminalMediaResponse("操作太频繁了，稍等一会再试。")
 	}
 	if l.limit > 0 && len(state.accepted) >= l.limit {
-		return nil, terminalMediaResponse("这一时间段的操作次数已用完，晚点再试。")
+		return nil, nil, terminalMediaResponse(fmt.Sprintf(
+			"今天的次数用完啦（%d/%d），明天再来。", l.limit, l.limit))
 	}
 	if l.active >= l.maxConcurrent {
-		return nil, terminalMediaResponse("当前图片任务有点多，稍后再试。")
+		return nil, nil, terminalMediaResponse("当前图片任务有点多，稍后再试。")
 	}
 	state.accepted = append(state.accepted, now)
 	l.active++
-	return func() {
+	release := func() {
 		l.mu.Lock()
 		if l.active > 0 {
 			l.active--
 		}
 		l.mu.Unlock()
-	}, nil
+	}
+	// refund removes the accepted stamp so failed calls don't burn quota.
+	refund := func() {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		current := l.actors[key]
+		if current == nil || len(current.accepted) == 0 {
+			return
+		}
+		current.accepted = current.accepted[:len(current.accepted)-1]
+	}
+	return release, refund, nil
 }
 
 func (l *MediaLimiter) pruneActorLocked(now time.Time, state *mediaActor) {

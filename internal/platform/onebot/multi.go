@@ -12,6 +12,7 @@ import (
 	"os"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -214,6 +215,15 @@ func (m *MultiAdapter) SetAutoAcceptFriend(enabled bool) {
 	}
 }
 
+// SetFriendWelcome configures the text/file delivered privately right after
+// an auto-accepted friend request on every account.
+func (m *MultiAdapter) SetFriendWelcome(text, filePath string) {
+	for _, account := range m.accounts {
+		account.adapter.FriendWelcomeText = text
+		account.adapter.FriendFilePath = filePath
+	}
+}
+
 func (m *MultiAdapter) Connected() bool {
 	for _, account := range m.accounts {
 		if account.adapter.Connected() {
@@ -330,6 +340,44 @@ func (m *MultiAdapter) CallFor(ctx context.Context, accountID, action string, pa
 		return nil, err
 	}
 	return account.adapter.Call(ctx, action, params)
+}
+
+// UploadPrivateFile uploads a local file to a private chat with userID via
+// the account identified by selfID.
+func (m *MultiAdapter) UploadPrivateFile(
+	ctx context.Context,
+	selfID, userID, filePath, name string,
+) error {
+	id, err := strconv.ParseInt(strings.TrimSpace(userID), 10, 64)
+	if err != nil {
+		return fmt.Errorf("invalid user_id %q: %w", userID, err)
+	}
+	params := map[string]any{
+		"user_id": id,
+		"file":    filePath,
+	}
+	if strings.TrimSpace(name) != "" {
+		params["name"] = name
+	}
+	_, err = m.CallFor(ctx, selfID, "upload_private_file", params)
+	return err
+}
+
+// IsFriend reports whether userID is on the friend list of the account
+// identified by selfID.
+func (m *MultiAdapter) IsFriend(
+	ctx context.Context,
+	selfID, userID string,
+) (bool, error) {
+	raw, err := m.CallFor(ctx, selfID, "get_friend_list", map[string]any{})
+	if err != nil {
+		return false, err
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(userID), 10, 64)
+	if err != nil {
+		return false, err
+	}
+	return friendListContains(raw, id)
 }
 
 func (m *MultiAdapter) selectAccount(identifier string) (accountRuntime, error) {

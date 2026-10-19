@@ -225,6 +225,17 @@ func (c *Client) UploadGroupFile(ctx context.Context, groupID, file, name, folde
 	return c.sendAction(ctx, "upload_group_file", params)
 }
 
+func (c *Client) UploadPrivateFile(ctx context.Context, userID, file, name string) (json.RawMessage, error) {
+	params := map[string]any{
+		"user_id": idValue(userID),
+		"file":    file,
+	}
+	if strings.TrimSpace(name) != "" {
+		params["name"] = name
+	}
+	return c.sendAction(ctx, "upload_private_file", params)
+}
+
 func (c *Client) CanSendImage(ctx context.Context) (bool, error) {
 	return c.callBool(ctx, "can_send_image", nil)
 }

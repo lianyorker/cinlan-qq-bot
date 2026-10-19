@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 
@@ -17,6 +19,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
+	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
 const flowStateKey = "cinlan.bot.flow"
@@ -160,6 +163,17 @@ func (s *Service) stageWake(_ context.Context, event *pipeline.Context) error {
 		}
 	}
 
+	// 管理员 /关闭通知 后，该群只在被 @ 时回复。
+	if s.chatPrefs != nil &&
+		state.chatType == platform.ChatGroup &&
+		!s.chatPrefs.NotifyEnabled(state.chatType, state.chatID) &&
+		(state.replyPolicy.Mode == binding.ReplyModeAIDecide ||
+			state.replyPolicy.Mode == binding.ReplyModeAlways) {
+		policy := state.replyPolicy
+		policy.Mode = binding.ReplyModeMentionOnly
+		state.replyPolicy = policy
+	}
+
 	switch state.chatType {
 	case platform.ChatGroup:
 		state.groupID = state.chatID
@@ -281,6 +295,139 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			return nil
 		}
 	}
+	for _, kt := range s.keywordTools {
+		if !kt.pattern.MatchString(state.text) {
+			continue
+		}
+		if kt.binding != "" {
+			name, _ := event.Values["scope.binding_name"].(string)
+			if name != kt.binding {
+				continue
+			}
+		}
+		if kt.filePath != "" && s.fileSender != nil {
+			canDeliver := state.chatType == platform.ChatPrivate
+			if !canDeliver && state.chatType == platform.ChatGroup {
+				friend, friendErr := s.fileSender.IsFriend(
+					ctx,
+					state.selfID,
+					state.userID,
+				)
+				canDeliver = friendErr == nil && friend
+				if friendErr != nil {
+					s.logger.Warn(
+						"keyword file friend check failed",
+						"user", state.userID,
+						"error", friendErr.Error(),
+					)
+				}
+			}
+			if canDeliver {
+				fileName := filepath.Base(kt.filePath)
+				err := s.fileSender.UploadPrivateFile(
+					ctx,
+					state.selfID,
+					state.userID,
+					kt.filePath,
+					fileName,
+				)
+				if err == nil {
+					if state.chatType == platform.ChatGroup {
+						s.sendChain(
+							ctx,
+							state.selfID,
+							state.chatType,
+							state.chatID,
+							state.userID,
+							state.event.SenderName,
+							state.messageID,
+							message.Chain{message.Text("文件已经私聊发你啦，查收～")},
+						)
+					}
+					state.ignored = true
+					event.Stop("keyword_file")
+					s.stats.processed.Add(1)
+					return nil
+				}
+				s.logger.Warn(
+					"keyword file upload failed",
+					"file", kt.filePath,
+					"user", state.userID,
+					"error", err.Error(),
+				)
+			}
+		}
+		if kt.reply != "" {
+			if s.sendChain(
+				ctx,
+				state.selfID,
+				state.chatType,
+				state.chatID,
+				state.userID,
+				state.event.SenderName,
+				state.messageID,
+				message.Chain{message.Text(kt.reply)},
+			) {
+				state.ignored = true
+				event.Stop("keyword_reply")
+				return nil
+			}
+			continue
+		}
+		if kt.tool == "" || !slices.Contains(state.allowedTools, kt.tool) {
+			continue
+		}
+		var arguments json.RawMessage
+		if kt.promptArg != "" {
+			loc := kt.pattern.FindStringIndex(state.text)
+			if loc == nil {
+				continue
+			}
+			prompt := strings.TrimSpace(state.text[loc[1]:])
+			if prompt == "" {
+				continue
+			}
+			data, marshalErr := json.Marshal(map[string]string{
+				kt.promptArg: prompt,
+			})
+			if marshalErr != nil {
+				continue
+			}
+			arguments = data
+		}
+		result, err := s.tools.Execute(ctx, tool.Call{
+			Name:      kt.tool,
+			Arguments: arguments,
+			Actor: tool.Actor{
+				UserID:    state.userID,
+				Platform:  state.platform,
+				ChatType:  state.chatType,
+				ChatID:    state.chatID,
+				GroupID:   state.groupID,
+				SelfID:    state.selfID,
+				MessageID: state.messageID,
+				SessionID: state.sessionID,
+				Role:      state.event.SenderRole,
+			},
+		})
+		if err != nil || result.Response == nil {
+			continue
+		}
+		if s.sendChain(
+			ctx,
+			state.selfID,
+			state.chatType,
+			state.chatID,
+			state.userID,
+			state.event.SenderName,
+			state.messageID,
+			result.Response.Chain,
+		) {
+			state.ignored = true
+			event.Stop("keyword_tool_" + kt.tool)
+			return nil
+		}
+	}
 	if s.handleCommand(
 		ctx,
 		state.sessionID,
@@ -393,6 +540,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n\n"
 		}
 		request.SystemPrompt += `群聊交互边界：结合当前发送者和共享会话历史回答，不抢答发给其他人的内容。对缺少消息、资料或实时工具证据的事实明确说明无法判断，不迎合或编造。`
+	}
+	if s.chatPrefs != nil {
+		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
+			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
+		}
 	}
 	if appendPrompt, ok := event.Values["agent.system_prompt_append"].(string); ok {
 		appendPrompt = strings.TrimSpace(appendPrompt)
@@ -622,6 +774,15 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			s.cfg.MaxReplyRunes,
 			s.cfg.MaxReplyChunks,
 		)
+		if state.personaName != "" {
+			filtered := parts[:0]
+			for _, part := range parts {
+				if part = stripSpeakerPrefix(part, state.personaName); strings.TrimSpace(part) != "" {
+					filtered = append(filtered, part)
+				}
+			}
+			parts = filtered
+		}
 		if !state.allowLinks {
 			for index := range parts {
 				var removed bool
@@ -636,8 +797,15 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				}
 			}
 		}
-		state.reply = strings.Join(parts, "\n")
-		if !s.sendTextParts(
+		chains := make([]message.Chain, 0, len(parts))
+		cleaned := make([]string, 0, len(parts))
+		for _, part := range parts {
+			chain, plain, _ := parseFaceMarkers(part)
+			chains = append(chains, chain)
+			cleaned = append(cleaned, strings.TrimSpace(plain))
+		}
+		state.reply = strings.Join(cleaned, "\n")
+		if !s.sendChains(
 			ctx,
 			state.selfID,
 			state.chatType,
@@ -645,7 +813,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			state.userID,
 			state.event.SenderName,
 			state.messageID,
-			parts,
+			chains,
 		) {
 			return nil
 		}

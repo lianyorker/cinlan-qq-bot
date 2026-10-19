@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"path/filepath"
+	"strconv"
+	"strings"
 	"sync"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
@@ -17,6 +20,11 @@ type Adapter struct {
 	events           chan platform.Event
 	logger           *slog.Logger
 	AutoAcceptFriend bool
+	// FriendWelcomeText / FriendFilePath are delivered to a user right after
+	// their friend request is auto-accepted (e.g. a guide message plus the
+	// requested resource file).
+	FriendWelcomeText string
+	FriendFilePath    string
 }
 
 func NewAdapter(client *onebot.Client, logger *slog.Logger) *Adapter {
@@ -98,6 +106,51 @@ func (a *Adapter) Call(ctx context.Context, action string, params map[string]any
 	return a.client.CallAction(ctx, action, params)
 }
 
+// UploadPrivateFile uploads a local file to a private chat with userID.
+// The selfID argument is ignored on single-account adapters.
+func (a *Adapter) UploadPrivateFile(
+	ctx context.Context,
+	selfID, userID, filePath, name string,
+) error {
+	if a.client == nil {
+		return fmt.Errorf("onebot adapter has no client")
+	}
+	_, err := a.client.UploadPrivateFile(ctx, userID, filePath, name)
+	return err
+}
+
+// IsFriend reports whether userID is on the account's friend list.
+func (a *Adapter) IsFriend(ctx context.Context, selfID, userID string) (bool, error) {
+	raw, err := a.Call(ctx, "get_friend_list", map[string]any{})
+	if err != nil {
+		return false, err
+	}
+	id, err := strconv.ParseInt(strings.TrimSpace(userID), 10, 64)
+	if err != nil {
+		return false, err
+	}
+	return friendListContains(raw, id)
+}
+
+func friendListContains(raw any, userID int64) (bool, error) {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return false, err
+	}
+	var friends []struct {
+		UserID int64 `json:"user_id"`
+	}
+	if err := json.Unmarshal(data, &friends); err != nil {
+		return false, err
+	}
+	for _, friend := range friends {
+		if friend.UserID == userID {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (a *Adapter) SendGroupText(ctx context.Context, groupID, replyTo, text string, quote bool) error {
 	return a.client.SendGroupText(ctx, groupID, replyTo, text, quote)
 }
@@ -118,6 +171,25 @@ func (a *Adapter) autoAcceptFriendRequest(ctx context.Context, event onebot.Even
 		return
 	}
 	a.logger.Info("auto-accepted friend request", "user_id", userID)
+	a.deliverFriendWelcome(ctx, userID)
+}
+
+func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {
+	if text := strings.TrimSpace(a.FriendWelcomeText); text != "" {
+		if err := a.client.SendPrivateText(ctx, userID, text); err != nil {
+			a.logger.Warn("failed to send friend welcome text",
+				"user_id", userID, "error", err.Error())
+		}
+	}
+	if path := strings.TrimSpace(a.FriendFilePath); path != "" {
+		name := filepath.Base(path)
+		if _, err := a.client.UploadPrivateFile(ctx, userID, path, name); err != nil {
+			a.logger.Warn("failed to send friend welcome file",
+				"user_id", userID, "error", err.Error())
+			return
+		}
+		a.logger.Info("friend welcome file sent", "user_id", userID, "file", name)
+	}
 }
 
 func convertEvent(event onebot.Event) (platform.Event, error) {

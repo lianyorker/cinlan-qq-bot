@@ -218,7 +218,7 @@ func (s *Store) LoadDir(root string) (int, error) {
 			return nil
 		}
 		extension := strings.ToLower(filepath.Ext(path))
-		if extension != ".md" && extension != ".markdown" && extension != ".txt" {
+		if !indexableExtension(extension) {
 			return nil
 		}
 		info, statErr := entry.Info()
@@ -226,7 +226,7 @@ func (s *Store) LoadDir(root string) (int, error) {
 			return statErr
 		}
 		if info.Size() > maxDocumentBytes {
-			return fmt.Errorf("knowledge file %q exceeds %d bytes", path, maxDocumentBytes)
+			return nil // oversized source files are skipped, not fatal
 		}
 		data, readErr := os.ReadFile(path)
 		if readErr != nil {
@@ -302,6 +302,20 @@ func (p Plugin) BeforeMessage(_ context.Context, event *plugin.MessageContext) (
 	}
 	event.Values[PromptContextKey] = contextText
 	return plugin.Decision{}, nil
+}
+
+// indexableExtension reports whether a file extension should be indexed for
+// retrieval: docs plus common source/config formats.
+func indexableExtension(ext string) bool {
+	switch ext {
+	case ".md", ".markdown", ".txt",
+		".java", ".kt", ".go", ".py", ".js", ".ts", ".tsx", ".jsx",
+		".vue", ".sql", ".xml", ".yml", ".yaml", ".properties", ".json",
+		".html", ".css", ".scss", ".less", ".sh", ".bat", ".gradle", ".toml",
+		".ini", ".conf", ".cfg", ".proto", ".thrift", ".mdx":
+		return true
+	}
+	return false
 }
 
 func documentCollection(relative string) string {

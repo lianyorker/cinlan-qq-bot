@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -77,7 +78,10 @@ type openAIImageResponse struct {
 
 func NewImageGenerator(cfg ImageGeneratorConfig) (*ImageGenerator, error) {
 	mode := strings.ToLower(strings.TrimSpace(cfg.Mode))
-	if mode != "openai" && mode != "pollinations" {
+	if mode == "antigravity" {
+		mode = "openai_chat"
+	}
+	if mode != "openai" && mode != "pollinations" && mode != "openai_chat" {
 		return nil, fmt.Errorf("unsupported image generation mode %q", mode)
 	}
 	endpoint, err := url.Parse(strings.TrimSpace(cfg.APIURL))
@@ -195,6 +199,8 @@ func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Res
 	switch g.mode {
 	case "openai":
 		data, err = g.generateOpenAI(ctx, arguments.Prompt, normalizedSize)
+	case "openai_chat":
+		data, err = g.generateOpenAIChat(ctx, arguments.Prompt, normalizedSize)
 	case "pollinations":
 		data, err = g.generatePollinations(ctx, arguments.Prompt, width, height)
 	default:
@@ -212,9 +218,7 @@ func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Res
 		return tool.Result{}, err
 	}
 	response := domain.AgentResponse{
-		Reply: "给你生成好了。",
 		Chain: message.Chain{
-			message.Text("给你生成好了。"),
 			message.Image(path),
 		},
 	}
@@ -332,6 +336,156 @@ func (g *ImageGenerator) generatePollinations(
 		)
 	}
 	return readBounded(response.Body, g.maxBytes)
+}
+
+// chatCompletionsResponse covers relays (e.g. Antigravity) that return
+// generated images inside a chat completion: content may be a markdown
+// string with ![image](data:...) or a multipart array.
+type chatCompletionsResponse struct {
+	Choices []struct {
+		Message struct {
+			Content json.RawMessage `json:"content"`
+		} `json:"message"`
+	} `json:"choices"`
+}
+
+type chatContentPart struct {
+	Type     string `json:"type"`
+	Text     string `json:"text"`
+	ImageURL struct {
+		URL string `json:"url"`
+	} `json:"image_url"`
+}
+
+var chatImageDataPattern = regexp.MustCompile(
+	`data:image/(?:png|jpe?g|webp|gif);base64,([A-Za-z0-9+/=]+)`,
+)
+
+func (g *ImageGenerator) generateOpenAIChat(
+	ctx context.Context,
+	prompt, size string,
+) ([]byte, error) {
+	if size != "" {
+		prompt = prompt + "\n(please render the image at " + size + " pixels)"
+	}
+	payload, err := json.Marshal(map[string]any{
+		"model":    g.model,
+		"messages": []map[string]any{{"role": "user", "content": prompt}},
+		"stream":   false,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("encode image generation request: %w", err)
+	}
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		g.endpoint.String(),
+		bytes.NewReader(payload),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build image generation request: %w", err)
+	}
+	request.Header.Set("Accept", "application/json")
+	request.Header.Set("Content-Type", "application/json")
+	if g.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+g.apiKey)
+	}
+	response, err := g.client.Do(request)
+	if err != nil {
+		return nil, errors.New("image generation provider request failed")
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf(
+			"image generation provider returned HTTP %d",
+			response.StatusCode,
+		)
+	}
+	responseLimit := g.maxBytes*2 + 1<<20
+	if responseLimit > 64<<20 {
+		responseLimit = 64 << 20
+	}
+	body, err := readBounded(response.Body, responseLimit)
+	if err != nil {
+		return nil, fmt.Errorf("read image generation response: %w", err)
+	}
+	var decoded chatCompletionsResponse
+	if err := json.Unmarshal(body, &decoded); err != nil || len(decoded.Choices) == 0 {
+		return nil, errors.New("image generation provider returned an invalid response")
+	}
+	image, err := g.extractChatImage(ctx, decoded.Choices[0].Message.Content)
+	if err != nil {
+		return nil, err
+	}
+	return image, nil
+}
+
+func (g *ImageGenerator) extractChatImage(
+	ctx context.Context,
+	raw json.RawMessage,
+) ([]byte, error) {
+	var textParts []string
+	var imageURLs []string
+	trimmed := bytes.TrimSpace(raw)
+	switch {
+	case len(trimmed) == 0:
+		return nil, errors.New("image generation provider returned empty content")
+	case trimmed[0] == '"':
+		var single string
+		if err := json.Unmarshal(trimmed, &single); err != nil {
+			return nil, errors.New("image generation provider returned invalid content")
+		}
+		textParts = append(textParts, single)
+	case trimmed[0] == '[':
+		var parts []chatContentPart
+		if err := json.Unmarshal(trimmed, &parts); err != nil {
+			return nil, errors.New("image generation provider returned invalid content parts")
+		}
+		for _, part := range parts {
+			if part.Text != "" {
+				textParts = append(textParts, part.Text)
+			}
+			if part.ImageURL.URL != "" {
+				imageURLs = append(imageURLs, part.ImageURL.URL)
+			}
+		}
+	default:
+		return nil, errors.New("image generation provider returned unexpected content")
+	}
+	for _, text := range textParts {
+		match := chatImageDataPattern.FindStringSubmatch(text)
+		if len(match) < 2 {
+			continue
+		}
+		data, err := base64.StdEncoding.DecodeString(match[1])
+		if err != nil {
+			return nil, errors.New("image generation provider returned invalid base64")
+		}
+		if int64(len(data)) > g.maxBytes {
+			return nil, fmt.Errorf("generated image exceeds %d bytes", g.maxBytes)
+		}
+		return data, nil
+	}
+	for _, value := range imageURLs {
+		if strings.HasPrefix(value, "data:") {
+			match := chatImageDataPattern.FindStringSubmatch(value)
+			if len(match) < 2 {
+				continue
+			}
+			data, err := base64.StdEncoding.DecodeString(match[1])
+			if err != nil {
+				continue
+			}
+			if int64(len(data)) > g.maxBytes {
+				return nil, fmt.Errorf("generated image exceeds %d bytes", g.maxBytes)
+			}
+			return data, nil
+		}
+		if strings.HasPrefix(value, "https://") {
+			return g.download(ctx, value)
+		}
+	}
+	return nil, errors.New("image generation provider returned no image")
 }
 
 func (g *ImageGenerator) download(ctx context.Context, value string) ([]byte, error) {

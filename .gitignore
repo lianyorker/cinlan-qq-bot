@@ -21,3 +21,8 @@
 coverage.out
 runtime/loader/target/
 /notes/
+
+/_*
+
+onebot11_*.json
+*_tmp.*

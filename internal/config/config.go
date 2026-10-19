@@ -11,6 +11,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode"
 )
 
 const (
@@ -105,6 +106,14 @@ type Config struct {
 	OneBotReversePath  string
 	OneBotAccountsFile string
 	OneBotAutoAccept   bool
+
+	FriendWelcomeText string
+	FriendFilePath    string
+	AdminUserIDs      []string
+	ChatPrefsFile     string
+	IQChartAPIBase    string
+	IQChartInterval   time.Duration
+	IQChartFontPath   string
 
 	GroupAllowlist   Allowlist
 	PrivateAllowlist Allowlist
@@ -232,8 +241,17 @@ func Load() (Config, error) {
 		OneBotReversePath:  envOr("ONEBOT_REVERSE_PATH", reversePathDefault),
 		OneBotAccountsFile: envOrAllowEmpty("ONEBOT_ACCOUNTS_FILE", ""),
 		OneBotAutoAccept:   parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
-		GroupAllowlist:     groupAllowlist,
-		PrivateAllowlist:   privateAllowlist,
+		FriendWelcomeText:  envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
+		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
+		ChatPrefsFile:      envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
+		IQChartAPIBase: envOr(
+			"IQ_CHART_API_BASE",
+			"https://codexradar.com/api/radar-bench-score",
+		),
+		IQChartInterval:  parseDuration("IQ_CHART_INTERVAL", 90*time.Minute, false, &errs),
+		IQChartFontPath:  envOr("IQ_CHART_FONT", "data/fonts/iqchart.ttf"),
+		GroupAllowlist:   groupAllowlist,
+		PrivateAllowlist: privateAllowlist,
 
 		AgentMode:         strings.ToLower(envOr("AGENT_API_MODE", AgentModeCustom)),
 		AgentAPIURL:       os.Getenv("AGENT_API_URL"),
@@ -297,6 +315,8 @@ func Load() (Config, error) {
 	cfg.AgentMaxToolRounds = parseInt("AGENT_MAX_TOOL_ROUNDS", 4, 1, &errs)
 	cfg.AgentRetryBase = parseDuration("AGENT_RETRY_BASE", 500*time.Millisecond, true, &errs)
 	cfg.AgentRetryMax = parseDuration("AGENT_RETRY_MAX", 5*time.Second, true, &errs)
+
+	cfg.AdminUserIDs = parseStringList(envOrAllowEmpty("BOT_ADMIN_USER_IDS", ""))
 
 	cfg.ImageMode = strings.ToLower(envOrAllowEmpty("IMAGE_API_MODE", ""))
 	cfg.ImageAPIURL = envOrAllowEmpty("IMAGE_API_URL", "")
@@ -563,9 +583,12 @@ func (c Config) Validate() error {
 		errs = append(errs, errors.New("BOT_ALLOWED_ROOT must not be empty"))
 	}
 	if c.ImageMode != "" {
-		if !contains([]string{"openai", "pollinations"}, c.ImageMode) {
+		if !contains(
+			[]string{"openai", "pollinations", "openai_chat", "antigravity"},
+			c.ImageMode,
+		) {
 			errs = append(errs, fmt.Errorf(
-				"IMAGE_API_MODE must be openai or pollinations; got %q",
+				"IMAGE_API_MODE must be openai, openai_chat or pollinations; got %q",
 				c.ImageMode,
 			))
 		}
@@ -660,6 +683,19 @@ func defaultQQNTImageAllowedRoots() string {
 		return ""
 	}
 	return filepath.Join(appData, "QQ")
+}
+
+func parseStringList(value string) []string {
+	var result []string
+	for _, field := range strings.FieldsFunc(
+		strings.TrimSpace(value),
+		func(r rune) bool { return r == ',' || r == ';' || unicode.IsSpace(r) },
+	) {
+		if field = strings.TrimSpace(field); field != "" {
+			result = append(result, field)
+		}
+	}
+	return result
 }
 
 func parsePathList(value string) []string {

@@ -265,7 +265,10 @@ function attachLoginListener() {
     }
     const listener = listenerProxy({
       onQRCodeGetPicture: (info) => {
-        try { recordLoginQR(info); } catch (error) { reportRuntimeError('login_qr', error); }
+        try { recordLoginQR(info); } catch (error) {
+          state.qrReject?.(error);
+          reportRuntimeError('login_qr', error);
+        }
       },
       onQRCodeLoginSucceed: (info) => {
         const uin = stringValue(info?.uin || info?.account);
@@ -403,10 +406,23 @@ function resetSession() {
 }
 
 function recordLoginQR(info) {
-  const png = info?.pngBase64QrcodeData;
+  let png = info?.pngBase64QrcodeData;
+  if (typeof png === 'string' && /^data:[^,]*;base64,/i.test(png)) {
+    png = png.slice(png.indexOf(',') + 1);
+  }
   if (typeof png !== 'string' || png.length > Math.min(512*1024, MAX_FRAME_BYTES/2) ||
-      !/^[A-Za-z0-9+/]+={0,2}$/.test(png) || !Buffer.from(png,'base64').subarray(0,8).equals(Buffer.from([137,80,78,71,13,10,26,10]))) {
-    throw new Error('QQNT QR callback does not contain a bounded PNG base64');
+      !/^[A-Za-z0-9+/]+={0,2}$/.test(png)) {
+    const keys = info && typeof info === 'object' ? Object.keys(info).join(',') : String(typeof info);
+    throw new Error(`QQNT QR callback does not contain a bounded image base64 (keys: ${keys})`);
+  }
+  const head = Buffer.from(png, 'base64').subarray(0, 12);
+  const isPng = head.subarray(0, 8).equals(Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]));
+  const isJpeg = head[0] === 0xFF && head[1] === 0xD8;
+  const isWebp = head.subarray(0, 4).toString('latin1') === 'RIFF' &&
+    head.subarray(8, 12).toString('latin1') === 'WEBP';
+  const isGif = head.subarray(0, 3).toString('latin1') === 'GIF';
+  if (!isPng && !isJpeg && !isWebp && !isGif) {
+    throw new Error('QQNT QR callback payload is not a recognized image format');
   }
   if (runtimeState() === 'ready') return;
   state.loginQR = { png_base64: png, expires_at: new Date(Date.now()+60000).toISOString() };
