@@ -22,6 +22,7 @@ type imageNote struct {
 
 type chatEntry struct {
 	NotifyOff  bool        `json:"notify_off,omitempty"`
+	VoiceOff   bool        `json:"voice_off,omitempty"`
 	Persona    string      `json:"persona,omitempty"`
 	Notes      []string    `json:"notes,omitempty"`
 	ImageNotes []imageNote `json:"image_notes,omitempty"`
@@ -80,6 +81,23 @@ func (s *Store) NotifyEnabled(chatType, chatID string) bool {
 	defer s.mu.RUnlock()
 	e := s.data[key(chatType, chatID)]
 	return e == nil || !e.NotifyOff
+}
+
+// SetVoiceEnabled toggles [[VOICE]] replies for the chat. Enabled is the
+// default; disabled strips the model's voice markers into silence.
+func (s *Store) SetVoiceEnabled(chatType, chatID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entry(chatType, chatID).VoiceOff = !enabled
+	return s.saveLocked()
+}
+
+// VoiceEnabled reports whether voice clips are allowed for the chat.
+func (s *Store) VoiceEnabled(chatType, chatID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	return e == nil || !e.VoiceOff
 }
 
 // SetPersona pins the active persona for the chat; empty restores the

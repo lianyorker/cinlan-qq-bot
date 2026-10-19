@@ -207,6 +207,69 @@ func registerLocalExtensions(
 		},
 	})
 
+	register(command.Definition{
+		Name:        "指令",
+		Aliases:     []string{"命令", "help", "菜单"},
+		Description: "列出全部可用指令（仅白名单私聊）",
+		Permission:  command.PermissionEveryone,
+		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
+			if c.Event.MessageType != platform.ChatPrivate || !isOperator(c) {
+				return command.Result{Handled: true, Reply: "这个命令只有白名单用户私聊能用。"}, nil
+			}
+			var builder strings.Builder
+			builder.WriteString("可用指令：")
+			for _, info := range service.CommandRegistry().List() {
+				builder.WriteString("\n· /" + info.Name)
+				if len(info.Aliases) > 0 {
+					builder.WriteString(
+						"（别名 " + strings.Join(info.Aliases, "、") + "）",
+					)
+				}
+				if desc := strings.TrimSpace(info.Description); desc != "" {
+					builder.WriteString("：" + desc)
+				}
+			}
+			return command.Result{Handled: true, Reply: builder.String()}, nil
+		},
+	})
+
+	register(command.Definition{
+		Name:        "唱歌",
+		Aliases:     []string{"语音", "voice"},
+		Description: "开关本群语音回复（/唱歌 开启|关闭）",
+		Permission:  command.PermissionEveryone,
+		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
+			if !isOperator(c) {
+				return command.Result{Handled: true, Reply: "权限不足。"}, nil
+			}
+			arg := strings.TrimSpace(strings.Join(c.Args, " "))
+			switch arg {
+			case "开启", "开", "on":
+				if err := store.SetVoiceEnabled(
+					c.Event.MessageType, c.Event.ChatID, true,
+				); err != nil {
+					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
+				}
+				return command.Result{Handled: true, Reply: "语音已开启，点歌就能唱了。"}, nil
+			case "关闭", "关", "off":
+				if err := store.SetVoiceEnabled(
+					c.Event.MessageType, c.Event.ChatID, false,
+				); err != nil {
+					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
+				}
+				return command.Result{Handled: true, Reply: "语音已关闭。"}, nil
+			default:
+				state := "开启"
+				if !store.VoiceEnabled(
+					c.Event.MessageType, c.Event.ChatID,
+				) {
+					state = "关闭"
+				}
+				return command.Result{Handled: true, Reply: "当前语音：" + state + "（/唱歌 开启|关闭）"}, nil
+			}
+		},
+	})
+
 	logger.Info("chat preference commands registered", "file", cfg.ChatPrefsFile)
 	return nil
 }

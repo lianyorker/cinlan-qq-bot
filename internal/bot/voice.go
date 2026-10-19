@@ -84,6 +84,10 @@ func (s *Service) deliverVoiceClips(
 	if len(clips) == 0 || s.voiceProvider == nil {
 		return
 	}
+	if s.chatPrefs != nil &&
+		!s.chatPrefs.VoiceEnabled(state.chatType, state.chatID) {
+		return
+	}
 	cooldown := s.cfg.VoiceCooldown
 	if cooldown <= 0 {
 		cooldown = 45 * time.Second
