@@ -562,20 +562,30 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// A reply to an image-only message carries no image segment — fetch the
 	// quoted message so the model actually sees the image instead of a
 	// "[图片]" placeholder.
+	var quoted message.Chain
+	if replyID := state.event.Chain.ReplyID(); replyID != "" {
+		quoted = s.QuotedChain(ctx, state.selfID, state.event.Chain)
+	}
 	if len(request.Chain.ImageReferences()) == 0 {
-		if refs := s.EventImageRefs(
-			ctx, state.selfID, state.event.Chain,
-		); len(refs) > 0 {
-			for _, ref := range refs {
-				request.Chain = append(
-					request.Chain,
-					message.Attachment(
-						message.TypeImage,
-						map[string]any{"file_path": ref},
-					),
-				)
-			}
+		refs := state.event.Chain.ImageReferences()
+		if len(refs) == 0 && quoted != nil {
+			refs = quoted.ImageReferences()
 		}
+		for _, ref := range refs {
+			request.Chain = append(
+				request.Chain,
+				message.Attachment(
+					message.TypeImage,
+					map[string]any{"file_path": ref},
+				),
+			)
+		}
+	}
+	// Small text-like files (directly attached or inside the quoted message)
+	// are downloaded and inlined so "[文件]" isn't just a dead marker.
+	if fileText := s.chainFileText(ctx, state.event.Chain) +
+		s.chainFileText(ctx, quoted); fileText != "" {
+		request.Text = strings.TrimSpace(request.Text + "\n\n" + fileText)
 	}
 	request.PromptContext = scopedPromptContext(
 		state.summary,
@@ -605,6 +615,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n\n"
 		}
 		request.SystemPrompt += `群聊交互边界：结合当前发送者和共享会话历史回答，不抢答发给其他人的内容。对缺少消息、资料或实时工具证据的事实明确说明无法判断，不迎合或编造。`
+	}
+	// Group admins, owners and whitelisted users get a civil tone regardless
+	// of how abrasive the active persona is.
+	senderRole := strings.ToLower(strings.TrimSpace(state.event.SenderRole))
+	if senderRole == "admin" || senderRole == "owner" ||
+		state.replyPolicy.AllowsUser(state.userID) {
+		request.SystemPrompt += "\n\n本条消息发送者是本群管理员或白名单用户：对他保持尊重和耐心，禁止毒舌、嘲讽、阴阳怪气或人身攻击，正常认真解答。"
 	}
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {

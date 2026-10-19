@@ -119,19 +119,19 @@ func (a *Adapter) UploadPrivateFile(
 	return err
 }
 
-// FetchMessageImages returns image references inside a message fetched via
-// get_msg. The selfID argument is ignored on single-account adapters.
-func (a *Adapter) FetchMessageImages(
+// FetchMessage returns the parsed chain of a message fetched via get_msg.
+// The selfID argument is ignored on single-account adapters.
+func (a *Adapter) FetchMessage(
 	ctx context.Context,
 	selfID, messageID string,
-) ([]string, error) {
+) (message.Chain, error) {
 	raw, err := a.Call(ctx, "get_msg", map[string]any{
 		"message_id": messageID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return extractImageRefs(raw)
+	return extractQuotedChain(raw)
 }
 
 // IsFriend reports whether userID is on the account's friend list.

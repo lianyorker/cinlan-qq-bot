@@ -43,10 +43,10 @@ type FileSender interface {
 	IsFriend(ctx context.Context, selfID, userID string) (bool, error)
 }
 
-// MessageFetcher resolves images inside a replied-to (quoted) message, which
+// MessageFetcher resolves a replied-to (quoted) message's full chain, which
 // is not part of the inbound chain.
 type MessageFetcher interface {
-	FetchMessageImages(ctx context.Context, selfID, messageID string) ([]string, error)
+	FetchMessage(ctx context.Context, selfID, messageID string) (message.Chain, error)
 }
 
 type Stats struct {
@@ -275,6 +275,19 @@ func (s *Service) EventImageRefs(
 	if refs := chain.ImageReferences(); len(refs) > 0 {
 		return refs
 	}
+	if quoted := s.QuotedChain(ctx, selfID, chain); quoted != nil {
+		return quoted.ImageReferences()
+	}
+	return nil
+}
+
+// QuotedChain returns the parsed chain of the message this one replies to,
+// or nil when there is no reply segment or the fetch fails.
+func (s *Service) QuotedChain(
+	ctx context.Context,
+	selfID string,
+	chain message.Chain,
+) message.Chain {
 	if s.chainFetcher == nil {
 		return nil
 	}
@@ -282,16 +295,16 @@ func (s *Service) EventImageRefs(
 	if replyID == "" {
 		return nil
 	}
-	refs, err := s.chainFetcher.FetchMessageImages(ctx, selfID, replyID)
+	quoted, err := s.chainFetcher.FetchMessage(ctx, selfID, replyID)
 	if err != nil {
 		s.logger.Warn(
-			"quoted message image lookup failed",
+			"quoted message lookup failed",
 			"message_id", replyID,
 			"error", err.Error(),
 		)
 		return nil
 	}
-	return refs
+	return quoted
 }
 
 // RegisterKeywordTool maps a message pattern directly to a registered tool,
