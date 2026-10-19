@@ -219,6 +219,7 @@ func synth(base, ver, origin, ua, text string) {
 		return
 	}
 	audio := 0
+	var audioBytes []byte
 	for {
 		msgType, payload, err := conn.ReadMessage()
 		if err != nil {
@@ -227,11 +228,19 @@ func synth(base, ver, origin, ua, text string) {
 		}
 		if msgType == websocket.BinaryMessage {
 			audio += len(payload)
+			audioBytes = append(audioBytes, payload...)
 			continue
 		}
 		body := string(payload)
 		if strings.Contains(body, "Path:turn.end") {
 			fmt.Printf("[synth] DONE audio=%d bytes\n", audio)
+			if out := os.Getenv("PROBE_SAVE"); out != "" && len(audioBytes) > 0 {
+				if err := os.WriteFile(out, audioBytes, 0o644); err != nil {
+					fmt.Printf("[synth] save: %v\n", err)
+				} else {
+					fmt.Printf("[synth] saved %s\n", out)
+				}
+			}
 			return
 		}
 	}

@@ -873,7 +873,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if state.ignored || state.reply == "" {
 		return nil
 	}
-	var voiceClips []string
+	var voiceClips []voiceClip
 	state.reply, voiceClips = extractVoiceMarkers(state.reply)
 	chain := state.outbound
 	if chain.Empty() {

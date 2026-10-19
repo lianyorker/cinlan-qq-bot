@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -22,8 +23,17 @@ import (
 // segments after the text parts. Text is always delivered even when
 // synthesis fails, so content is never lost.
 var voiceMarkerPattern = regexp.MustCompile(
-	`(?s)\[\[VOICE\]\](.*?)\[\[/VOICE\]\]`,
+	`(?s)\[\[(VOICE|SING)(?::([0-9.]+))?\]\](.*?)\[\[/(?:VOICE|SING)\]\]`,
 )
+
+// voiceClip is one extracted voice/sing marker segment. Rate is an
+// optional per-clip speed multiplier the model tags for the song's own
+// tempo (0 keeps the persona rate).
+type voiceClip struct {
+	Text    string
+	Singing bool
+	Rate    float64
+}
 
 // voiceSynth is the text-to-speech seam; internal/tts providers implement it.
 type voiceSynth interface {
@@ -34,28 +44,56 @@ type voiceSynth interface {
 	) error
 }
 
-const voicePromptNote = `你可以发语音：在回复里嵌入 [[VOICE]]要说或唱的词[[/VOICE]]（最多两段，每段不超过200字，要口语化，可以带语气词、拟声词、唱歌词）。
+const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOICE]]，唱歌歌词用 [[SING]]词[[/SING]]（最多两段，每段不超过200字，要口语化，可以带语气词、拟声词）。
 
 使用规则：
-- 对方让你唱歌/发语音时就可以用 [[VOICE]] 唱一小段；没说清楚唱什么时可以先反问。
-- 唱歌时用歌词形式写进 [[VOICE]]（可以是你自己编的小段，不用是真实歌词）。
+- 对方让你唱歌时就用 [[SING]] 唱一小段（自己编的歌词小段，不用是真实歌词）；发普通语音用 [[VOICE]]；没说清楚唱什么时可以先反问。
+- 语速按歌本身定：标记名后可写冒号+倍速，慢歌/摇篮曲用 [[SING:0.7]]，正常节奏 [[SING:1.0]]，活泼快歌 [[SING:1.2]]；不写就用人格默认语速。说话也可用 [[VOICE:1.1]] 微调。
+- 标记内只放要被原样念出来的台词/歌词本身，禁止写"这是一段语音""这是设计的音色"之类的说明文字，也不要写（温柔地唱）这类括号舞台指示。
 - 对方连续反复要求唱歌/语音时可以按你的人设傲娇拒绝，不必每次都唱。
 - 平时闲聊不要随便用语音，保持稀罕感。`
 
+// voiceClipMetaPrefix strips leftover stage directions like （温柔地唱）
+// or meta sentences at the start of a clip before synthesis.
+var voiceClipMetaPrefix = regexp.MustCompile(
+	`^[（(][^）)]*[唱说念讲温柔笑叹语][^）)]*[）)]\s*`,
+)
+
+func sanitizeVoiceClip(text string) string {
+	for {
+		next := voiceClipMetaPrefix.ReplaceAllString(text, "")
+		next = strings.TrimSpace(next)
+		if next == text {
+			return text
+		}
+		text = next
+	}
+}
+
 // extractVoiceMarkers returns the reply with all voice markers removed and
-// the list of voice-clip texts inside them (capped at 2 clips).
-func extractVoiceMarkers(reply string) (string, []string) {
+// the list of voice clips inside them (capped at 2 clips).
+func extractVoiceMarkers(reply string) (string, []voiceClip) {
 	matches := voiceMarkerPattern.FindAllStringSubmatch(reply, -1)
 	if len(matches) == 0 {
 		return reply, nil
 	}
-	clips := make([]string, 0, 2)
+	clips := make([]voiceClip, 0, 2)
 	for _, match := range matches {
 		if len(clips) >= 2 {
 			break
 		}
-		if text := strings.TrimSpace(match[1]); text != "" {
-			clips = append(clips, text)
+		rate := 0.0
+		if match[2] != "" {
+			if v, err := strconv.ParseFloat(match[2], 64); err == nil {
+				rate = v
+			}
+		}
+		if text := sanitizeVoiceClip(match[3]); text != "" {
+			clips = append(clips, voiceClip{
+				Text:    text,
+				Singing: strings.EqualFold(match[1], "sing"),
+				Rate:    rate,
+			})
 		}
 	}
 	return strings.TrimSpace(
@@ -204,7 +242,7 @@ func (q *voiceQuota) spend() bool {
 func (s *Service) deliverVoiceClips(
 	ctx context.Context,
 	state *flowState,
-	clips []string,
+	clips []voiceClip,
 ) {
 	if len(clips) == 0 || s.voiceProvider == nil {
 		return
@@ -238,7 +276,7 @@ func (s *Service) deliverVoiceClips(
 func (s *Service) sendVoiceClips(
 	ctx context.Context,
 	selfID, chatType, chatID string,
-	clips []string,
+	clips []voiceClip,
 	voiceName string, voiceRate float64,
 ) {
 	if s.voiceProvider == nil || len(clips) == 0 {
@@ -249,28 +287,33 @@ func (s *Service) sendVoiceClips(
 		maxRunes = 200
 	}
 	for index, clip := range clips {
-		runes := []rune(clip)
+		rate := voiceRate
+		if clip.Rate > 0.3 && clip.Rate <= 4.0 {
+			rate = clip.Rate
+		}
+		text := clip.Text
+		runes := []rune(text)
 		if len(runes) > maxRunes {
-			clip = string(runes[:maxRunes])
+			text = string(runes[:maxRunes])
 		}
 		path := fmt.Sprintf(
 			"%s/%d-%s.mp3",
 			strings.TrimRight(s.cfg.VoiceDir, "/\\"),
 			time.Now().UnixNano(),
-			opaqueAttentionID(selfID, chatID, clip),
+			opaqueAttentionID(selfID, chatID, text),
 		)
 		chain := message.Chain{message.Record(path)}
 		if err := s.voiceProvider.Synthesize(
-			ctx, clip, path, voiceName, voiceRate,
+			ctx, text, path, voiceName, rate,
 		); err != nil {
 			s.logger.Warn(
 				"voice synthesis failed, falling back to text",
 				"chat", chatID, "error", err.Error(),
 			)
-			chain = message.Chain{message.Text("（语音合成失败）" + clip)}
+			chain = message.Chain{message.Text("（语音合成失败）" + text)}
 		}
 		if index > 0 && !waitForReplyPart(
-			ctx, s.replyPartDelay(clip),
+			ctx, s.replyPartDelay(text),
 		) {
 			return
 		}
