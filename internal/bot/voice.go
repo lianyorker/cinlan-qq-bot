@@ -53,15 +53,21 @@ const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOI
 - 对方连续反复要求唱歌/语音时可以按你的人设傲娇拒绝，不必每次都唱。
 - 平时闲聊不要随便用语音，保持稀罕感。`
 
-// voiceClipMetaPrefix strips leftover stage directions like （温柔地唱）
-// or meta sentences at the start of a clip before synthesis.
-var voiceClipMetaPrefix = regexp.MustCompile(
-	`^[（(][^）)]*[唱说念讲温柔笑叹语][^）)]*[）)]\s*`,
-)
+// voiceClipMetaPatterns strip leftover stage directions like （温柔地唱）
+// or meta sentences like "这是一段设计的音色" at the start of a clip
+// before synthesis.
+var voiceClipMetaPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`^[（(][^）)]*[唱说念讲温柔笑叹语][^）)]*[）)]\s*`),
+	regexp.MustCompile(`^(这是一|此为一|以下为|以下是)[^，。,.；;]{0,20}(音色|语音|音频|歌曲|歌声|一段)[^，。,.；;]{0,15}[，。,.；;：:！!~～]*\s*`),
+	regexp.MustCompile(`^这段[^，。,.；;]{0,15}(音色|语音|歌声|歌曲)[^，。,.；;]{0,15}[，。,.；;：:！!~～]*\s*`),
+}
 
 func sanitizeVoiceClip(text string) string {
 	for {
-		next := voiceClipMetaPrefix.ReplaceAllString(text, "")
+		next := text
+		for _, pat := range voiceClipMetaPatterns {
+			next = pat.ReplaceAllString(next, "")
+		}
 		next = strings.TrimSpace(next)
 		if next == text {
 			return text
