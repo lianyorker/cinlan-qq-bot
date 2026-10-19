@@ -33,7 +33,9 @@ func (s *Service) runPlatformWorker(
 				if !ok {
 					return
 				}
-				s.handlePlatformEvent(ctx, event)
+				// Each event is handled on its own goroutine so a slow
+				// generation request never blocks other users or chats.
+				go s.handlePlatformEvent(ctx, event)
 			}
 		}
 	}
@@ -55,7 +57,7 @@ func (s *Service) runPlatformWorker(
 		}
 		current.timer.Stop()
 		delete(pending, key)
-		s.handlePlatformEvent(ctx, current.event)
+		go s.handlePlatformEvent(ctx, current.event)
 	}
 
 	for {
@@ -76,7 +78,7 @@ func (s *Service) runPlatformWorker(
 				if current, exists := pending[key]; exists {
 					flush(key, current.version)
 				}
-				s.handlePlatformEvent(ctx, event)
+				go s.handlePlatformEvent(ctx, event)
 				continue
 			}
 			current, exists := pending[key]

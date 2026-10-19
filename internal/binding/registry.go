@@ -42,8 +42,20 @@ type ReplyPolicy struct {
 	Mode                string                 `json:"mode"`
 	OnError             string                 `json:"on_error,omitempty"`
 	Provider            string                 `json:"provider,omitempty"`
+	AllowedUsers        []string               `json:"allowed_users,omitempty"`
 	ConfidenceThreshold float64                `json:"confidence_threshold,omitempty"`
 	History             AttentionHistoryPolicy `json:"history,omitempty"`
+}
+
+// AllowsUser reports whether the user is on the policy's whitelist — their
+// ambient messages bypass the attention classifier like direct mentions.
+func (p ReplyPolicy) AllowsUser(userID string) bool {
+	for _, id := range p.AllowedUsers {
+		if strings.TrimSpace(id) == userID {
+			return true
+		}
+	}
+	return false
 }
 
 type Rule struct {

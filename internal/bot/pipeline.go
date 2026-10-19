@@ -295,6 +295,13 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			return nil
 		}
 	}
+	// Passively pool incoming group images so a 表情包 keyword can resend them.
+	if state.chatType == platform.ChatGroup {
+		refs := s.EventImageRefs(ctx, state.selfID, state.event.Chain)
+		if len(refs) > 0 {
+			go s.collectMemes(state.chatType, state.chatID, refs)
+		}
+	}
 	for _, kt := range s.keywordTools {
 		if !kt.pattern.MatchString(state.text) {
 			continue
@@ -304,6 +311,34 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			if name != kt.binding {
 				continue
 			}
+		}
+		if kt.meme {
+			query := ""
+			if loc := kt.pattern.FindStringIndex(state.text); loc != nil {
+				query = strings.TrimSpace(state.text[loc[1]:])
+			}
+			path, memeErr := s.pickMeme(state.chatType, state.chatID, query)
+			var chain message.Chain
+			if memeErr != nil {
+				chain = message.Chain{message.Text(memeErr.Error())}
+			} else {
+				chain = message.Chain{message.Image(path)}
+			}
+			if s.sendChain(
+				ctx,
+				state.selfID,
+				state.chatType,
+				state.chatID,
+				state.userID,
+				state.event.SenderName,
+				state.messageID,
+				chain,
+			) {
+				state.ignored = true
+				event.Stop("keyword_meme")
+				return nil
+			}
+			continue
 		}
 		if kt.filePath != "" && s.fileSender != nil {
 			canDeliver := state.chatType == platform.ChatPrivate
@@ -387,9 +422,21 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			if prompt == "" {
 				continue
 			}
-			data, marshalErr := json.Marshal(map[string]string{
-				kt.promptArg: prompt,
-			})
+			payload := map[string]string{kt.promptArg: prompt}
+			if refs := s.EventImageRefs(
+				ctx, state.selfID, state.event.Chain,
+			); len(refs) > 0 {
+				payload["image"] = refs[0]
+			} else if s.chatPrefs != nil {
+				if path := s.chatPrefs.ImageForPrompt(
+					state.chatType,
+					state.chatID,
+					prompt,
+				); path != "" {
+					payload["image"] = path
+				}
+			}
+			data, marshalErr := json.Marshal(payload)
 			if marshalErr != nil {
 				continue
 			}
@@ -511,6 +558,24 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		MCPServers:    append([]string(nil), state.mcpServers...),
 		RestrictTools: true,
 		Chain:         state.event.Chain.Clone(),
+	}
+	// A reply to an image-only message carries no image segment — fetch the
+	// quoted message so the model actually sees the image instead of a
+	// "[图片]" placeholder.
+	if len(request.Chain.ImageReferences()) == 0 {
+		if refs := s.EventImageRefs(
+			ctx, state.selfID, state.event.Chain,
+		); len(refs) > 0 {
+			for _, ref := range refs {
+				request.Chain = append(
+					request.Chain,
+					message.Attachment(
+						message.TypeImage,
+						map[string]any{"file_path": ref},
+					),
+				)
+			}
+		}
 	}
 	request.PromptContext = scopedPromptContext(
 		state.summary,

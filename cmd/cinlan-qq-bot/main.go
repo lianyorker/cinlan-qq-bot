@@ -302,6 +302,9 @@ func main() {
 	if fileSender, ok := qqAdapter.(bot.FileSender); ok {
 		botService.SetFileSender(fileSender)
 	}
+	if fetcher, ok := qqAdapter.(bot.MessageFetcher); ok {
+		botService.SetMessageFetcher(fetcher)
+	}
 	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
 		Cooldown:      cfg.MediaToolCooldown,
 		Limit:         cfg.MediaToolLimit,

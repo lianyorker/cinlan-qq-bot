@@ -43,6 +43,12 @@ type FileSender interface {
 	IsFriend(ctx context.Context, selfID, userID string) (bool, error)
 }
 
+// MessageFetcher resolves images inside a replied-to (quoted) message, which
+// is not part of the inbound chain.
+type MessageFetcher interface {
+	FetchMessageImages(ctx context.Context, selfID, messageID string) ([]string, error)
+}
+
 type Stats struct {
 	Received             uint64 `json:"received"`
 	Ignored              uint64 `json:"ignored"`
@@ -80,6 +86,7 @@ type Service struct {
 	agent        agent.Client
 	sender       Sender
 	fileSender   FileSender
+	chainFetcher MessageFetcher
 	sessions     *session.Store
 	logger       *slog.Logger
 	stats        counters
@@ -92,6 +99,7 @@ type Service struct {
 	personas     *persona.Registry
 	bindings     *binding.Registry
 	chatPrefs    *chatprefs.Store
+	memeDir      string
 	keywordTools []keywordTool
 
 	stateMu          sync.Mutex
@@ -221,6 +229,20 @@ func (s *Service) ChatPrefs() *chatprefs.Store {
 	return s.chatPrefs
 }
 
+// SetMemeDir enables the per-chat meme pool under dir.
+func (s *Service) SetMemeDir(dir string) {
+	s.memeDir = strings.TrimSpace(dir)
+}
+
+// RegisterKeywordMeme sends a random stored meme from the chat's pool when
+// the pattern matches.
+func (s *Service) RegisterKeywordMeme(pattern *regexp.Regexp) {
+	if pattern == nil {
+		return
+	}
+	s.keywordTools = append(s.keywordTools, keywordTool{pattern: pattern, meme: true})
+}
+
 type keywordTool struct {
 	pattern   *regexp.Regexp
 	tool      string
@@ -228,12 +250,48 @@ type keywordTool struct {
 	reply     string // optional: fixed text reply instead of a tool call
 	promptArg string // optional: pass text after the match as this JSON argument
 	filePath  string // optional: upload this file in private chat on match
+	meme      bool   // optional: send a random meme from the chat pool
 }
 
 // SetFileSender wires the private-file upload path used by keyword file
 // replies (e.g. delivering an .sql file to a user in private chat).
 func (s *Service) SetFileSender(sender FileSender) {
 	s.fileSender = sender
+}
+
+// SetMessageFetcher wires the quoted-message image lookup used by /记住 and
+// 生图 when the user replies to an image instead of attaching one.
+func (s *Service) SetMessageFetcher(fetcher MessageFetcher) {
+	s.chainFetcher = fetcher
+}
+
+// EventImageRefs returns image references from the message itself and, when
+// it contains none, from a replied-to message.
+func (s *Service) EventImageRefs(
+	ctx context.Context,
+	selfID string,
+	chain message.Chain,
+) []string {
+	if refs := chain.ImageReferences(); len(refs) > 0 {
+		return refs
+	}
+	if s.chainFetcher == nil {
+		return nil
+	}
+	replyID := chain.ReplyID()
+	if replyID == "" {
+		return nil
+	}
+	refs, err := s.chainFetcher.FetchMessageImages(ctx, selfID, replyID)
+	if err != nil {
+		s.logger.Warn(
+			"quoted message image lookup failed",
+			"message_id", replyID,
+			"error", err.Error(),
+		)
+		return nil
+	}
+	return refs
 }
 
 // RegisterKeywordTool maps a message pattern directly to a registered tool,

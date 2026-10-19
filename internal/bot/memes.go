@@ -1,0 +1,262 @@
+package bot
+
+import (
+	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"errors"
+	"fmt"
+	"io"
+	"math/rand"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+	"unicode"
+
+	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
+	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+)
+
+const (
+	maxMemeFilesPerChat = 200
+	maxMemeBytes        = 20 << 20
+)
+
+// memeDirFor returns the per-chat meme pool directory.
+func (s *Service) memeDirFor(chatType, chatID string) string {
+	if s.memeDir == "" {
+		return ""
+	}
+	return filepath.Join(s.memeDir, chatType+"_"+chatID)
+}
+
+// collectMemes saves every image in the incoming chain into the per-chat
+// meme pool, then asks the vision model for a short meaning tag stored in a
+// sidecar file so later queries can retrieve the right sticker.
+func (s *Service) collectMemes(chatType, chatID string, refs []string) {
+	dir := s.memeDirFor(chatType, chatID)
+	if dir == "" || len(refs) == 0 {
+		return
+	}
+	for _, ref := range refs {
+		path, err := saveMemeImage(ref, dir)
+		if err != nil {
+			s.logger.Warn(
+				"meme collect failed",
+				"chat", chatID,
+				"ref", truncateRef(ref),
+				"error", err.Error(),
+			)
+			continue
+		}
+		s.describeMeme(path)
+	}
+	evictOldMemes(dir, maxMemeFilesPerChat)
+}
+
+// describeMeme writes a short vision-generated tag next to the image file.
+func (s *Service) describeMeme(path string) {
+	if s.agent == nil {
+		return
+	}
+	metaPath := path + ".meta"
+	if _, err := os.Stat(metaPath); err == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	resp, err := s.agent.Reply(ctx, domain.AgentRequest{
+		RequestID: "meme-" + filepath.Base(path),
+		Text: "这是一张表情包/聊天图。请用不超过15个字的中文概括它的含义或情绪" +
+			"（比如：嘲笑、疑问、无语、加油、谢谢、吃瓜、生气），只输出概括本身。",
+		Chain: message.Chain{message.Attachment(
+			message.TypeImage,
+			map[string]any{"file_path": path},
+		)},
+	})
+	if err != nil || strings.TrimSpace(resp.Reply) == "" {
+		return
+	}
+	tag := strings.TrimSpace(resp.Reply)
+	if len([]rune(tag)) > 40 {
+		tag = string([]rune(tag)[:40])
+	}
+	_ = os.WriteFile(metaPath, []byte(tag), 0o600)
+}
+
+// pickMeme returns a stored meme matching query, or a random one when no
+// query is given or nothing matches.
+func (s *Service) pickMeme(chatType, chatID, query string) (string, error) {
+	dir := s.memeDirFor(chatType, chatID)
+	if dir == "" {
+		return "", errors.New("meme pool disabled")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return "", errors.New("还没偷到表情包，多发点图我存一下")
+	}
+	type candidate struct {
+		name  string
+		score int
+	}
+	files := make([]candidate, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() || strings.HasSuffix(e.Name(), ".meta") {
+			continue
+		}
+		score := 0
+		if query != "" {
+			if meta, err := os.ReadFile(
+				filepath.Join(dir, e.Name()+".meta"),
+			); err == nil {
+				for _, word := range strings.FieldsFunc(
+					query,
+					func(r rune) bool {
+						return unicode.IsSpace(r) || unicode.IsPunct(r)
+					},
+				) {
+					if word != "" && strings.Contains(string(meta), word) {
+						score++
+					}
+				}
+				if strings.Contains(string(meta), query) {
+					score++
+				}
+			}
+		}
+		files = append(files, candidate{e.Name(), score})
+	}
+	if len(files) == 0 {
+		return "", errors.New("还没偷到表情包，多发点图我存一下")
+	}
+	best := files[rand.Intn(len(files))]
+	bestScore := 0
+	if query != "" {
+		pool := make([]candidate, 0, len(files))
+		for _, f := range files {
+			if f.score > bestScore {
+				bestScore = f.score
+			}
+		}
+		if bestScore > 0 {
+			for _, f := range files {
+				if f.score == bestScore {
+					pool = append(pool, f)
+				}
+			}
+			best = pool[rand.Intn(len(pool))]
+		}
+	}
+	return filepath.Join(dir, best.name), nil
+}
+
+// saveMemeImage downloads or copies an image into dir under a content-hash
+// filename so identical memes dedupe naturally.
+func saveMemeImage(ref, dir string) (string, error) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return "", errors.New("empty image reference")
+	}
+	var data []byte
+	lower := strings.ToLower(ref)
+	switch {
+	case strings.HasPrefix(lower, "http://") || strings.HasPrefix(lower, "https://"):
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, ref, nil)
+		if err != nil {
+			return "", err
+		}
+		resp, err := http.DefaultClient.Do(req)
+		if err != nil {
+			return "", err
+		}
+		defer resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			return "", fmt.Errorf("download http %d", resp.StatusCode)
+		}
+		limited, err := io.ReadAll(io.LimitReader(resp.Body, maxMemeBytes))
+		if err != nil {
+			return "", err
+		}
+		data = limited
+	default:
+		local := strings.TrimPrefix(ref, "file://")
+		read, err := os.ReadFile(local)
+		if err != nil {
+			return "", err
+		}
+		if len(read) > maxMemeBytes {
+			return "", errors.New("image too large")
+		}
+		data = read
+	}
+	if len(data) == 0 {
+		return "", errors.New("empty image")
+	}
+	ext := ".png"
+	switch http.DetectContentType(data[:min(512, len(data))]) {
+	case "image/jpeg":
+		ext = ".jpg"
+	case "image/webp":
+		ext = ".webp"
+	case "image/gif":
+		ext = ".gif"
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	sum := sha256.Sum256(data)
+	name := hex.EncodeToString(sum[:12]) + ext
+	path := filepath.Join(dir, name)
+	if _, err := os.Stat(path); err == nil {
+		return path, nil // already pooled
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+// evictOldMemes keeps the pool under cap by deleting the oldest files.
+func evictOldMemes(dir string, cap int) {
+	entries, err := os.ReadDir(dir)
+	if err != nil || len(entries) <= cap {
+		return
+	}
+	type fileInfo struct {
+		name    string
+		modTime time.Time
+	}
+	files := make([]fileInfo, 0, len(entries))
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		info, err := e.Info()
+		if err != nil {
+			continue
+		}
+		files = append(files, fileInfo{e.Name(), info.ModTime()})
+	}
+	// Oldest first.
+	for i := 0; i < len(files)-1; i++ {
+		for j := i + 1; j < len(files); j++ {
+			if files[j].modTime.Before(files[i].modTime) {
+				files[i], files[j] = files[j], files[i]
+			}
+		}
+	}
+	for i := 0; i < len(files)-cap; i++ {
+		_ = os.Remove(filepath.Join(dir, files[i].name))
+	}
+}
+
+func truncateRef(ref string) string {
+	if len(ref) > 80 {
+		return ref[:80] + "…"
+	}
+	return ref
+}

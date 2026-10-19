@@ -18,7 +18,6 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
-	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
 
 const maxAttentionReasonRunes = 200
@@ -59,16 +58,11 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		return nil
 	}
 
-	direct := state.eventMentioned
+	direct := state.eventMentioned ||
+		state.replyPolicy.AllowsUser(state.userID)
 	if isAcknowledgement(state.text) {
 		s.stats.attentionIgnored.Add(1)
 		return ignoreForAttention(event, state, "acknowledgement")
-	}
-	if state.chatType == platform.ChatGroup && !direct &&
-		(mentionsAnotherUser(state.event.Chain, state.selfID) ||
-			containsTextualMention(state.text)) {
-		s.stats.attentionIgnored.Add(1)
-		return ignoreForAttention(event, state, "addressed_to_another_user")
 	}
 	if direct {
 		// A direct mention already expresses intent — reply without letting

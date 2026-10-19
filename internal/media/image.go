@@ -15,6 +15,7 @@ import (
 	_ "image/jpeg"
 	_ "image/png"
 	"io"
+	"mime/multipart"
 	"net"
 	"net/http"
 	"net/url"
@@ -67,6 +68,7 @@ type ImageGenerator struct {
 type imageArguments struct {
 	Prompt string `json:"prompt"`
 	Size   string `json:"size,omitempty"`
+	Image  string `json:"image,omitempty"` // reference image URL for edit mode
 }
 
 type openAIImageResponse struct {
@@ -159,6 +161,10 @@ func (g *ImageGenerator) Tool() tool.Definition {
 					"enum":        []string{"1024x1024", "1536x1024", "1024x1536"},
 					"description": "可选画布尺寸，默认 1024x1024。",
 				},
+				"image": map[string]any{
+					"type":        "string",
+					"description": "可选参考图 URL，用户消息带图时系统注入，走图生图编辑。",
+				},
 			},
 			"required":             []string{"prompt"},
 			"additionalProperties": false,
@@ -198,7 +204,11 @@ func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Res
 	var data []byte
 	switch g.mode {
 	case "openai":
-		data, err = g.generateOpenAI(ctx, arguments.Prompt, normalizedSize)
+		if refURL := strings.TrimSpace(arguments.Image); refURL != "" {
+			data, err = g.generateOpenAIEdit(ctx, arguments.Prompt, normalizedSize, refURL)
+		} else {
+			data, err = g.generateOpenAI(ctx, arguments.Prompt, normalizedSize)
+		}
 	case "openai_chat":
 		data, err = g.generateOpenAIChat(ctx, arguments.Prompt, normalizedSize)
 	case "pollinations":
@@ -295,6 +305,86 @@ func (g *ImageGenerator) generateOpenAI(
 		return g.download(ctx, remoteURL)
 	}
 	return nil, errors.New("image generation provider returned no image")
+}
+
+// generateOpenAIEdit calls /v1/images/edits with a downloaded reference
+// image so the user can transform a picture they just sent.
+func (g *ImageGenerator) generateOpenAIEdit(
+	ctx context.Context,
+	prompt, size, refURL string,
+) ([]byte, error) {
+	var refData []byte
+	var err error
+	if strings.HasPrefix(refURL, "http") {
+		refData, err = g.download(ctx, refURL)
+	} else {
+		refData, err = os.ReadFile(refURL)
+	}
+	if err != nil {
+		return nil, fmt.Errorf("load reference image: %w", err)
+	}
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+	_ = writer.WriteField("model", g.model)
+	_ = writer.WriteField("prompt", prompt)
+	if size != "" {
+		_ = writer.WriteField("size", size)
+	}
+	_ = writer.WriteField("n", "1")
+	part, err := writer.CreateFormFile("image", "reference.png")
+	if err != nil {
+		return nil, err
+	}
+	if _, err := part.Write(refData); err != nil {
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	endpoint := *g.endpoint
+	endpoint.Path = strings.Replace(
+		endpoint.Path, "images/generations", "images/edits", 1,
+	)
+	request, err := http.NewRequestWithContext(
+		ctx,
+		http.MethodPost,
+		endpoint.String(),
+		&body,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("build image edit request: %w", err)
+	}
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	if g.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+g.apiKey)
+	}
+	response, err := g.client.Do(request)
+	if err != nil {
+		return nil, fmt.Errorf("image edit request failed: %w", err)
+	}
+	defer response.Body.Close()
+	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
+		return nil, fmt.Errorf("image edit provider returned HTTP %d", response.StatusCode)
+	}
+	responseLimit := g.maxBytes*2 + 1<<20
+	if responseLimit > 64<<20 {
+		responseLimit = 64 << 20
+	}
+	raw, readErr := readBounded(response.Body, responseLimit)
+	if readErr != nil {
+		return nil, fmt.Errorf("read image edit response: %w", readErr)
+	}
+	var decoded openAIImageResponse
+	if err := json.Unmarshal(raw, &decoded); err != nil || len(decoded.Data) == 0 {
+		return nil, errors.New("image edit provider returned an invalid response")
+	}
+	if encoded := strings.TrimSpace(decoded.Data[0].Base64); encoded != "" {
+		return base64.StdEncoding.DecodeString(encoded)
+	}
+	if remoteURL := strings.TrimSpace(decoded.Data[0].URL); remoteURL != "" {
+		return g.download(ctx, remoteURL)
+	}
+	return nil, errors.New("image edit provider returned no image")
 }
 
 func (g *ImageGenerator) generatePollinations(

@@ -17,6 +17,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	coreonebot "github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
@@ -361,6 +362,43 @@ func (m *MultiAdapter) UploadPrivateFile(
 	}
 	_, err = m.CallFor(ctx, selfID, "upload_private_file", params)
 	return err
+}
+
+// FetchMessageImages returns image references inside a message fetched via
+// get_msg on the account identified by selfID.
+func (m *MultiAdapter) FetchMessageImages(
+	ctx context.Context,
+	selfID, messageID string,
+) ([]string, error) {
+	raw, err := m.CallFor(ctx, selfID, "get_msg", map[string]any{
+		"message_id": messageID,
+	})
+	if err != nil {
+		return nil, err
+	}
+	return extractImageRefs(raw)
+}
+
+// extractImageRefs parses a get_msg payload and returns image references.
+func extractImageRefs(raw any) ([]string, error) {
+	data, err := json.Marshal(raw)
+	if err != nil {
+		return nil, err
+	}
+	var payload struct {
+		Message json.RawMessage `json:"message"`
+	}
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	if len(payload.Message) == 0 {
+		return nil, errors.New("get_msg returned no message")
+	}
+	chain, err := message.ParseOneBot(payload.Message, "", "")
+	if err != nil {
+		return nil, err
+	}
+	return chain.ImageReferences(), nil
 }
 
 // IsFriend reports whether userID is on the friend list of the account

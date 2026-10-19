@@ -15,9 +15,15 @@ import (
 const maxNotesPerChat = 50
 const maxNoteRunes = 2000
 
+type imageNote struct {
+	Key  string `json:"key"`
+	Path string `json:"path"`
+}
+
 type chatEntry struct {
-	NotifyOff bool     `json:"notify_off,omitempty"`
-	Notes     []string `json:"notes,omitempty"`
+	NotifyOff  bool        `json:"notify_off,omitempty"`
+	Notes      []string    `json:"notes,omitempty"`
+	ImageNotes []imageNote `json:"image_notes,omitempty"`
 }
 
 // Store is a small JSON-file-backed per-chat preference store keyed by
@@ -88,6 +94,44 @@ func (s *Store) AddNote(chatType, chatID, text string) error {
 	}
 	e.Notes = append(e.Notes, text)
 	return s.saveLocked()
+}
+
+// AddImageNote remembers an image reference under a name so keyword image
+// generation can reuse it when the prompt mentions that name.
+func (s *Store) AddImageNote(chatType, chatID, name, path string) error {
+	name = strings.TrimSpace(name)
+	path = strings.TrimSpace(path)
+	if name == "" || path == "" {
+		return errors.New("image note is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(chatType, chatID)
+	// Replace an existing note under the same key.
+	for i, n := range e.ImageNotes {
+		if n.Key == name {
+			e.ImageNotes[i].Path = path
+			return s.saveLocked()
+		}
+	}
+	e.ImageNotes = append(e.ImageNotes, imageNote{Key: name, Path: path})
+	return s.saveLocked()
+}
+
+// ImageForPrompt returns the stored image path whose key appears in prompt.
+func (s *Store) ImageForPrompt(chatType, chatID, prompt string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return ""
+	}
+	for _, n := range e.ImageNotes {
+		if n.Key != "" && strings.Contains(prompt, n.Key) {
+			return n.Path
+		}
+	}
+	return ""
 }
 
 // NotesText returns the remembered notes for the chat joined with newlines.
