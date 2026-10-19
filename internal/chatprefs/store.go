@@ -22,6 +22,7 @@ type imageNote struct {
 
 type chatEntry struct {
 	NotifyOff  bool        `json:"notify_off,omitempty"`
+	Persona    string      `json:"persona,omitempty"`
 	Notes      []string    `json:"notes,omitempty"`
 	ImageNotes []imageNote `json:"image_notes,omitempty"`
 }
@@ -79,6 +80,26 @@ func (s *Store) NotifyEnabled(chatType, chatID string) bool {
 	defer s.mu.RUnlock()
 	e := s.data[key(chatType, chatID)]
 	return e == nil || !e.NotifyOff
+}
+
+// SetPersona pins the active persona for the chat; empty restores the
+// binding default.
+func (s *Store) SetPersona(chatType, chatID, persona string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entry(chatType, chatID).Persona = strings.TrimSpace(persona)
+	return s.saveLocked()
+}
+
+// PersonaName returns the chat's pinned persona, or "" for the default.
+func (s *Store) PersonaName(chatType, chatID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return ""
+	}
+	return e.Persona
 }
 
 func (s *Store) AddNote(chatType, chatID, text string) error {

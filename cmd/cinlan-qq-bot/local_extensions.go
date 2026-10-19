@@ -142,6 +142,61 @@ func registerLocalExtensions(
 		},
 	})
 
+	personaModes := map[string]string{
+		"毒舌":   "毒舌女仆",
+		"毒舌女仆": "毒舌女仆",
+		"温柔":   "温柔女仆",
+		"温柔女仆": "温柔女仆",
+		"邻家":   "邻家女孩",
+		"邻家女孩": "邻家女孩",
+		"女友":   "贴心女友",
+		"贴心女友": "贴心女友",
+		"学姐":   "高冷学姐",
+		"高冷学姐": "高冷学姐",
+		"学妹":   "元气学妹",
+		"元气学妹": "元气学妹",
+	}
+	register(command.Definition{
+		Name:        "切换形态",
+		Aliases:     []string{"形态", "persona"},
+		Description: "切换本群人格形态（毒舌/温柔/邻家/女友/学姐/学妹，不带参数看当前）",
+		Permission:  command.PermissionEveryone,
+		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
+			if !isOperator(c) {
+				return command.Result{Handled: true, Reply: "权限不足。"}, nil
+			}
+			arg := strings.TrimSpace(strings.Join(c.Args, " "))
+			if arg == "" || arg == "列表" {
+				current := store.PersonaName(
+					c.Event.MessageType, c.Event.ChatID,
+				)
+				if current == "" {
+					current = "（绑定默认）"
+				}
+				return command.Result{Handled: true, Reply: "当前形态：" + current +
+					"\n可用：毒舌 / 温柔 / 邻家 / 女友 / 学姐 / 学妹\n用法：/切换形态 温柔"}, nil
+			}
+			if arg == "默认" || arg == "恢复" {
+				if err := store.SetPersona(
+					c.Event.MessageType, c.Event.ChatID, "",
+				); err != nil {
+					return command.Result{Handled: true, Reply: "切换失败：" + err.Error()}, nil
+				}
+				return command.Result{Handled: true, Reply: "已恢复绑定默认形态。"}, nil
+			}
+			personaName, ok := personaModes[arg]
+			if !ok {
+				return command.Result{Handled: true, Reply: "没有这个形态哦。可用：毒舌 / 温柔 / 邻家 / 女友 / 学姐 / 学妹 / 默认"}, nil
+			}
+			if err := store.SetPersona(
+				c.Event.MessageType, c.Event.ChatID, personaName,
+			); err != nil {
+				return command.Result{Handled: true, Reply: "切换失败：" + err.Error()}, nil
+			}
+			return command.Result{Handled: true, Reply: "已切换为「" + personaName + "」形态♡"}, nil
+		},
+	})
+
 	logger.Info("chat preference commands registered", "file", cfg.ChatPrefsFile)
 	return nil
 }
