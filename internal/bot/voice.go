@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -11,6 +13,7 @@ import (
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
 
@@ -24,7 +27,11 @@ var voiceMarkerPattern = regexp.MustCompile(
 
 // voiceSynth is the text-to-speech seam; internal/tts providers implement it.
 type voiceSynth interface {
-	Synthesize(ctx context.Context, text, outPath string) error
+	Synthesize(
+		ctx context.Context,
+		text, outPath, voice string,
+		rate float64,
+	) error
 }
 
 const voicePromptNote = `你可以发语音：在回复里嵌入 [[VOICE]]要说或唱的词[[/VOICE]]（最多两段，每段不超过200字，要口语化，可以带语气词、拟声词、唱歌词）。
@@ -123,12 +130,73 @@ func (s *Service) voiceClipSafe(ctx context.Context, clip string) bool {
 	return verdict.Safe
 }
 
+// personaVoice resolves the TTS voice/rate for the active persona so a
+// gentle persona does not suddenly sound like a drill sergeant. Empty
+// values fall back to the provider's configured defaults.
+func (s *Service) personaVoice(state *flowState) (string, float64) {
+	if s.personas == nil || state == nil {
+		return "", 0
+	}
+	var (
+		profile persona.Profile
+		ok      bool
+	)
+	if state.personaName != "" {
+		profile, ok = s.personas.Get(state.personaName)
+	}
+	if !ok {
+		profile, ok = s.personas.Default()
+	}
+	if !ok {
+		return "", 0
+	}
+	return profile.Voice, profile.VoiceRate
+}
+
 func truncateRunes(text string, limit int) string {
 	runes := []rune(text)
 	if len(runes) <= limit {
 		return text
 	}
 	return string(runes[:limit]) + "…"
+}
+
+// voiceQuota is a global daily TTS cap persisted to a JSON file — the
+// aliyun key is pay-per-use, so the bot stops after the day's budget.
+type voiceQuota struct {
+	mu    sync.Mutex
+	path  string
+	limit int
+}
+
+type voiceQuotaFile struct {
+	Date string `json:"date"`
+	Used int    `json:"used"`
+}
+
+// spend returns true when the day's budget still has room and records one
+// synthesis against it.
+func (q *voiceQuota) spend() bool {
+	q.mu.Lock()
+	defer q.mu.Unlock()
+	state := voiceQuotaFile{}
+	if raw, err := os.ReadFile(q.path); err == nil {
+		_ = json.Unmarshal(raw, &state)
+	}
+	today := time.Now().Format("2006-01-02")
+	if state.Date != today {
+		state = voiceQuotaFile{Date: today}
+	}
+	if state.Used >= q.limit {
+		return false
+	}
+	state.Used++
+	raw, err := json.Marshal(state)
+	if err == nil {
+		_ = os.MkdirAll(filepath.Dir(q.path), 0o755)
+		_ = os.WriteFile(q.path, raw, 0o600)
+	}
+	return true
 }
 
 // deliverVoiceClips gates voice output on a per-chat cooldown before
@@ -157,8 +225,10 @@ func (s *Service) deliverVoiceClips(
 		)
 		return
 	}
+	voiceName, voiceRate := s.personaVoice(state)
 	s.sendVoiceClips(
-		ctx, state.selfID, state.chatType, state.chatID, clips,
+		ctx, state.selfID, state.chatType, state.chatID,
+		clips, voiceName, voiceRate,
 	)
 }
 
@@ -169,6 +239,7 @@ func (s *Service) sendVoiceClips(
 	ctx context.Context,
 	selfID, chatType, chatID string,
 	clips []string,
+	voiceName string, voiceRate float64,
 ) {
 	if s.voiceProvider == nil || len(clips) == 0 {
 		return
@@ -189,7 +260,9 @@ func (s *Service) sendVoiceClips(
 			opaqueAttentionID(selfID, chatID, clip),
 		)
 		chain := message.Chain{message.Record(path)}
-		if err := s.voiceProvider.Synthesize(ctx, clip, path); err != nil {
+		if err := s.voiceProvider.Synthesize(
+			ctx, clip, path, voiceName, voiceRate,
+		); err != nil {
 			s.logger.Warn(
 				"voice synthesis failed, falling back to text",
 				"chat", chatID, "error", err.Error(),

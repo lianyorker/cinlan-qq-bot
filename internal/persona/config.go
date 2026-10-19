@@ -22,6 +22,8 @@ type rawFile struct {
 type rawProfile struct {
 	Name               string        `json:"name"`
 	Description        string        `json:"description"`
+	Voice              string        `json:"voice,omitempty"`
+	VoiceRate          float64       `json:"voice_rate,omitempty"`
 	SystemPrompt       string        `json:"system_prompt"`
 	BeginDialogs       []Dialogue    `json:"begin_dialogs"`
 	CustomErrorMessage string        `json:"custom_error_message"`
@@ -65,6 +67,8 @@ func LoadFile(path string) ([]Profile, string, error) {
 		profile := Profile{
 			Name:               strings.TrimSpace(raw.Name),
 			Description:        strings.TrimSpace(raw.Description),
+			Voice:              strings.TrimSpace(raw.Voice),
+			VoiceRate:          raw.VoiceRate,
 			SystemPrompt:       strings.TrimSpace(raw.SystemPrompt),
 			BeginDialogs:       raw.BeginDialogs,
 			CustomErrorMessage: strings.TrimSpace(raw.CustomErrorMessage),

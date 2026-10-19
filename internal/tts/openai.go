@@ -26,14 +26,16 @@ type openaiProvider struct {
 }
 
 type speechRequest struct {
-	Model string `json:"model"`
-	Voice string `json:"voice"`
-	Input string `json:"input"`
+	Model string  `json:"model"`
+	Voice string  `json:"voice"`
+	Input string  `json:"input"`
+	Speed float64 `json:"speed,omitempty"`
 }
 
 func (p *openaiProvider) Synthesize(
 	ctx context.Context,
-	text, outPath string,
+	text, outPath, voice string,
+	rate float64,
 ) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -44,10 +46,15 @@ func (p *openaiProvider) Synthesize(
 		ctx, cancel = context.WithTimeout(ctx, p.timeout)
 		defer cancel()
 	}
+	voiceName := voice
+	if voiceName == "" {
+		voiceName = p.voice
+	}
 	payload, err := json.Marshal(speechRequest{
 		Model: p.model,
-		Voice: p.voice,
+		Voice: voiceName,
 		Input: text,
+		Speed: rate,
 	})
 	if err != nil {
 		return err

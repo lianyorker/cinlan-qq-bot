@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"sync"
@@ -104,6 +105,7 @@ type Service struct {
 	warnStore      *moderation.Store
 	voiceProvider  voiceSynth
 	voiceBudget    voiceBudget
+	voiceQuota     *voiceQuota
 	sessions       *session.Store
 	logger         *slog.Logger
 	stats          counters
@@ -297,6 +299,16 @@ func (s *Service) SetModerationStore(store *moderation.Store) {
 // disables voice replies.
 func (s *Service) SetVoiceProvider(provider voiceSynth) {
 	s.voiceProvider = provider
+	if provider != nil {
+		limit := s.cfg.VoiceDailyLimit
+		if limit <= 0 {
+			limit = 50
+		}
+		s.voiceQuota = &voiceQuota{
+			path:  filepath.Join(s.cfg.VoiceDir, "quota.json"),
+			limit: limit,
+		}
+	}
 }
 
 // EventImageRefs returns image references from the message itself and, when

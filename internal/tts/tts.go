@@ -34,9 +34,15 @@ type Config struct {
 	Timeout time.Duration
 }
 
-// Provider synthesizes text to an audio file.
+// Provider synthesizes text to an audio file. Voice overrides the
+// provider's default voice when non-empty; rate is speech-rate multiplier
+// (0 means provider default).
 type Provider interface {
-	Synthesize(ctx context.Context, text, outPath string) error
+	Synthesize(
+		ctx context.Context,
+		text, outPath, voice string,
+		rate float64,
+	) error
 }
 
 // New builds a provider from config; nil means voice is disabled.
@@ -73,6 +79,25 @@ func New(cfg Config) (Provider, error) {
 			timeout: cfg.Timeout,
 			client:  &http.Client{Timeout: cfg.Timeout},
 		}, nil
+	case "dashscope":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf("tts dashscope mode needs DASHSCOPE_API_KEY")
+		}
+		voice := strings.TrimSpace(cfg.Voice)
+		if voice == "" || strings.HasPrefix(voice, "zh-CN-") {
+			voice = "zhichu"
+		}
+		model := strings.TrimSpace(cfg.Model)
+		if model == "" {
+			model = "sambert-zhichu-v1"
+		}
+		return &dashProvider{
+			apiKey:  cfg.APIKey,
+			baseURL: cfg.APIURL,
+			model:   model,
+			voice:   voice,
+			timeout: cfg.Timeout,
+		}, nil
 	case "command":
 		if strings.TrimSpace(cfg.Command) == "" {
 			return nil, fmt.Errorf("tts command mode needs a command template")
@@ -93,7 +118,8 @@ type commandProvider struct {
 
 func (p *commandProvider) Synthesize(
 	ctx context.Context,
-	text, outPath string,
+	text, outPath, _voice string,
+	_rate float64,
 ) error {
 	if p.timeout > 0 {
 		var cancel context.CancelFunc

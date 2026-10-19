@@ -147,17 +147,18 @@ type Config struct {
 	ImageTimeout   time.Duration
 	ImageRetention time.Duration
 
-	VoiceMode     string
-	VoiceName     string
-	VoiceAPIURL   string
-	VoiceAPIKey   string
-	VoiceModel    string
-	VoiceCommand  string
-	VoiceDir      string
-	VoiceMaxRunes int
-	VoiceCooldown time.Duration
-	VoiceTimeout  time.Duration
-	ImageEnhance  bool
+	VoiceMode       string
+	VoiceName       string
+	VoiceAPIURL     string
+	VoiceAPIKey     string
+	VoiceModel      string
+	VoiceCommand    string
+	VoiceDir        string
+	VoiceMaxRunes   int
+	VoiceCooldown   time.Duration
+	VoiceTimeout    time.Duration
+	VoiceDailyLimit int
+	ImageEnhance    bool
 
 	WebScreenshotEnabled      bool
 	WebScreenshotBrowserPath  string
@@ -369,6 +370,7 @@ func Load() (Config, error) {
 	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)
 	cfg.VoiceCooldown = parseDuration("VOICE_COOLDOWN", 45*time.Second, true, &errs)
 	cfg.VoiceTimeout = parseDuration("VOICE_TIMEOUT", 15*time.Second, true, &errs)
+	cfg.VoiceDailyLimit = parseInt("VOICE_DAILY_LIMIT", 50, 0, &errs)
 	cfg.ImageEnhance = parseBool("IMAGE_ENHANCE_PROMPT", true, &errs)
 
 	cfg.WebScreenshotEnabled = parseBool("WEB_SCREENSHOT_ENABLED", false, &errs)

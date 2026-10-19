@@ -39,7 +39,8 @@ type edgeProvider struct {
 // Synthesize renders text to an mp3 file at outPath.
 func (p *edgeProvider) Synthesize(
 	ctx context.Context,
-	text, outPath string,
+	text, outPath, voice string,
+	rate float64,
 ) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -95,10 +96,18 @@ func (p *edgeProvider) Synthesize(
 	}
 	defer conn.Close()
 
+	voiceName := voice
+	if voiceName == "" {
+		voiceName = p.voice
+	}
+	ratePercent := p.rate
+	if rate > 0.2 && rate <= 4.0 {
+		ratePercent = fmt.Sprintf("%+.0f%%", (rate-1)*100)
+	}
 	if err := p.writeText(conn, speechConfigMessage()); err != nil {
 		return err
 	}
-	if err := p.writeText(conn, ssmlMessage(connID, p.voice, p.rate, p.pitch, text)); err != nil {
+	if err := p.writeText(conn, ssmlMessage(connID, voiceName, ratePercent, p.pitch, text)); err != nil {
 		return err
 	}
 

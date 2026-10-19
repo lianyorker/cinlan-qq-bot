@@ -28,6 +28,8 @@ type RoutingScope struct {
 type Profile struct {
 	Name               string        `json:"name"`
 	Description        string        `json:"description,omitempty"`
+	Voice              string        `json:"voice,omitempty"`
+	VoiceRate          float64       `json:"voice_rate,omitempty"`
 	SystemPrompt       string        `json:"system_prompt,omitempty"`
 	BeginDialogs       []Dialogue    `json:"begin_dialogs,omitempty"`
 	CustomErrorMessage string        `json:"custom_error_message,omitempty"`
