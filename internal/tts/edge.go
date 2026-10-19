@@ -22,11 +22,11 @@ import (
 // derived from the trusted client token plus a 5-minute-granular timestamp.
 const (
 	edgeTrustedClientToken = "6A5AA1D4EAFF4E9FB37E23D68491D6F4"
-	edgeVoiceURL           = "wss://speech.platform.bing.com/consumer/speech/synthesize/readaloud/edge/v1"
-	edgeGECVersion         = "1-134.0.3124.85"
+	edgeVoiceURL           = "wss://api.msedgeservices.com/tts/cognitiveservices/websocket/v1"
+	edgeGECVersion         = "1-130.0.2849.68"
 	edgeUserAgent          = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) " +
 		"AppleWebKit/537.36 (KHTML, like Gecko) " +
-		"Chrome/134.0.0.0 Safari/537.36 Edg/134.0.0.0"
+		"Chrome/130.0.0.0 Safari/537.36 Edg/130.0.0.0"
 )
 
 type edgeProvider struct {

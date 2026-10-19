@@ -2,12 +2,14 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"regexp"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
@@ -72,6 +74,61 @@ func (v *voiceBudget) allowVoice(key string, cooldown time.Duration) bool {
 	}
 	v.last[key] = time.Now()
 	return true
+}
+
+// voiceObviousEroticPattern catches voice requests that are clearly sexual —
+// these are denied without spending an LLM call.
+var voiceObviousEroticPattern = regexp.MustCompile(
+	`(?i)喘|娇喘|叫床|呻吟|发情|舔耳|吹气|色气|娇媚|ASMR|asmr|媚|淫|裸|口活|调教|主人.*舒服|亲我|吻我`,
+)
+
+const voiceSafetyPrompt = `你是语音内容安全审核员。判断下面这段将被TTS合成的语音文本是否包含色情、情色暗示、娇喘呻吟、NSFW或不适合群聊播放的内容。
+只输出JSON：{"safe":true|false,"reason":"一句话"}
+正常说话、唱歌、撒娇、情绪表达都算安全；涉及性暗示、喘息呻吟、低俗内容才判unsafe。宁可误判为safe也不冤枉正常内容。`
+
+type voiceSafetyVerdict struct {
+	Safe   bool   `json:"safe"`
+	Reason string `json:"reason"`
+}
+
+// voiceClipSafe lets the model judge whether a voice clip is safe to
+// synthesize — erotic panting/moaning requests get dropped here.
+func (s *Service) voiceClipSafe(ctx context.Context, clip string) bool {
+	if voiceObviousEroticPattern.MatchString(clip) {
+		return false
+	}
+	if s.agent == nil {
+		return true
+	}
+	decisionCtx, cancel := context.WithTimeout(ctx, s.cfg.AttentionTimeout)
+	defer cancel()
+	response, err := s.agent.Reply(decisionCtx, domain.AgentRequest{
+		RequestID:     "voice-safety:" + opaqueAttentionID(clip),
+		SessionID:     "maintenance:voice-safety",
+		Text:          clip,
+		RestrictTools: true,
+		SystemPrompt:  voiceSafetyPrompt,
+	})
+	if err != nil {
+		return true // judge unavailable — allow, cooldown keeps volume low
+	}
+	var verdict voiceSafetyVerdict
+	raw := strings.TrimSpace(response.Reply)
+	start := strings.Index(raw, "{")
+	end := strings.LastIndex(raw, "}")
+	if start < 0 || end <= start ||
+		json.Unmarshal([]byte(raw[start:end+1]), &verdict) != nil {
+		return true
+	}
+	return verdict.Safe
+}
+
+func truncateRunes(text string, limit int) string {
+	runes := []rune(text)
+	if len(runes) <= limit {
+		return text
+	}
+	return string(runes[:limit]) + "…"
 }
 
 // deliverVoiceClips gates voice output on a per-chat cooldown before
