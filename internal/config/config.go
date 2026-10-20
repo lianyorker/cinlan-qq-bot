@@ -107,14 +107,16 @@ type Config struct {
 	OneBotAccountsFile string
 	OneBotAutoAccept   bool
 
-	FriendWelcomeText string
-	FriendFilePath    string
-	AdminUserIDs      []string
-	ChatPrefsFile     string
-	AffinityFile      string
-	IQChartAPIBase    string
-	IQChartInterval   time.Duration
-	IQChartFontPath   string
+	FriendWelcomeText  string
+	FriendFilePath     string
+	GroupWelcomeImage  string
+	GroupWelcomeGroups []string
+	AdminUserIDs       []string
+	ChatPrefsFile      string
+	AffinityFile       string
+	IQChartAPIBase     string
+	IQChartInterval    time.Duration
+	IQChartFontPath    string
 
 	GroupAllowlist   Allowlist
 	PrivateAllowlist Allowlist
@@ -256,6 +258,8 @@ func Load() (Config, error) {
 		OneBotAutoAccept:   parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
 		FriendWelcomeText:  envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
 		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
+		GroupWelcomeImage:  envOrAllowEmpty("GROUP_WELCOME_IMAGE", ""),
+		GroupWelcomeGroups: parseList(envOrAllowEmpty("GROUP_WELCOME_GROUPS", "")),
 		ChatPrefsFile:      envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
 		AffinityFile:       envOr("AFFINITY_FILE", "data/affinity.json"),
 		IQChartAPIBase: envOr(

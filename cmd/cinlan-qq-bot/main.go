@@ -267,6 +267,11 @@ func main() {
 			oneBotAdapter.AutoAcceptFriend = cfg.OneBotAutoAccept
 			oneBotAdapter.FriendWelcomeText = cfg.FriendWelcomeText
 			oneBotAdapter.FriendFilePath = cfg.FriendFilePath
+			oneBotAdapter.GroupWelcomeImage = cfg.GroupWelcomeImage
+			oneBotAdapter.GroupWelcomeGroups = make(map[string]bool, len(cfg.GroupWelcomeGroups))
+			for _, groupID := range cfg.GroupWelcomeGroups {
+				oneBotAdapter.GroupWelcomeGroups[groupID] = true
+			}
 			qqAdapter = oneBotAdapter
 		}
 	default:

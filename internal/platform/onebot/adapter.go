@@ -26,6 +26,10 @@ type Adapter struct {
 	// requested resource file).
 	FriendWelcomeText string
 	FriendFilePath    string
+	// GroupWelcomeImage / GroupWelcomeGroups deliver an at-mention plus a
+	// welcome image when a member joins a listed group.
+	GroupWelcomeImage  string
+	GroupWelcomeGroups map[string]bool
 }
 
 func NewAdapter(client *onebot.Client, logger *slog.Logger) *Adapter {
@@ -76,6 +80,16 @@ func (a *Adapter) Run(ctx context.Context) error {
 			if event.PostType == "notice" && event.NoticeType == "friend_add" {
 				a.logger.Info("friend_add notice", "user_id", event.UserID.String())
 				a.deliverFriendWelcome(ctx, event.UserID.String())
+				continue
+			}
+			if event.PostType == "notice" && event.NoticeType == "group_increase" {
+				groupID := event.GroupID.String()
+				userID := event.UserID.String()
+				if a.GroupWelcomeGroups[groupID] {
+					a.logger.Info("group_increase notice",
+						"group_id", groupID, "user_id", userID)
+					a.deliverGroupWelcome(ctx, groupID, userID)
+				}
 				continue
 			}
 			converted, err := convertEvent(event)
@@ -273,6 +287,28 @@ func (w *friendWelcomeSent) mark(userID string) bool {
 	}
 	w.last[userID] = time.Now()
 	return true
+}
+
+var groupWelcomeRecent friendWelcomeSent
+
+// deliverGroupWelcome sends an at-mention and the configured welcome image to
+// a group that just gained a member. Deduped per member like friend welcomes.
+func (a *Adapter) deliverGroupWelcome(ctx context.Context, groupID, userID string) {
+	path := strings.TrimSpace(a.GroupWelcomeImage)
+	if path == "" || !groupWelcomeRecent.mark(groupID+":"+userID) {
+		return
+	}
+	chain := message.Chain{
+		message.At(userID),
+		message.Image(path),
+	}
+	if err := a.client.SendGroupMessage(ctx, groupID, chain); err != nil {
+		a.logger.Warn("failed to send group welcome",
+			"group_id", groupID, "user_id", userID, "error", err.Error())
+		return
+	}
+	a.logger.Info("group welcome sent",
+		"group_id", groupID, "user_id", userID)
 }
 
 func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {
