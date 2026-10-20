@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"net/url"
 	"path"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -584,12 +585,31 @@ func toSegments(chain message.Chain) []MessageSegment {
 		for key, value := range component.Data {
 			data[key] = normalizeSegmentValue(key, value)
 		}
+		if component.Type == message.TypeImage {
+			if file, ok := data["file"].(string); ok {
+				data["file"] = absoluteLocalPath(file)
+			}
+		}
 		segments = append(segments, MessageSegment{
 			Type: string(component.Type),
 			Data: data,
 		})
 	}
 	return segments
+}
+
+// absoluteLocalPath resolves a bare relative file path so NapCat stores an
+// absolute file token — a relative one would later resolve against the QQ
+// profile dir and produce dead links when the same image is re-sent.
+func absoluteLocalPath(ref string) string {
+	lower := strings.ToLower(strings.TrimSpace(ref))
+	if lower == "" || strings.Contains(lower, "://") || filepath.IsAbs(ref) {
+		return ref
+	}
+	if abs, err := filepath.Abs(ref); err == nil {
+		return abs
+	}
+	return ref
 }
 
 func normalizeSegmentValue(key string, value any) any {
