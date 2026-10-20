@@ -922,11 +922,22 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		chain = message.Chain{message.Text(state.reply)}
 	}
 	if isTextReplyChain(chain) {
-		parts := expandReplyParts(
-			planReplyParts(state.reply),
-			s.cfg.MaxReplyRunes,
-			s.cfg.MaxReplyChunks,
-		)
+		var parts []string
+		if s.cfg.MaxReplyChunks <= 1 {
+			// Splitting disabled — deliver everything as one message;
+			// [[NEXT]] degrades to a line break rather than truncating.
+			if single := strings.TrimSpace(strings.ReplaceAll(
+				state.reply, naturalReplyBreak, "\n",
+			)); single != "" {
+				parts = []string{single}
+			}
+		} else {
+			parts = expandReplyParts(
+				planReplyParts(state.reply),
+				s.cfg.MaxReplyRunes,
+				s.cfg.MaxReplyChunks,
+			)
+		}
 		if state.personaName != "" {
 			filtered := parts[:0]
 			for _, part := range parts {
