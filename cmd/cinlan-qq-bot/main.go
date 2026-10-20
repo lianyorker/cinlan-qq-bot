@@ -13,6 +13,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/affinity"
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/bot"
@@ -316,6 +317,12 @@ func main() {
 		logger.Warn("moderation store unavailable", "error", warnErr)
 	} else {
 		botService.SetModerationStore(warnStore)
+	}
+	if affinityStore, affinityErr := affinity.Load(cfg.AffinityFile); affinityErr != nil {
+		logger.Warn("affinity store unavailable", "error", affinityErr)
+	} else {
+		botService.SetAffinity(affinityStore)
+		logger.Info("affinity tracking enabled", "file", cfg.AffinityFile)
 	}
 	if voiceProvider, voiceErr := tts.New(tts.Config{
 		Mode:    cfg.VoiceMode,

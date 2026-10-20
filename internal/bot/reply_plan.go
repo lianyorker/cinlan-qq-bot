@@ -80,10 +80,13 @@ func planReplyParts(reply string) []string {
 	if reply == "" {
 		return nil
 	}
-	rawParts := strings.Split(reply, naturalReplyBreak)
-	parts := make([]string, 0, min(len(rawParts), 2))
-	for _, raw := range rawParts {
-		if part := strings.TrimSpace(raw); part != "" {
+	var raw []string
+	for _, segment := range strings.Split(reply, naturalReplyBreak) {
+		raw = append(raw, splitOnBlankLines(segment)...)
+	}
+	parts := make([]string, 0, len(raw))
+	for _, segment := range raw {
+		if part := strings.TrimSpace(segment); part != "" {
 			parts = append(parts, part)
 		}
 	}
@@ -91,6 +94,39 @@ func planReplyParts(reply string) []string {
 		return parts
 	}
 	return []string{parts[0], strings.Join(parts[1:], "\n")}
+}
+
+// splitOnBlankLines splits text at paragraph boundaries (blank lines) so a
+// multi-thought reply becomes multiple messages, like a real person's send
+// cadence. Splits are skipped inside fenced code blocks where blank lines
+// are meaningful content.
+func splitOnBlankLines(text string) []string {
+	var (
+		parts   []string
+		start   int
+		inFence bool
+		lineBeg = 0
+	)
+	lines := strings.SplitAfter(text, "\n")
+	for _, line := range lines {
+		trimmed := strings.TrimRight(line, " \t\r\n")
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			inFence = !inFence
+		}
+		if !inFence && trimmed == "" && lineBeg > start {
+			if part := text[start:lineBeg]; strings.TrimSpace(part) != "" {
+				parts = append(parts, part)
+			}
+			start = lineBeg + len(line)
+		} else if !inFence && trimmed == "" {
+			start = lineBeg + len(line)
+		}
+		lineBeg += len(line)
+	}
+	if rest := text[start:]; strings.TrimSpace(rest) != "" {
+		parts = append(parts, rest)
+	}
+	return parts
 }
 
 var echoedMarkerPattern = regexp.MustCompile(

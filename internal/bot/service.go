@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/affinity"
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
@@ -118,6 +119,7 @@ type Service struct {
 	personas       *persona.Registry
 	bindings       *binding.Registry
 	chatPrefs      *chatprefs.Store
+	affinity       *affinity.Store
 	memeDir        string
 	keywordTools   []keywordTool
 
@@ -246,6 +248,16 @@ func (s *Service) SetChatPrefs(store *chatprefs.Store) {
 
 func (s *Service) ChatPrefs() *chatprefs.Store {
 	return s.chatPrefs
+}
+
+// SetAffinity wires the per-user intimacy score store so the pipeline can
+// show the persona how close it is to each sender.
+func (s *Service) SetAffinity(store *affinity.Store) {
+	s.affinity = store
+}
+
+func (s *Service) Affinity() *affinity.Store {
+	return s.affinity
 }
 
 // SetMemeDir enables the per-chat meme pool under dir.
@@ -647,8 +659,19 @@ func (s *Service) handleCommand(
 	case "/resume", "/恢复":
 		s.sessions.SetHandoff(sessionID, false)
 		reply = s.cfg.ResumeReply
+	case "/亲密度", "/affinity":
+		if s.affinity == nil {
+			reply = "亲密度功能未开启。"
+			break
+		}
+		score := s.affinity.Score(selfID, userID)
+		level, percent := affinity.Level(score), affinity.Percent(score)
+		if chatType == platform.ChatPrivate {
+			level, percent = affinity.LevelIntimate, 100
+		}
+		reply = fmt.Sprintf("你和我的亲密度：%s（%d/100）", level, percent)
 	case "/help", "/帮助":
-		reply = "支持命令：/清空、/人工、/恢复、/帮助"
+		reply = "支持命令：/清空、/人工、/恢复、/帮助、/亲密度"
 	default:
 		return false
 	}
@@ -689,7 +712,7 @@ func (s *Service) sendTextParts(
 			return false
 		}
 		quote := s.cfg.QuoteReply && index == 0
-		chain := message.Chain{message.Text(part)}
+		chain := message.Chain{message.Text(normalizeHTMLBreaks(part))}
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
 			chain = append(message.Chain{message.AtNamed(userID, senderName)}, chain...)
@@ -743,7 +766,7 @@ func (s *Service) sendChains(
 			}
 		}
 		quote := s.cfg.QuoteReply && index == 0
-		outbound := chain.Clone()
+		outbound := normalizeChainHTMLBreaks(chain.Clone())
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
 			outbound = append(
@@ -799,7 +822,7 @@ func (s *Service) sendChain(
 		s.logger.Error("failed to send reply", "reason", "sender_not_configured")
 		return false
 	}
-	outbound := chain.Clone()
+	outbound := normalizeChainHTMLBreaks(chain.Clone())
 	if s.cfg.GroupAtSender && chatType == platform.ChatGroup && !s.cfg.QuoteReply {
 		outbound = append(message.Chain{message.AtNamed(userID, senderName)}, outbound...)
 	}
@@ -824,6 +847,30 @@ func (s *Service) sendChain(
 	}
 	s.stats.replied.Add(1)
 	return true
+}
+
+// htmlBreakPattern matches literal <br> variants the model sometimes emits.
+// QQ does not render HTML, so they would otherwise leak into the chat as
+// visible text instead of a line break.
+var htmlBreakPattern = regexp.MustCompile(`(?i)<br\s*/?>`)
+
+func normalizeHTMLBreaks(text string) string {
+	if !strings.Contains(text, "<") {
+		return text
+	}
+	return htmlBreakPattern.ReplaceAllString(text, "\n")
+}
+
+func normalizeChainHTMLBreaks(chain message.Chain) message.Chain {
+	for index, component := range chain {
+		if component.Type != message.TypeText {
+			continue
+		}
+		if text, ok := component.Data["text"].(string); ok {
+			chain[index].Data["text"] = normalizeHTMLBreaks(text)
+		}
+	}
+	return chain
 }
 
 func (s *Service) replyPartDelay(previous string) time.Duration {

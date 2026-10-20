@@ -8,9 +8,11 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/affinity"
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
@@ -31,40 +33,41 @@ var outboundLinkPattern = regexp.MustCompile(
 )
 
 type flowState struct {
-	event          platform.Event
-	platform       string
-	chatType       string
-	chatID         string
-	groupID        string
-	userID         string
-	selfID         string
-	messageID      string
-	text           string
-	promptText     string
-	eventMentioned bool
-	sessionID      string
-	rateLimitID    string
-	history        []domain.ChatMessage
-	summary        string
-	memory         string
-	personaName    string
-	providerName   string
-	allowedTools   []string
-	allowedSkills  []string
-	knowledgeBases []string
-	mcpServers     []string
-	replyPolicy    binding.ReplyPolicy
-	moderation     *binding.ModerationPolicy
-	learning       bool
-	allowLinks     bool
-	errorReply     string
-	response       domain.AgentResponse
-	reply          string
-	outbound       message.Chain
-	agentErr       error
-	ignored        bool
-	pluginHandled  bool
-	securityDenied bool
+	event           platform.Event
+	platform        string
+	chatType        string
+	chatID          string
+	groupID         string
+	userID          string
+	selfID          string
+	messageID       string
+	text            string
+	promptText      string
+	eventMentioned  bool
+	sessionID       string
+	rateLimitID     string
+	history         []domain.ChatMessage
+	summary         string
+	memory          string
+	personaName     string
+	providerName    string
+	allowedTools    []string
+	allowedSkills   []string
+	knowledgeBases  []string
+	mcpServers      []string
+	replyPolicy     binding.ReplyPolicy
+	moderation      *binding.ModerationPolicy
+	learning        bool
+	allowLinks      bool
+	affinityPrompts map[string]string
+	errorReply      string
+	response        domain.AgentResponse
+	reply           string
+	outbound        message.Chain
+	agentErr        error
+	ignored         bool
+	pluginHandled   bool
+	securityDenied  bool
 }
 
 func (s *Service) newPipeline() *pipeline.Pipeline {
@@ -614,6 +617,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if ok {
 			request.SystemPrompt = profile.SystemPrompt
 			request.History = prependBeginDialogs(profile.BeginDialogs, request.History)
+			state.affinityPrompts = profile.AffinityPrompts
 			if profile.CustomErrorMessage != "" {
 				state.errorReply = profile.CustomErrorMessage
 			}
@@ -632,23 +636,60 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if senderName == "" {
 		senderName = state.userID
 	}
-	roleLabel := "群员"
-	switch senderRole {
-	case "owner":
-		roleLabel = "群主"
-	case "admin":
-		roleLabel = "管理员"
+	if state.chatType == platform.ChatPrivate {
+		request.SystemPrompt += fmt.Sprintf(
+			"\n\n本条消息发送者：%s（QQ %s，私聊好友）。",
+			senderName, state.userID,
+		)
+		request.SystemPrompt += `现在是私聊：只有你和对方两个人，没有旁人围观，别拿"群里有人""人多不好意思"之类的理由拒绝对方。能通过白名单私聊你的都是信得过的朋友，无伤大雅的玩笑、亲昵称呼、撒娇要求可以顺着满足，放轻松一点。`
+	} else {
+		roleLabel := "群员"
+		switch senderRole {
+		case "owner":
+			roleLabel = "群主"
+		case "admin":
+			roleLabel = "管理员"
+		}
+		request.SystemPrompt += fmt.Sprintf(
+			"\n\n本条消息发送者：%s（QQ %s，群身份：%s）。",
+			senderName, state.userID, roleLabel,
+		)
 	}
-	request.SystemPrompt += fmt.Sprintf(
-		"\n\n本条消息发送者：%s（QQ %s，群身份：%s）。",
-		senderName, state.userID, roleLabel,
-	)
 	if senderRole == "admin" || senderRole == "owner" ||
-		state.replyPolicy.AllowsUser(state.userID) {
+		state.replyPolicy.AllowsUser(state.userID) ||
+		state.chatType == platform.ChatPrivate {
 		request.SystemPrompt += "对他保持尊重和耐心，禁止毒舌、嘲讽、阴阳怪气或人身攻击，正常认真解答。"
+	}
+	if s.affinity != nil {
+		score := s.affinity.Score(state.selfID, state.userID)
+		level := affinity.Level(score)
+		percent := affinity.Percent(score)
+		if state.chatType == platform.ChatPrivate ||
+			senderRole == "admin" || senderRole == "owner" ||
+			state.replyPolicy.AllowsUser(state.userID) {
+			level = affinity.LevelIntimate
+			percent = 100
+		}
+		hint := ""
+		if state.affinityPrompts != nil {
+			hint = strings.TrimSpace(state.affinityPrompts[level])
+		}
+		if hint == "" {
+			hint = affinity.GenericHint(level)
+		}
+		request.SystemPrompt += fmt.Sprintf(
+			"\n\n对方和你的亲密度：%s（%d/100）。%s对方直接问起你们之间的亲密度或好感度时，如实按这个数值回答。",
+			level, percent, hint,
+		)
+		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
 	}
 	if s.voiceProvider != nil {
 		request.SystemPrompt += "\n\n" + voicePromptNote
+		if state.chatType == platform.ChatPrivate ||
+			senderRole == "admin" || senderRole == "owner" ||
+			state.replyPolicy.AllowsUser(state.userID) {
+			request.SystemPrompt += "\n" + voicePrivilegedRequestNote
+		}
 	}
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
@@ -875,6 +916,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	}
 	var voiceClips []voiceClip
 	state.reply, voiceClips = extractVoiceMarkers(state.reply)
+	if s.affinity != nil {
+		state.reply = s.extractAffinityDelta(state)
+	}
 	chain := state.outbound
 	if chain.Empty() {
 		chain = message.Chain{message.Text(state.reply)}
@@ -966,8 +1010,42 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	return nil
 }
 
+// affinityMarkerPattern matches the model's self-judged intimacy adjustment
+// tag, e.g. [[AFFINITY:+2]] or [[AFFINITY:-1]]. It is stripped before send.
+var affinityMarkerPattern = regexp.MustCompile(
+	`\[\[AFFINITY:([+-]?\d{1,2})\]\]\s*`,
+)
+
+// extractAffinityDelta removes affinity markers from the reply and applies
+// the signed delta (clamped to ±5) to the sender's score.
+func (s *Service) extractAffinityDelta(state *flowState) string {
+	matches := affinityMarkerPattern.FindAllStringSubmatch(state.reply, -1)
+	if len(matches) == 0 {
+		return state.reply
+	}
+	if raw := matches[len(matches)-1][1]; raw != "" {
+		if delta, err := strconv.Atoi(raw); err == nil {
+			if delta > 5 {
+				delta = 5
+			}
+			if delta < -5 {
+				delta = -5
+			}
+			if delta != 0 {
+				s.affinity.Add(state.selfID, state.userID, delta)
+			}
+		}
+	}
+	return strings.TrimSpace(
+		affinityMarkerPattern.ReplaceAllString(state.reply, ""),
+	)
+}
+
 func (s *Service) recordExchange(ctx context.Context, state *flowState) {
 	s.sessions.AddExchange(state.sessionID, state.promptText, state.reply)
+	if s.affinity != nil {
+		s.affinity.Add(state.selfID, state.userID, 1)
+	}
 	s.scheduleCompression(ctx, state)
 }
 

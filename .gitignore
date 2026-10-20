@@ -26,3 +26,7 @@ runtime/loader/target/
 
 onebot11_*.json
 *_tmp.*
+
+bot_new
+new-persona-renqi.json
+affinity-prompts-patch.json

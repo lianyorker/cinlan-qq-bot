@@ -26,15 +26,16 @@ type RoutingScope struct {
 }
 
 type Profile struct {
-	Name               string        `json:"name"`
-	Description        string        `json:"description,omitempty"`
-	Voice              string        `json:"voice,omitempty"`
-	VoiceRate          float64       `json:"voice_rate,omitempty"`
-	SystemPrompt       string        `json:"system_prompt,omitempty"`
-	BeginDialogs       []Dialogue    `json:"begin_dialogs,omitempty"`
-	CustomErrorMessage string        `json:"custom_error_message,omitempty"`
-	RoutingScope       *RoutingScope `json:"routing_scope,omitempty"`
-	Default            bool          `json:"default,omitempty"`
+	Name               string            `json:"name"`
+	Description        string            `json:"description,omitempty"`
+	Voice              string            `json:"voice,omitempty"`
+	VoiceRate          float64           `json:"voice_rate,omitempty"`
+	SystemPrompt       string            `json:"system_prompt,omitempty"`
+	BeginDialogs       []Dialogue        `json:"begin_dialogs,omitempty"`
+	CustomErrorMessage string            `json:"custom_error_message,omitempty"`
+	RoutingScope       *RoutingScope     `json:"routing_scope,omitempty"`
+	AffinityPrompts    map[string]string `json:"affinity_prompts,omitempty"`
+	Default            bool              `json:"default,omitempty"`
 }
 
 type Registry struct {
@@ -330,6 +331,13 @@ func normalizeRoutingValues(name, field string, values []string, limit int) ([]s
 
 func cloneProfile(profile Profile) Profile {
 	profile.BeginDialogs = append([]Dialogue(nil), profile.BeginDialogs...)
+	if profile.AffinityPrompts != nil {
+		prompts := make(map[string]string, len(profile.AffinityPrompts))
+		for key, value := range profile.AffinityPrompts {
+			prompts[key] = value
+		}
+		profile.AffinityPrompts = prompts
+	}
 	if profile.RoutingScope != nil {
 		scope := *profile.RoutingScope
 		scope.IncludeTopics = append([]string(nil), scope.IncludeTopics...)

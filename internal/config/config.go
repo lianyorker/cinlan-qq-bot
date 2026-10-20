@@ -111,6 +111,7 @@ type Config struct {
 	FriendFilePath    string
 	AdminUserIDs      []string
 	ChatPrefsFile     string
+	AffinityFile      string
 	IQChartAPIBase    string
 	IQChartInterval   time.Duration
 	IQChartFontPath   string
@@ -256,6 +257,7 @@ func Load() (Config, error) {
 		FriendWelcomeText:  envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
 		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
 		ChatPrefsFile:      envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
+		AffinityFile:       envOr("AFFINITY_FILE", "data/affinity.json"),
 		IQChartAPIBase: envOr(
 			"IQ_CHART_API_BASE",
 			"https://codexradar.com/api/radar-bench-score",

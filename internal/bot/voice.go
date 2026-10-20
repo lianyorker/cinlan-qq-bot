@@ -53,6 +53,13 @@ const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOI
 - 对方连续反复要求唱歌/语音时可以按你的人设傲娇拒绝，不必每次都唱。
 - 平时闲聊不要随便用语音，保持稀罕感。`
 
+// voicePrivilegedRequestNote is only injected for trusted senders (private
+// whitelist chats, group admins/owners, binding allowed_users): it tells the
+// model explicit "say this for me" requests must actually be spoken, not
+// faked in text. Kept out of the shared note so regular group members
+// cannot command voice lines.
+const voicePrivilegedRequestNote = `- 对方明确要求听语音（"叫声xx给我听""用语音说"之类）时，要用 [[VOICE]] 把那句台词真的念出来，不能只在文字里假装说过。`
+
 // voiceClipMetaPatterns strip leftover stage directions like （温柔地唱）
 // or meta sentences like "这是一段设计的音色" at the start of a clip
 // before synthesis.
