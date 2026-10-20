@@ -110,6 +110,20 @@ func registerLocalExtensions(
 				return command.Result{Handled: true, Reply: "用法：/记住 要记住的内容"}, nil
 			}
 			text := strings.Join(c.Args, " ")
+			// An attached or quoted image makes the text just a label —
+			// review is only needed for standalone text notes.
+			refs := service.EventImageRefs(
+				ctx, c.Event.SelfID, c.Event.Chain,
+			)
+			if len(refs) == 0 {
+				keep, reason, err := service.ReviewNote(ctx, text)
+				switch {
+				case err != nil:
+					return command.Result{Handled: true, Reply: "审核走神了，这条先不记：" + err.Error()}, nil
+				case !keep:
+					return command.Result{Handled: true, Reply: "这个没啥好记的：" + reason}, nil
+				}
+			}
 			if err := store.AddNote(
 				c.Event.MessageType,
 				c.Event.ChatID,
@@ -117,10 +131,7 @@ func registerLocalExtensions(
 			); err != nil {
 				return command.Result{Handled: true, Reply: "没记住：" + err.Error()}, nil
 			}
-			// An attached or quoted image becomes a named reference for 生图.
-			if refs := service.EventImageRefs(
-				ctx, c.Event.SelfID, c.Event.Chain,
-			); len(refs) > 0 {
+			if len(refs) > 0 {
 				name := c.Args[0]
 				saved, saveErr := saveImageRef(
 					refs[0],
@@ -143,67 +154,16 @@ func registerLocalExtensions(
 		},
 	})
 
-	personaModes := map[string]string{
-		"毒舌":   "毒舌女仆",
-		"毒舌女仆": "毒舌女仆",
-		"温柔":   "温柔女仆",
-		"温柔女仆": "温柔女仆",
-		"邻家":   "邻家女孩",
-		"邻家女孩": "邻家女孩",
-		"女友":   "贴心女友",
-		"贴心女友": "贴心女友",
-		"学姐":   "高冷学姐",
-		"高冷学姐": "高冷学姐",
-		"学妹":   "元气学妹",
-		"元气学妹": "元气学妹",
-	}
+	// Runtime persona switching is gone — each chat keeps the single
+	// persona from its binding. This stub remains so attempts get a
+	// deterministic reply instead of the model playing along.
 	register(command.Definition{
 		Name:        "切换",
 		Aliases:     []string{"形态", "切换形态", "persona"},
-		Description: "切换本群人格（/切换 毒舌·温柔·邻家·女友·学姐·学妹，/切换 list 看全部）",
+		Description: "人格已固定，不可切换",
 		Permission:  command.PermissionEveryone,
 		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
-			if !isOperator(c) {
-				return command.Result{Handled: true, Reply: "权限不足。"}, nil
-			}
-			arg := strings.TrimSpace(strings.Join(c.Args, " "))
-			if arg == "" || arg == "list" || arg == "列表" {
-				// Listing personas exposes the prompt roster — restrict it to
-				// whitelisted users in private chat only.
-				if c.Event.MessageType != platform.ChatPrivate ||
-					!isOperator(c) {
-					return command.Result{Handled: true, Reply: "这个命令只有白名单用户私聊能用。"}, nil
-				}
-				current := store.PersonaName(
-					c.Event.MessageType, c.Event.ChatID,
-				)
-				if current == "" {
-					current = "（绑定默认）"
-				}
-				return command.Result{Handled: true, Reply: "当前人格：" + current +
-					"\n可用：毒舌 / 温柔 / 邻家 / 女友 / 学姐 / 学妹\n用法：/切换 温柔"}, nil
-			}
-			if !isOperator(c) {
-				return command.Result{Handled: true, Reply: "权限不足。"}, nil
-			}
-			if arg == "默认" || arg == "恢复" {
-				if err := store.SetPersona(
-					c.Event.MessageType, c.Event.ChatID, "",
-				); err != nil {
-					return command.Result{Handled: true, Reply: "切换失败：" + err.Error()}, nil
-				}
-				return command.Result{Handled: true, Reply: "已恢复绑定默认人格。"}, nil
-			}
-			personaName, ok := personaModes[arg]
-			if !ok {
-				return command.Result{Handled: true, Reply: "没有这个人格哦。可用：毒舌 / 温柔 / 邻家 / 女友 / 学姐 / 学妹 / 默认"}, nil
-			}
-			if err := store.SetPersona(
-				c.Event.MessageType, c.Event.ChatID, personaName,
-			); err != nil {
-				return command.Result{Handled: true, Reply: "切换失败：" + err.Error()}, nil
-			}
-			return command.Result{Handled: true, Reply: "已切换为「" + personaName + "」♡"}, nil
+			return command.Result{Handled: true, Reply: "人格是管理员在后台配置的，群里不能换哦。"}, nil
 		},
 	})
 

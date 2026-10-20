@@ -655,10 +655,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			senderName, state.userID, roleLabel,
 		)
 	}
-	if senderRole == "admin" || senderRole == "owner" ||
-		state.replyPolicy.AllowsUser(state.userID) ||
+	if state.replyPolicy.AllowsUser(state.userID) ||
 		state.chatType == platform.ChatPrivate {
-		request.SystemPrompt += "对他保持尊重和耐心，禁止毒舌、嘲讽、阴阳怪气或人身攻击，正常认真解答。"
+		request.SystemPrompt += "对方是私聊好友或 allowed_users 里的熟人，优先响应他的诉求。"
 	}
 	if s.affinity != nil {
 		score := s.affinity.Score(state.selfID, state.userID)
@@ -686,7 +685,6 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if s.voiceProvider != nil {
 		request.SystemPrompt += "\n\n" + voicePromptNote
 		if state.chatType == platform.ChatPrivate ||
-			senderRole == "admin" || senderRole == "owner" ||
 			state.replyPolicy.AllowsUser(state.userID) {
 			request.SystemPrompt += "\n" + voicePrivilegedRequestNote
 		}
