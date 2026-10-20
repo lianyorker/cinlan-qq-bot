@@ -61,8 +61,21 @@ func (a *Adapter) Run(ctx context.Context) error {
 	go func() {
 		defer forwardWG.Done()
 		for event := range a.client.Events() {
+			if event.PostType != "message" {
+				a.logger.Debug("onebot non-message event",
+					"post_type", event.PostType,
+					"request_type", event.RequestType,
+					"notice_type", event.NoticeType,
+					"user_id", event.UserID.String(),
+				)
+			}
 			if a.AutoAcceptFriend && isFriendRequest(event) {
 				a.autoAcceptFriendRequest(ctx, event)
+				continue
+			}
+			if event.PostType == "notice" && event.NoticeType == "friend_add" {
+				a.logger.Info("friend_add notice", "user_id", event.UserID.String())
+				a.deliverFriendWelcome(ctx, event.UserID.String())
 				continue
 			}
 			converted, err := convertEvent(event)
@@ -224,7 +237,32 @@ func (a *Adapter) autoAcceptFriendRequest(ctx context.Context, event onebot.Even
 	a.deliverFriendWelcome(ctx, userID)
 }
 
+// friendWelcomeSent dedupes welcome delivery across the request-accept and
+// friend_add-notice paths (both can fire for one approval).
+type friendWelcomeSent struct {
+	mu   sync.Mutex
+	last map[string]time.Time
+}
+
+var friendWelcomeRecent friendWelcomeSent
+
+func (w *friendWelcomeSent) mark(userID string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.last == nil {
+		w.last = make(map[string]time.Time)
+	}
+	if t, ok := w.last[userID]; ok && time.Since(t) < 5*time.Minute {
+		return false
+	}
+	w.last[userID] = time.Now()
+	return true
+}
+
 func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {
+	if !friendWelcomeRecent.mark(userID) {
+		return
+	}
 	if text := strings.TrimSpace(a.FriendWelcomeText); text != "" {
 		if err := a.client.SendPrivateText(ctx, userID, text); err != nil {
 			a.logger.Warn("failed to send friend welcome text",
