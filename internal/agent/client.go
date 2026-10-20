@@ -975,8 +975,14 @@ func (c *HTTPClient) resolveImageReference(reference string) (string, error) {
 		return "", errors.New("image reference is empty")
 	}
 	lower := strings.ToLower(reference)
-	if strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") ||
-		strings.HasPrefix(lower, "data:") {
+	if strings.HasPrefix(lower, "data:") {
+		return reference, nil
+	}
+	if strings.HasPrefix(lower, "https://") || strings.HasPrefix(lower, "http://") {
+		if encoded, err := c.fetchRemoteImage(reference); err == nil {
+			return encoded, nil
+		}
+		// Fall back to the raw URL — a provider may still be able to fetch it.
 		return reference, nil
 	}
 	if strings.HasPrefix(lower, "base64://") {
@@ -1017,6 +1023,43 @@ func localImagePath(reference string) (string, error) {
 		return "", fmt.Errorf("decode image file URI: %w", err)
 	}
 	return filepath.FromSlash(path), nil
+}
+
+// fetchRemoteImage downloads a remote image and inlines it as a data URI so
+// providers that cannot reach QQ CDN links still receive real pixels.
+func (c *HTTPClient) fetchRemoteImage(reference string) (string, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, reference, nil)
+	if err != nil {
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("download remote image: http %d", resp.StatusCode)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, c.maxImageBytes+1))
+	if err != nil {
+		return "", err
+	}
+	if int64(len(data)) > c.maxImageBytes {
+		return "", fmt.Errorf("remote image exceeds %d bytes", c.maxImageBytes)
+	}
+	if len(data) == 0 {
+		return "", errors.New("remote image is empty")
+	}
+	mediaType := http.DetectContentType(data)
+	switch mediaType {
+	case "image/jpeg", "image/png", "image/gif", "image/webp":
+	default:
+		return "", fmt.Errorf("unsupported remote image media type %q", mediaType)
+	}
+	return "data:" + mediaType + ";base64," +
+		base64.StdEncoding.EncodeToString(data), nil
 }
 
 func (c *HTTPClient) readLocalImage(path string) (string, error) {

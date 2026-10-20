@@ -646,6 +646,7 @@ func testBotConfig(t *testing.T) config.Config {
 		PrivateAllowlist: privateAllowlist,
 		RequireMention:   true,
 		QuoteReply:       true,
+		QuoteGroupProb:   1,
 		GroupAtSender:    true,
 		MaxReplyRunes:    1500,
 		MaxReplyChunks:   4,

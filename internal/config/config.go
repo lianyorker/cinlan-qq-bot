@@ -122,6 +122,7 @@ type Config struct {
 	PrivateAllowlist Allowlist
 	RequireMention   bool
 	QuoteReply       bool
+	QuoteGroupProb   float64
 	GroupAtSender    bool
 	MaxReplyRunes    int
 	MaxReplyChunks   int
@@ -289,6 +290,7 @@ func Load() (Config, error) {
 
 	cfg.RequireMention = parseBool("QQ_REQUIRE_MENTION", true, &errs)
 	cfg.QuoteReply = parseBool("QQ_QUOTE_REPLY", true, &errs)
+	cfg.QuoteGroupProb = parseFloat("QQ_QUOTE_GROUP_PROB", 0.4, 0, 1, &errs)
 	cfg.GroupAtSender = parseBool("QQ_GROUP_AT_SENDER", true, &errs)
 	cfg.MaxReplyRunes = parseInt("QQ_MAX_REPLY_RUNES", 1500, 1, &errs)
 	cfg.MaxReplyChunks = parseInt("QQ_MAX_REPLY_CHUNKS", 4, 1, &errs)
@@ -799,6 +801,19 @@ func parseBool(key string, fallback bool, errs *[]error) bool {
 	parsed, err := strconv.ParseBool(value)
 	if err != nil {
 		*errs = append(*errs, fmt.Errorf("%s: %w", key, err))
+		return fallback
+	}
+	return parsed
+}
+
+func parseFloat(key string, fallback, minimum, maximum float64, errs *[]error) float64 {
+	value := strings.TrimSpace(os.Getenv(key))
+	if value == "" {
+		return fallback
+	}
+	parsed, err := strconv.ParseFloat(value, 64)
+	if err != nil || parsed < minimum || parsed > maximum {
+		*errs = append(*errs, fmt.Errorf("invalid %s: %q", key, value))
 		return fallback
 	}
 	return parsed

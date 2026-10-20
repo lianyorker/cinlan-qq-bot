@@ -307,12 +307,11 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			return nil
 		}
 	}
-	// Passively pool incoming group images so a 表情包 keyword can resend them.
-	if state.chatType == platform.ChatGroup {
-		refs := s.EventImageRefs(ctx, state.selfID, state.event.Chain)
-		if len(refs) > 0 {
-			go s.collectMemes(state.chatType, state.chatID, refs)
-		}
+	// Passively pool incoming images (group and private) so a 表情包 keyword
+	// or [[MEME]] marker can resend them.
+	refs := s.EventImageRefs(ctx, state.selfID, state.event.Chain)
+	if len(refs) > 0 {
+		go s.collectMemes(state.chatType, state.chatID, refs)
 	}
 	for _, kt := range s.keywordTools {
 		if !kt.pattern.MatchString(state.text) {
@@ -918,6 +917,16 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if state.ignored || state.reply == "" {
 		return nil
 	}
+	if containsProviderError(state.reply) {
+		s.logger.Info(
+			"provider error leaked into reply, replaced",
+			"chat_type", state.chatType,
+			"chat_id", state.chatID,
+			"reply_head", truncateRunes(state.reply, 120),
+		)
+		state.reply = providerErrorFallback
+		state.outbound = message.Chain{message.Text(state.reply)}
+	}
 	var voiceClips []voiceClip
 	state.reply, voiceClips = extractVoiceMarkers(state.reply)
 	if s.affinity != nil {
@@ -967,12 +976,67 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				}
 			}
 		}
+		expanded := make([]string, 0, len(parts))
+		for _, part := range parts {
+			expanded = append(expanded, splitMarkerLines(part)...)
+		}
+		parts = expanded
 		chains := make([]message.Chain, 0, len(parts))
 		cleaned := make([]string, 0, len(parts))
+		skippedMarkers := 0
 		for _, part := range parts {
+			if key, ok := parseStoredImageMarker(part); ok {
+				path := ""
+				if s.chatPrefs != nil {
+					path = s.chatPrefs.ImageForPrompt(
+						state.chatType, state.chatID, key,
+					)
+				}
+				if path == "" {
+					skippedMarkers++
+					s.logger.Info(
+						"stored image marker skipped",
+						"chat_type", state.chatType,
+						"chat_id", state.chatID,
+						"key", key,
+					)
+					continue
+				}
+				chains = append(
+					chains, message.Chain{message.Image(path)},
+				)
+				cleaned = append(cleaned, "[照片:"+key+"]")
+				continue
+			}
+			if query, ok := parseMemeMarker(part); ok {
+				path, memeErr := s.pickMeme(
+					state.chatType, state.chatID, query,
+				)
+				if memeErr != nil {
+					skippedMarkers++
+					s.logger.Info(
+						"meme marker skipped",
+						"chat_type", state.chatType,
+						"chat_id", state.chatID,
+						"query", query,
+						"error", memeErr.Error(),
+					)
+					continue
+				}
+				chains = append(
+					chains, message.Chain{message.Image(path)},
+				)
+				cleaned = append(cleaned, "[表情包]")
+				continue
+			}
 			chain, plain, _ := parseFaceMarkers(part)
 			chains = append(chains, chain)
 			cleaned = append(cleaned, strings.TrimSpace(plain))
+		}
+		if len(chains) == 0 && skippedMarkers > 0 {
+			fallback := "没图了 等我攒攒"
+			chains = append(chains, message.Chain{message.Text(fallback)})
+			cleaned = append(cleaned, fallback)
 		}
 		state.reply = strings.Join(cleaned, "\n")
 		if !s.sendChains(

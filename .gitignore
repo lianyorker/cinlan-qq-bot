@@ -18,6 +18,7 @@
 /.release-private-patterns.txt
 /cinlan-qq-bot
 /cinlan-qq-bot.exe
+/cinlan-qq-bot-linux
 coverage.out
 runtime/loader/target/
 /notes/

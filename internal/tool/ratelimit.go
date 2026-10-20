@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"strings"
 	"sync"
 	"time"
 
@@ -83,7 +84,7 @@ func (l *MediaLimiter) Wrap(definition Definition) Definition {
 			)
 			refund()
 			return Result{Response: terminalMediaResponse(
-				l.failureText(definition.Name),
+				l.failureText(definition.Name, reason),
 			)}, nil
 		}
 		return result, nil
@@ -91,8 +92,25 @@ func (l *MediaLimiter) Wrap(definition Definition) Definition {
 	return definition
 }
 
-// failureText picks a user-facing failure notice per media tool.
-func (l *MediaLimiter) failureText(name string) string {
+// failureText picks a user-facing failure notice per media tool, refined by
+// the underlying error so a policy block or timeout doesn't read like a
+// generic crash.
+func (l *MediaLimiter) failureText(name, reason string) string {
+	lower := strings.ToLower(reason)
+	switch {
+	case strings.Contains(lower, "policy") ||
+		strings.Contains(lower, "prohibited") ||
+		strings.Contains(lower, "sensitive"):
+		return "这个描述被拦了，换个说法我再试试"
+	case strings.Contains(lower, "timeout") ||
+		strings.Contains(lower, "deadline") ||
+		strings.Contains(lower, "connection") ||
+		strings.Contains(lower, "download"):
+		return "生图服务超时了，等会再试"
+	case strings.Contains(lower, "quota") ||
+		strings.Contains(lower, "insufficient"):
+		return "生图额度用完了，明天再来"
+	}
 	switch name {
 	case "generate_image":
 		return "生图失败了，稍后再试试～"

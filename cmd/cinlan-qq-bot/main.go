@@ -446,7 +446,7 @@ func main() {
 			logger.Warn("file catalog contains no enabled files", "file", cfg.FileCatalogPath)
 		}
 	}
-	if extensionErr := registerLocalExtensions(ctx, cfg, botService, logger); extensionErr != nil {
+	if extensionErr := registerLocalExtensions(ctx, cfg, botService, imageGenerator, logger); extensionErr != nil {
 		logger.Error("failed to register local extensions", "error", extensionErr)
 		os.Exit(2)
 	}

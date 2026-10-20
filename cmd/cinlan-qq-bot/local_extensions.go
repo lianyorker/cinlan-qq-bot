@@ -21,6 +21,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
+	"github.com/lianyorker/cinlan-qq-bot/internal/media"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
 
@@ -30,6 +31,7 @@ func registerLocalExtensions(
 	_ context.Context,
 	cfg config.Config,
 	service *bot.Service,
+	imageGenerator *media.ImageGenerator,
 	logger *slog.Logger,
 ) error {
 	store, err := chatprefs.Load(cfg.ChatPrefsFile)
@@ -37,6 +39,9 @@ func registerLocalExtensions(
 		return err
 	}
 	service.SetChatPrefs(store)
+	if imageGenerator != nil {
+		imageGenerator.SetReferenceResolver(store.LatestImage)
+	}
 
 	service.SetMemeDir(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "chat-images", "memes"),

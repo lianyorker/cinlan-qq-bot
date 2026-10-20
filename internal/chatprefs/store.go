@@ -157,6 +157,17 @@ func (s *Store) AddImageNote(chatType, chatID, name, path string) error {
 	return s.saveLocked()
 }
 
+// LatestImage returns the most recently stored image note path for a chat.
+func (s *Store) LatestImage(chatType, chatID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil || len(e.ImageNotes) == 0 {
+		return ""
+	}
+	return e.ImageNotes[len(e.ImageNotes)-1].Path
+}
+
 // ImageForPrompt returns the stored image path whose key appears in prompt.
 func (s *Store) ImageForPrompt(chatType, chatID, prompt string) string {
 	s.mu.RLock()

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log/slog"
+	"math/rand"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -764,7 +765,7 @@ func (s *Service) sendTextParts(
 		if index > 0 && !waitForReplyPart(ctx, s.replyPartDelay(parts[index-1])) {
 			return false
 		}
-		quote := s.cfg.QuoteReply && index == 0
+		quote := s.cfg.QuoteReply && index == 0 && s.shouldQuoteReply(chatType)
 		chain := message.Chain{message.Text(normalizeHTMLBreaks(part))}
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
@@ -818,7 +819,7 @@ func (s *Service) sendChains(
 				return false
 			}
 		}
-		quote := s.cfg.QuoteReply && index == 0
+		quote := s.cfg.QuoteReply && index == 0 && s.shouldQuoteReply(chatType)
 		outbound := normalizeChainHTMLBreaks(chain.Clone())
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
@@ -924,6 +925,24 @@ func normalizeChainHTMLBreaks(chain message.Chain) message.Chain {
 		}
 	}
 	return chain
+}
+
+// shouldQuoteReply decides whether the reply carries a message quote.
+// Private chats never quote (1-on-1 context is obvious); group replies quote
+// with a probability so the bot reads like a person who only quotes when the
+// context is ambiguous.
+func (s *Service) shouldQuoteReply(chatType string) bool {
+	if chatType != platform.ChatGroup {
+		return false
+	}
+	prob := s.cfg.QuoteGroupProb
+	if prob <= 0 {
+		return false
+	}
+	if prob >= 1 {
+		return true
+	}
+	return rand.Float64() < prob
 }
 
 func (s *Service) replyPartDelay(previous string) time.Duration {
