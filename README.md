@@ -312,7 +312,6 @@ AGENT_MAX_TOOL_ROUNDS=4
 群聊与私聊可在 Chat Binding 中选择 `disabled`、`mention_only`、`always` 或 `ai_decide`；
 结构化路由范围、隐私默认值和兼容规则见 [docs/会话隔离.md](docs/会话隔离.md)。
 自然但不冒充真人的 Persona 模板见 [docs/人格模板.md](docs/人格模板.md)。
-当前群绑定、人格与知识库映射、提示词装配链和功能清单见 [docs/群绑定与人格.md](docs/群绑定与人格.md)。
 自定义 Go 扩展、配置型扩展和各作用域边界见 [docs/自定义扩展.md](docs/自定义扩展.md)。
 平台、功能、验证证据和剩余风险见 [docs/完整性审计.md](docs/完整性审计.md)。
 
