@@ -103,7 +103,7 @@ func stateFrom(event *pipeline.Context) *flowState {
 	return current
 }
 
-func (s *Service) stageWake(_ context.Context, event *pipeline.Context) error {
+func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error {
 	state := stateFrom(event)
 	state.event = event.Event
 	state.platform = event.Event.Platform
@@ -130,12 +130,19 @@ func (s *Service) stageWake(_ context.Context, event *pipeline.Context) error {
 
 	state.replyPolicy = binding.LegacyReplyPolicy(state.chatType, s.cfg.RequireMention)
 	if s.bindings != nil {
+		var memberOf func(groupID, userID string) bool
+		if state.chatType == platform.ChatPrivate {
+			memberOf = func(groupID, userID string) bool {
+				return s.groupMemberOf(ctx, state.selfID, groupID, userID)
+			}
+		}
 		current, ok := s.bindings.MatchActor(
 			state.platform,
 			state.selfID,
 			state.chatType,
 			state.chatID,
 			state.userID,
+			memberOf,
 		)
 		if !ok {
 			state.ignored = true
@@ -664,7 +671,6 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		level := affinity.Level(score)
 		percent := affinity.Percent(score)
 		if state.chatType == platform.ChatPrivate ||
-			senderRole == "admin" || senderRole == "owner" ||
 			state.replyPolicy.AllowsUser(state.userID) {
 			level = affinity.LevelIntimate
 			percent = 100

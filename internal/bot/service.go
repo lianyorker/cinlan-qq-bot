@@ -64,6 +64,19 @@ type GroupModerator interface {
 	KickMember(ctx context.Context, selfID, groupID, userID string) error
 }
 
+// GroupMemberChecker reports whether a user belongs to a group. Private-chat
+// bindings use it to route personas by community membership (member_groups).
+type GroupMemberChecker interface {
+	IsGroupMember(ctx context.Context, selfID, groupID, userID string) (bool, error)
+}
+
+const memberCacheTTL = 10 * time.Minute
+
+type memberCacheEntry struct {
+	member bool
+	at     time.Time
+}
+
 type Stats struct {
 	Received             uint64 `json:"received"`
 	Ignored              uint64 `json:"ignored"`
@@ -103,6 +116,9 @@ type Service struct {
 	fileSender     FileSender
 	chainFetcher   MessageFetcher
 	groupModerator GroupModerator
+	memberChecker  GroupMemberChecker
+	memberMu       sync.Mutex
+	memberCache    map[string]memberCacheEntry
 	warnStore      *moderation.Store
 	voiceProvider  voiceSynth
 	voiceBudget    voiceBudget
@@ -211,6 +227,7 @@ func NewWithRuntime(
 		personas:           persona.NewRegistry(),
 		maintenance:        make(chan flowState, maintenanceQueueSize),
 		maintenancePending: make(map[string]struct{}),
+		memberCache:        make(map[string]memberCacheEntry),
 	}
 	if strings.TrimSpace(cfg.AgentSystemPrompt) != "" {
 		_ = service.personas.Register(persona.Profile{
@@ -244,6 +261,42 @@ func (s *Service) CommandRegistry() *command.Registry {
 // remembered notes) used by the pipeline and admin commands.
 func (s *Service) SetChatPrefs(store *chatprefs.Store) {
 	s.chatPrefs = store
+}
+
+// SetGroupMemberChecker wires the platform capability used by member_groups
+// binding selectors (private-chat routing by community membership).
+func (s *Service) SetGroupMemberChecker(checker GroupMemberChecker) {
+	s.memberChecker = checker
+}
+
+// groupMemberOf answers whether userID is in groupID, caching each pair for
+// memberCacheTTL. Checker failures are treated as "not a member" so a flaky
+// API fails closed — the private message is then ignored as unbound.
+func (s *Service) groupMemberOf(ctx context.Context, selfID, groupID, userID string) bool {
+	if s.memberChecker == nil || groupID == "" || userID == "" {
+		return false
+	}
+	key := groupID + ":" + userID
+	s.memberMu.Lock()
+	if entry, ok := s.memberCache[key]; ok && time.Since(entry.at) < memberCacheTTL {
+		s.memberMu.Unlock()
+		return entry.member
+	}
+	s.memberMu.Unlock()
+	member, err := s.memberChecker.IsGroupMember(ctx, selfID, groupID, userID)
+	if err != nil {
+		s.logger.Warn(
+			"group membership check failed",
+			"group_id", groupID,
+			"user_id", userID,
+			"error", err,
+		)
+		return false
+	}
+	s.memberMu.Lock()
+	s.memberCache[key] = memberCacheEntry{member: member, at: time.Now()}
+	s.memberMu.Unlock()
+	return member
 }
 
 func (s *Service) ChatPrefs() *chatprefs.Store {

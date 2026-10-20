@@ -50,14 +50,14 @@ func TestBindingMatchesMultipleChatsAndOptionalUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, chatID := range []string{"10", "20"} {
-		if _, ok := registry.MatchActor("qq-native", "1", "group", chatID, "100"); !ok {
+		if _, ok := registry.MatchActor("qq-native", "1", "group", chatID, "100", nil); !ok {
 			t.Fatalf("chat %s did not match", chatID)
 		}
 	}
-	if _, ok := registry.MatchActor("qq-native", "1", "group", "30", "100"); ok {
+	if _, ok := registry.MatchActor("qq-native", "1", "group", "30", "100", nil); ok {
 		t.Fatal("binding leaked into an unbound chat")
 	}
-	if _, ok := registry.MatchActor("qq-native", "1", "group", "10", "300"); ok {
+	if _, ok := registry.MatchActor("qq-native", "1", "group", "10", "300", nil); ok {
 		t.Fatal("binding ignored user_ids")
 	}
 	listed := registry.List()
@@ -87,6 +87,7 @@ func TestBindingMatchesAllUsersInConfiguredChats(t *testing.T) {
 			"group",
 			"20",
 			userID,
+			nil,
 		); !ok {
 			t.Fatalf("bound group rejected user %s", userID)
 		}
@@ -111,6 +112,7 @@ func TestBindingSupportsDirectUserSelector(t *testing.T) {
 		"private",
 		"arbitrary-chat",
 		"100",
+		nil,
 	); !ok {
 		t.Fatal("direct user binding did not match")
 	}
@@ -120,6 +122,7 @@ func TestBindingSupportsDirectUserSelector(t *testing.T) {
 		"private",
 		"arbitrary-chat",
 		"200",
+		nil,
 	); ok {
 		t.Fatal("direct user binding leaked to another user")
 	}

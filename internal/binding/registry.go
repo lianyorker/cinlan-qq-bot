@@ -155,13 +155,17 @@ func (p ReplyPolicy) AllowsUser(userID string) bool {
 }
 
 type Rule struct {
-	Name            string            `json:"name"`
-	Platform        string            `json:"platform"`
-	SelfID          string            `json:"self_id"`
-	ChatType        string            `json:"chat_type"`
-	ChatID          string            `json:"chat_id,omitempty"`
-	ChatIDs         []string          `json:"chat_ids,omitempty"`
-	UserIDs         []string          `json:"user_ids,omitempty"`
+	Name     string   `json:"name"`
+	Platform string   `json:"platform"`
+	SelfID   string   `json:"self_id"`
+	ChatType string   `json:"chat_type"`
+	ChatID   string   `json:"chat_id,omitempty"`
+	ChatIDs  []string `json:"chat_ids,omitempty"`
+	UserIDs  []string `json:"user_ids,omitempty"`
+	// MemberGroups lists group IDs; a rule carrying it only matches when
+	// the memberOf probe confirms the sender belongs to one of them.
+	// Intended for private-chat routing by community membership.
+	MemberGroups    []string          `json:"member_groups,omitempty"`
 	Persona         string            `json:"persona,omitempty"`
 	Provider        string            `json:"provider,omitempty"`
 	Moderation      *ModerationPolicy `json:"moderation,omitempty"`
@@ -207,11 +211,12 @@ func NewRegistry(rules []Rule) (*Registry, error) {
 }
 
 func (r *Registry) Match(platformName, selfID, chatType, chatID string) (Rule, bool) {
-	return r.MatchActor(platformName, selfID, chatType, chatID, "")
+	return r.MatchActor(platformName, selfID, chatType, chatID, "", nil)
 }
 
 func (r *Registry) MatchActor(
 	platformName, selfID, chatType, chatID, userID string,
+	memberOf func(groupID, userID string) bool,
 ) (Rule, bool) {
 	if r == nil {
 		return Rule{}, false
@@ -235,6 +240,11 @@ func (r *Registry) MatchActor(
 			!matchesChat(rule, chatID) ||
 			!matchesAny(rule.UserIDs, userID) {
 			continue
+		}
+		if len(rule.MemberGroups) > 0 {
+			if memberOf == nil || !memberOfAny(rule.MemberGroups, userID, memberOf) {
+				continue
+			}
 		}
 		score := specificity(rule)
 		if score > bestScore {
@@ -532,6 +542,7 @@ func normalizeResources(bindingName, field string, values []string) ([]string, e
 func cloneRule(rule Rule) Rule {
 	rule.ChatIDs = append([]string(nil), rule.ChatIDs...)
 	rule.UserIDs = append([]string(nil), rule.UserIDs...)
+	rule.MemberGroups = append([]string(nil), rule.MemberGroups...)
 	rule.Tools = append([]string(nil), rule.Tools...)
 	rule.Skills = append([]string(nil), rule.Skills...)
 	rule.KnowledgeBases = append([]string(nil), rule.KnowledgeBases...)
@@ -716,13 +727,23 @@ func specificity(rule Rule) int {
 	return score
 }
 
+func memberOfAny(groups []string, userID string, memberOf func(string, string) bool) bool {
+	for _, groupID := range groups {
+		if memberOf(groupID, userID) {
+			return true
+		}
+	}
+	return false
+}
+
 func selectorKey(rule Rule) string {
 	return rule.Platform + "\x00" +
 		rule.SelfID + "\x00" +
 		rule.ChatType + "\x00" +
 		rule.ChatID + "\x00" +
 		strings.Join(rule.ChatIDs, "\x01") + "\x00" +
-		strings.Join(rule.UserIDs, "\x01")
+		strings.Join(rule.UserIDs, "\x01") + "\x00" +
+		strings.Join(rule.MemberGroups, "\x01")
 }
 
 func writeAtomic(path string, data []byte) error {

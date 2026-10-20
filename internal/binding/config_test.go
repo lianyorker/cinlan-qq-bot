@@ -51,7 +51,7 @@ func TestLoadFileSupportsMultipleChatAndUserSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := registry.MatchActor("qq-native", "1", "group", "3", "9"); !ok {
+	if _, ok := registry.MatchActor("qq-native", "1", "group", "3", "9", nil); !ok {
 		t.Fatal("multi-selector binding did not match")
 	}
 }

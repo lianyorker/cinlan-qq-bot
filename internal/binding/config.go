@@ -26,6 +26,7 @@ type rawRule struct {
 	ChatID          string       `json:"chat_id"`
 	ChatIDs         []string     `json:"chat_ids"`
 	UserIDs         []string     `json:"user_ids"`
+	MemberGroups    []string     `json:"member_groups"`
 	Persona         string       `json:"persona"`
 	Provider        string       `json:"provider"`
 	Tools           []string     `json:"tools"`
@@ -85,6 +86,7 @@ func LoadFile(path string) (*Registry, error) {
 			ChatID:          raw.ChatID,
 			ChatIDs:         raw.ChatIDs,
 			UserIDs:         raw.UserIDs,
+			MemberGroups:    raw.MemberGroups,
 			Persona:         raw.Persona,
 			Provider:        raw.Provider,
 			Tools:           raw.Tools,

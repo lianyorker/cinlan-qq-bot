@@ -311,6 +311,9 @@ func main() {
 	if moderator, ok := qqAdapter.(bot.GroupModerator); ok {
 		botService.SetGroupModerator(moderator)
 	}
+	if checker, ok := qqAdapter.(bot.GroupMemberChecker); ok {
+		botService.SetGroupMemberChecker(checker)
+	}
 	if warnStore, warnErr := moderation.Open(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "moderation.json"),
 	); warnErr != nil {

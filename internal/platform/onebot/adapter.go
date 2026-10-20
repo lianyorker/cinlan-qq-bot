@@ -182,6 +182,22 @@ func (a *Adapter) FetchMessage(
 	return extractQuotedChain(raw)
 }
 
+// IsGroupMember reports whether userID belongs to groupID via
+// get_group_member_info. Any lookup failure is treated as not a member.
+func (a *Adapter) IsGroupMember(
+	ctx context.Context,
+	selfID, groupID, userID string,
+) (bool, error) {
+	if a.client == nil {
+		return false, fmt.Errorf("onebot adapter has no client")
+	}
+	info, err := a.client.GetGroupMemberInfo(ctx, groupID, userID, false)
+	if err != nil {
+		return false, nil
+	}
+	return len(info) > 0, nil
+}
+
 // IsFriend reports whether userID is on the account's friend list.
 func (a *Adapter) IsFriend(ctx context.Context, selfID, userID string) (bool, error) {
 	raw, err := a.Call(ctx, "get_friend_list", map[string]any{})
