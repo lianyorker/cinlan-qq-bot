@@ -16,7 +16,9 @@ func Tool(scheduler *Scheduler) tool.Definition {
 	return tool.Definition{
 		Name: "schedule_message",
 		Description: "给自己定定时消息或提醒。action=add 添加任务（需要 text，加 after_seconds 表示多少秒后发一次，加 interval_seconds 表示每隔多少秒重复）；" +
-			"action=remove 删除任务（需要 id）；action=list 查看本会话的定时任务。",
+			"action=remove 删除任务（需要 id）；action=list 查看本会话的定时任务。" +
+			"进阶用法——报备跟进：当你要求对方回来后说一声（到家报平安/忙完叫我/醒了叫我），顺手排一条 30-60 分钟后的一次性跟进，" +
+			"对方没回你就主动问一句，别让话题烂尾；对方提前回了也没关系，跟进消息写得宽松一点（比如「到家了没？都安顿好了当我没说～」）。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
