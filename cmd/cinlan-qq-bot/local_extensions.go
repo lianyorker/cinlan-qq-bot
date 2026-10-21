@@ -110,7 +110,10 @@ func registerLocalExtensions(
 			if err := store.SetNotifyEnabled(c.Event.MessageType, c.Event.ChatID, true); err != nil {
 				return command.Result{Handled: true, Reply: "保存失败：" + err.Error()}, nil
 			}
-			return command.Result{Handled: true, Reply: "本群通知已开启。"}, nil
+			// "叫回来" also lifts self-mute — an operator calling her back
+			// outranks a go_quiet she gave herself.
+			_ = store.SetMuteUntil(c.Event.MessageType, c.Event.ChatID, time.Time{})
+			return command.Result{Handled: true, Reply: "本群通知已开启（装死也解除了）。"}, nil
 		},
 	})
 
