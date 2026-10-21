@@ -82,6 +82,40 @@ func (s *fakeSender) Send(_ context.Context, outbound platform.Outbound) error {
 	return nil
 }
 
+func TestSchedulerOnceJobDeletionIsPersisted(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "cron.json")
+	sender := &fakeSender{}
+	scheduler, err := Open(sender, nil, path)
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	now := time.Unix(300, 0)
+	scheduler.now = func() time.Time { return now }
+	if err := scheduler.Add(Job{
+		ID:       "once",
+		Name:     "remind",
+		ChatType: platform.ChatPrivate,
+		ChatID:   "42",
+		Text:     "ping",
+		Interval: MinInterval,
+		NextRun:  now,
+		Once:     true,
+	}); err != nil {
+		t.Fatalf("Add() error = %v", err)
+	}
+	scheduler.RunDue(context.Background())
+	if len(sender.outbound) != 1 {
+		t.Fatalf("expected one send, got %#v", sender.outbound)
+	}
+	restored, err := Open(&fakeSender{}, nil, path)
+	if err != nil {
+		t.Fatalf("Open(restored) error = %v", err)
+	}
+	if len(restored.List()) != 0 {
+		t.Fatalf("once job resurrected after restart: %#v", restored.List())
+	}
+}
+
 func TestSchedulerRunsDueJobAndAdvancesNextRun(t *testing.T) {
 	sender := &fakeSender{}
 	scheduler := New(sender, nil)

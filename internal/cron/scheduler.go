@@ -227,9 +227,11 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 				current.LastError = ""
 			}
 			s.jobs[job.ID] = current
-			if persistErr := s.persistLocked(); persistErr != nil {
-				s.logger.Error("cron job result persistence failed", "job_id", job.ID, "error", persistErr)
-			}
+		}
+		// Persist even when the job was deleted — otherwise a delivered
+		// one-shot stays on disk and resurrects on every restart.
+		if persistErr := s.persistLocked(); persistErr != nil {
+			s.logger.Error("cron job result persistence failed", "job_id", job.ID, "error", persistErr)
 		}
 		s.mu.Unlock()
 	}
