@@ -228,12 +228,32 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	// Mood bumps apply even to messages we end up ignoring — being cursed
 	// at while quiet is exactly what sours a mood. Self-mute (装死) then
 	// drops everything, mentions included; it expires on its own.
+	var moodScore int
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
 		if delta := mood.Score(state.text, state.eventMentioned); delta != 0 {
-			if _, err := s.chatPrefs.BumpMood(
+			if score, err := s.chatPrefs.BumpMood(
 				state.chatType, state.chatID, delta, s.now(),
 			); err != nil {
 				s.logger.Warn("mood update failed", "error", err.Error())
+			} else {
+				moodScore = score
+			}
+		} else {
+			moodScore = s.chatPrefs.MoodScore(
+				state.chatType, state.chatID, s.now(),
+			)
+		}
+		// mood→action: pushed past -60 the persona clams up on its own —
+		// the safe equivalent of storming off. Reversible, self-expiring.
+		if moodScore <= -60 &&
+			!s.chatPrefs.Muted(state.chatType, state.chatID, s.now()) {
+			until := s.now().Add(30 * time.Minute)
+			if err := s.chatPrefs.SetMuteUntil(
+				state.chatType, state.chatID, until,
+			); err == nil {
+				s.logger.Info("mood crash, going quiet",
+					"chat_type", state.chatType, "chat_id", state.chatID,
+					"mood", moodScore, "until", until.Format("15:04"))
 			}
 		}
 	}
@@ -718,6 +738,20 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
+		}
+		// Self-learned layer: chat facts the persona saved itself plus its
+		// take on the current speaker. Lower trust than operator notes —
+		// the model may update them via the remember tool.
+		if facts := s.chatPrefs.FactsText(state.chatType, state.chatID); facts != "" {
+			request.SystemPrompt += "\n\n你自己记住的关于这个聊天的信息：\n" + facts
+		}
+		if imp := s.chatPrefs.Impression(
+			state.chatType, state.chatID, state.userID,
+		); imp != "" {
+			request.SystemPrompt += fmt.Sprintf(
+				"\n\n你对当前发言者 %s（QQ:%s）的印象：%s",
+				state.event.SenderName, state.userID, imp,
+			)
 		}
 	}
 	// Humanization hints: current mood tier + late-night drowsiness. Both

@@ -30,6 +30,12 @@ type chatEntry struct {
 	Mood       int         `json:"mood,omitempty"`
 	MoodAt     time.Time   `json:"mood_at,omitempty"`
 	MuteUntil  time.Time   `json:"mute_until,omitempty"`
+	// Facts are self-learned chat facts written by the remember tool —
+	// trusted less than operator Notes.
+	Facts []string `json:"facts,omitempty"`
+	// Impressions maps a QQ user id to the persona's remembered take on
+	// that member ("爱抬杠","生日10.28"), updated by the remember tool.
+	Impressions map[string]string `json:"impressions,omitempty"`
 }
 
 // Store is a small JSON-file-backed per-chat preference store keyed by
@@ -186,6 +192,76 @@ func (s *Store) ImageForPrompt(chatType, chatID, prompt string) string {
 		}
 	}
 	return ""
+}
+
+const (
+	maxFactsPerChat       = 40
+	maxImpressionsPerChat = 60
+)
+
+// AddFact stores a self-learned fact line for the chat. Duplicates are
+// ignored; the list is capped and oldest entries drop first.
+func (s *Store) AddFact(chatType, chatID, text string) error {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return errors.New("fact is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(chatType, chatID)
+	for _, f := range e.Facts {
+		if f == text {
+			return nil
+		}
+	}
+	if len(e.Facts) >= maxFactsPerChat {
+		e.Facts = e.Facts[len(e.Facts)-maxFactsPerChat+1:]
+	}
+	e.Facts = append(e.Facts, text)
+	return s.saveLocked()
+}
+
+// FactsText returns the chat's self-learned facts joined with newlines.
+func (s *Store) FactsText(chatType, chatID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil || len(e.Facts) == 0 {
+		return ""
+	}
+	return strings.Join(e.Facts, "\n")
+}
+
+// SetImpression overwrites the persona's remembered take on one member.
+func (s *Store) SetImpression(chatType, chatID, userID, text string) error {
+	text = strings.TrimSpace(text)
+	userID = strings.TrimSpace(userID)
+	if userID == "" || text == "" {
+		return errors.New("impression is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(chatType, chatID)
+	if e.Impressions == nil {
+		e.Impressions = map[string]string{}
+	}
+	if _, exists := e.Impressions[userID]; !exists &&
+		len(e.Impressions) >= maxImpressionsPerChat {
+		return errors.New("impression limit reached")
+	}
+	e.Impressions[userID] = text
+	return s.saveLocked()
+}
+
+// Impression returns the remembered take on a member, empty if none.
+func (s *Store) Impression(chatType, chatID, userID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return ""
+	}
+	return e.Impressions[userID]
 }
 
 // NotesText returns the remembered notes for the chat joined with newlines.

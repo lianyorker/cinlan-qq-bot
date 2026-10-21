@@ -65,6 +65,11 @@ func registerLocalExtensions(
 	); registerErr != nil {
 		logger.Error("failed to register quiet tool", "error", registerErr)
 	}
+	if registerErr := service.ToolRegistry().Register(
+		interaction.RememberTool(store, service.ReviewNote),
+	); registerErr != nil {
+		logger.Error("failed to register remember tool", "error", registerErr)
+	}
 
 	service.SetMemeDir(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "chat-images", "memes"),

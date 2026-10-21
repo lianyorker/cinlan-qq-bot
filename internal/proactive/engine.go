@@ -149,7 +149,24 @@ func (e *Engine) sweep(ctx context.Context) {
 			continue
 		}
 		for _, chatID := range rule.ChatIDs {
-			if e.eligible(chatID) && e.deps.Rand.Float64() < e.cfg.Chance {
+			if !e.eligible(chatID) {
+				continue
+			}
+			// Mood gates the urge to talk: sulking chats stay silent,
+			// cheerful chats get chatty.
+			if e.deps.ChatPrefs != nil {
+				moodScore := e.deps.ChatPrefs.MoodScore(
+					platform.ChatGroup, chatID, e.deps.Now())
+				if moodScore <= -30 {
+					continue
+				}
+			}
+			chance := e.cfg.Chance
+			if e.deps.ChatPrefs != nil &&
+				e.deps.ChatPrefs.MoodScore(platform.ChatGroup, chatID, e.deps.Now()) >= 30 {
+				chance = min(chance*1.5, 0.5)
+			}
+			if e.deps.Rand.Float64() < chance {
 				e.fire(ctx, rule, chatID)
 			}
 		}
