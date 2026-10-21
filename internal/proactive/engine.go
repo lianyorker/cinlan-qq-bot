@@ -35,6 +35,9 @@ type Config struct {
 	DailyLimit int           // per-chat daily cap (default 5)
 	SleepStart int           // hour-of-day sleep window start, -1 disables
 	SleepEnd   int           // hour-of-day sleep window end
+	// Allow, when set, is the hard gate on which bound group chats may
+	// receive proactive messages; nil means every bound group is eligible.
+	Allow func(chatID string) bool
 }
 
 type Deps struct {
@@ -149,6 +152,10 @@ func (e *Engine) sweep(ctx context.Context) {
 			continue
 		}
 		for _, chatID := range rule.ChatIDs {
+			// Operator allowlist — bound-but-unlisted chats never fire.
+			if e.cfg.Allow != nil && !e.cfg.Allow(chatID) {
+				continue
+			}
 			if !e.eligible(chatID) {
 				continue
 			}

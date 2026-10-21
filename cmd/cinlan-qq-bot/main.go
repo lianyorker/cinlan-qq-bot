@@ -473,6 +473,12 @@ func main() {
 	if cfg.QQPlatform == "qqnt" {
 		platformName = platform.PlatformQQNative
 	}
+	// QQ_PROACTIVE_GROUPS (optional) hard-limits which bound groups get
+	// proactive openers; unset means every bound group may.
+	var proactiveAllow func(string) bool
+	if cfg.ProactiveGroups.Size() > 0 || cfg.ProactiveGroups.Wildcard() {
+		proactiveAllow = cfg.ProactiveGroups.Allows
+	}
 	go proactive.New(
 		proactive.Config{
 			Enabled:    cfg.Proactive,
@@ -483,6 +489,7 @@ func main() {
 			DailyLimit: cfg.ProactiveDaily,
 			SleepStart: cfg.SleepStart,
 			SleepEnd:   cfg.SleepEnd,
+			Allow:      proactiveAllow,
 		},
 		proactive.Deps{
 			Providers: providerRegistry,

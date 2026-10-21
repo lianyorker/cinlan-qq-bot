@@ -226,6 +226,9 @@ type Config struct {
 	ProactiveWait  time.Duration // cooldown between proactive sends
 	ProactiveProb  float64       // per-tick fire probability
 	ProactiveDaily int           // per-chat daily cap
+	// ProactiveGroups optionally limits which bound groups may receive
+	// proactive openers; empty means every bound group is eligible.
+	ProactiveGroups Allowlist
 
 	HandoffReply string
 	ResumeReply  string
@@ -536,6 +539,11 @@ func Load() (Config, error) {
 	cfg.ProactiveWait = parseDuration("QQ_PROACTIVE_COOLDOWN", 4*time.Hour, true, &errs)
 	cfg.ProactiveProb = parseFloat("QQ_PROACTIVE_CHANCE", 0.12, 0, 1, &errs)
 	cfg.ProactiveDaily = parseInt("QQ_PROACTIVE_DAILY", 5, 1, &errs)
+	proactiveGroups, err := ParseOptionalAllowlist(os.Getenv("QQ_PROACTIVE_GROUPS"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("QQ_PROACTIVE_GROUPS: %w", err))
+	}
+	cfg.ProactiveGroups = proactiveGroups
 
 	if err := cfg.Validate(); err != nil {
 		errs = append(errs, err)
