@@ -161,7 +161,10 @@ func (g *ImageGenerator) Tool() tool.Definition {
 	return tool.Definition{
 		Name: "generate_image",
 		Description: "根据用户描述生成一张图片并直接发送到当前会话。" +
-			"用户要求画图、生成图片或发一张图片时必须调用；不要只返回提示词。",
+			"用户要求画图、生成图片或发一张图片时必须调用；不要只返回提示词。" +
+			"如果返回“内容审核拒绝”错误：把提示词改写一遍再调用一次——" +
+			"去掉真人自拍、具体年龄、身材/裸露描述，改用动漫或插画风格重试；" +
+			"改写后仍被拒就直接跟用户说明被审核挡了，别反复重试。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -296,10 +299,7 @@ func (g *ImageGenerator) generateOpenAI(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"image generation provider returned HTTP %d",
-			response.StatusCode,
-		)
+		return nil, providerHTTPError("image generation provider", response)
 	}
 	responseLimit := g.maxBytes*2 + 1<<20
 	if responseLimit > 64<<20 {
@@ -386,7 +386,7 @@ func (g *ImageGenerator) generateOpenAIEdit(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf("image edit provider returned HTTP %d", response.StatusCode)
+		return nil, providerHTTPError("image edit provider", response)
 	}
 	responseLimit := g.maxBytes*2 + 1<<20
 	if responseLimit > 64<<20 {
@@ -442,10 +442,7 @@ func (g *ImageGenerator) generatePollinations(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"image generation provider returned HTTP %d",
-			response.StatusCode,
-		)
+		return nil, providerHTTPError("image generation provider", response)
 	}
 	return readBounded(response.Body, g.maxBytes)
 }
@@ -508,10 +505,7 @@ func (g *ImageGenerator) generateOpenAIChat(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
-		return nil, fmt.Errorf(
-			"image generation provider returned HTTP %d",
-			response.StatusCode,
-		)
+		return nil, providerHTTPError("image generation provider", response)
 	}
 	responseLimit := g.maxBytes*2 + 1<<20
 	if responseLimit > 64<<20 {
@@ -729,6 +723,21 @@ func validateGeneratedImage(data []byte) (string, int, int, error) {
 		return "", 0, 0, errors.New("generated image dimensions are invalid")
 	}
 	return extension, config.Width, config.Height, nil
+}
+
+// providerHTTPError formats a non-2xx provider response including a
+// bounded slice of the response body — without it "HTTP 400" says
+// nothing about whether the prompt was rejected or the request malformed.
+func providerHTTPError(prefix string, response *http.Response) error {
+	body, _ := readBounded(response.Body, 4<<10)
+	detail := strings.TrimSpace(string(body))
+	if detail == "" {
+		return fmt.Errorf("%s returned HTTP %d", prefix, response.StatusCode)
+	}
+	return fmt.Errorf(
+		"%s returned HTTP %d: %s",
+		prefix, response.StatusCode, detail,
+	)
 }
 
 func readBounded(reader io.Reader, limit int64) ([]byte, error) {
