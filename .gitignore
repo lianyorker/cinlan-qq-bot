@@ -31,3 +31,5 @@ onebot11_*.json
 bot_new
 new-persona-renqi.json
 affinity-prompts-patch.json
+
+.cinlan-*.tmp.md
