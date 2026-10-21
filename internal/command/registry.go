@@ -133,6 +133,20 @@ func (r *Registry) Execute(ctx context.Context, event platform.Event, sessionID,
 	return result, true, err
 }
 
+// Matches reports whether raw parses as "/name" for a registered
+// command (name or alias). Used to let real commands ride through
+// mention-only gating without leaking arbitrary slash text.
+func (r *Registry) Matches(raw string) bool {
+	name, _, ok := Parse(raw)
+	if !ok {
+		return false
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	_, exists := r.commands[name]
+	return exists
+}
+
 func (r *Registry) List() []Info {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

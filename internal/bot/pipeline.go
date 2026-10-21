@@ -270,7 +270,10 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		event.Stop("reply_policy_disabled")
 		return nil
 	case binding.ReplyModeMentionOnly:
-		if !state.eventMentioned {
+		// Real commands ride through mention-only: /开启通知 must be able
+		// to undo a notify-off group. Non-command "/" text still dies
+		// here — the attention stage does not re-gate mentions.
+		if !state.eventMentioned && !s.commandMessage(state.text) {
 			state.ignored = true
 			event.Stop("not_mentioned")
 			return nil
@@ -316,6 +319,25 @@ func (s *Service) stageSecurity(ctx context.Context, event *pipeline.Context) er
 	state.reply = strings.TrimSpace(decision.Reply)
 	s.stats.processed.Add(1)
 	return nil
+}
+
+// commandMessage reports whether text addresses a real command —
+// registered slash commands plus the built-in set — so operators can
+// still steer the bot in mention-only groups (re-enable notify, resume
+// a handoff) without an @ mention.
+func (s *Service) commandMessage(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "/") {
+		return false
+	}
+	if s.commands != nil && s.commands.Matches(trimmed) {
+		return true
+	}
+	switch strings.ToLower(trimmed) {
+	case "/clear", "/清空", "/亲密度", "/affinity", "/help", "/帮助":
+		return true
+	}
+	return false
 }
 
 func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) error {

@@ -110,10 +110,12 @@ func registerLocalExtensions(
 			if err := store.SetNotifyEnabled(c.Event.MessageType, c.Event.ChatID, true); err != nil {
 				return command.Result{Handled: true, Reply: "保存失败：" + err.Error()}, nil
 			}
-			// "叫回来" also lifts self-mute — an operator calling her back
-			// outranks a go_quiet she gave herself.
+			// "叫回来" lifts everything: notify on, self-mute cleared, and
+			// any handoff released — the single wake command now that
+			// /人工 /恢复 are gone.
 			_ = store.SetMuteUntil(c.Event.MessageType, c.Event.ChatID, time.Time{})
-			return command.Result{Handled: true, Reply: "本群通知已开启（装死也解除了）。"}, nil
+			service.ClearHandoff(c.SessionID)
+			return command.Result{Handled: true, Reply: "通知已开启，装死/接管状态也一并解除。"}, nil
 		},
 	})
 

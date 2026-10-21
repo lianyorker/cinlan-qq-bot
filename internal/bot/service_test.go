@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
+	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
@@ -285,22 +286,33 @@ func TestIgnoresPrivateMessageOutsideAllowlist(t *testing.T) {
 }
 
 func TestHandoffAndResumeCommands(t *testing.T) {
+	// The /人工 /恢复 built-ins were folded into the notify pair. Handoff
+	// still lives as a mechanism: a command may return Handoff to seize
+	// the session, and /开启通知's ClearHandoff releases it.
 	cfg := testBotConfig(t)
 	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "answer"}}
 	sender := &fakeSender{}
 	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	if err := service.CommandRegistry().Register(command.Definition{
+		Name: "人工",
+		Handler: func(context.Context, *command.Context) (command.Result, error) {
+			return command.Result{Handled: true, Handoff: true}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
 
 	service.handleEvent(context.Background(), testEvent("1", "/人工", true))
 	service.handleEvent(context.Background(), testEvent("2", "暂停期间的问题", true))
-	service.handleEvent(context.Background(), testEvent("3", "/恢复", true))
+	service.ClearHandoff("qq-onebot:self:10001:group:30003")
 	service.handleEvent(context.Background(), testEvent("4", "恢复后的问题", true))
 
 	if len(agentClient.requests) != 1 ||
 		agentClient.requests[0].Text != "[tester (20002)]: 恢复后的问题" {
 		t.Fatalf("agent requests = %#v", agentClient.requests)
 	}
-	if len(sender.messages) != 3 {
-		t.Fatalf("sent messages = %d, want 3", len(sender.messages))
+	if len(sender.messages) != 1 || sender.messages[0].text != "answer" {
+		t.Fatalf("sent messages = %#v, want the post-release answer", sender.messages)
 	}
 	if service.Stats().HandoffCount != 1 {
 		t.Fatalf("HandoffCount = %d, want 1", service.Stats().HandoffCount)
@@ -409,6 +421,46 @@ func TestPipelineStagesAndCustomCommand(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("custom-command", "/status", true))
 	if len(agentClient.requests) != 0 || len(sender.messages) != 1 || sender.messages[0].text != "custom status" {
 		t.Fatalf("command handling agent=%#v messages=%#v", agentClient.requests, sender.messages)
+	}
+}
+
+func TestSlashCommandSurvivesMentionOnly(t *testing.T) {
+	// RequireMention=true makes the group policy MentionOnly — the same
+	// early drop a /关闭通知 downgrade produces. Slash commands must
+	// still reach the command stage or /开启通知 deadlocks the group.
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	prefs, err := chatprefs.Load("")
+	if err != nil {
+		t.Fatalf("chatprefs.Load() error = %v", err)
+	}
+	service.SetChatPrefs(prefs)
+	if err := service.CommandRegistry().Register(command.Definition{
+		Name: "开启通知",
+		Handler: func(context.Context, *command.Context) (command.Result, error) {
+			return command.Result{Handled: true, Reply: "notified"}, nil
+		},
+	}); err != nil {
+		t.Fatalf("Register() error = %v", err)
+	}
+
+	service.handleEvent(context.Background(), testEvent("slash-cmd", "/开启通知", false))
+	if len(sender.messages) != 1 || sender.messages[0].text != "notified" {
+		t.Fatalf("slash command dropped under mention-only: %#v", sender.messages)
+	}
+
+	// Built-in commands ride through too — /清空 clears the session.
+	service.handleEvent(context.Background(), testEvent("builtin-cmd", "/清空", false))
+	if len(sender.messages) != 2 || sender.messages[1].text != "clear" {
+		t.Fatalf("builtin command dropped under mention-only: %#v", sender.messages)
+	}
+
+	// A non-command slash text must not leak to the agent either.
+	service.handleEvent(context.Background(), testEvent("slash-junk", "/notacommand", false))
+	if len(sender.messages) != 2 || len(agentClient.requests) != 0 {
+		t.Fatalf("slash junk leaked: messages=%#v requests=%#v", sender.messages, agentClient.requests)
 	}
 }
 

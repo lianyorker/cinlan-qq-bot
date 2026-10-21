@@ -66,11 +66,11 @@ func TestImageGeneratorOpenAISavesAndReturnsImageChain(t *testing.T) {
 		t.Fatal(err)
 	}
 	if result.Response == nil ||
-		len(result.Response.Chain) != 2 ||
-		result.Response.Chain[1].Type != message.TypeImage {
+		len(result.Response.Chain) != 1 ||
+		result.Response.Chain[0].Type != message.TypeImage {
 		t.Fatalf("response = %#v", result.Response)
 	}
-	path, _ := result.Response.Chain[1].Data["file"].(string)
+	path, _ := result.Response.Chain[0].Data["file"].(string)
 	if !filepath.IsAbs(path) || filepath.Dir(path) != generator.OutputDir() {
 		t.Fatalf("generated path = %q", path)
 	}

@@ -284,6 +284,13 @@ func (s *Service) SetChatPrefs(store *chatprefs.Store) {
 	s.chatPrefs = store
 }
 
+// ClearHandoff releases a session's human-takeover flag. The /人工 /恢复
+// commands were folded into the notify pair — /开启通知 now serves as the
+// single "wake her up" and clears handoff alongside notify-off and mute.
+func (s *Service) ClearHandoff(sessionID string) {
+	s.sessions.SetHandoff(sessionID, false)
+}
+
 // SetGroupMemberChecker wires the platform capability used by member_groups
 // binding selectors (private-chat routing by community membership).
 func (s *Service) SetGroupMemberChecker(checker GroupMemberChecker) {
@@ -726,13 +733,6 @@ func (s *Service) handleCommand(
 	case "/clear", "/清空":
 		s.sessions.Clear(sessionID)
 		reply = s.cfg.ClearReply
-	case "/human", "/人工":
-		s.sessions.SetHandoff(sessionID, true)
-		s.stats.handoffCount.Add(1)
-		reply = s.cfg.HandoffReply
-	case "/resume", "/恢复":
-		s.sessions.SetHandoff(sessionID, false)
-		reply = s.cfg.ResumeReply
 	case "/亲密度", "/affinity":
 		if s.affinity == nil {
 			reply = "亲密度功能未开启。"
@@ -745,7 +745,7 @@ func (s *Service) handleCommand(
 		}
 		reply = fmt.Sprintf("你和我的亲密度：%s（%d/100）", level, percent)
 	case "/help", "/帮助":
-		reply = "支持命令：/清空、/人工、/恢复、/帮助、/亲密度"
+		reply = "支持命令：/清空、/亲密度、/帮助"
 	default:
 		return false
 	}
