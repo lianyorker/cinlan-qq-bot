@@ -132,7 +132,40 @@ func (s *Store) SearchScoped(query string, limit int, collections []string) []Hi
 	if len(allowed) == 0 {
 		return nil
 	}
-	return s.search(query, limit, allowed)
+	if len(allowed) == 1 {
+		return s.search(query, limit, allowed)
+	}
+	// Multi-collection scope: rank each collection separately and
+	// interleave, ordered by each collection's best score. A large
+	// corpus (e.g. a source tree) otherwise drowns a small doc set
+	// out of every top-k slot under global BM25.
+	perCollection := make([][]Hit, 0, len(allowed))
+	for collection := range allowed {
+		hits := s.search(query, limit, map[string]struct{}{collection: {}})
+		if len(hits) > 0 {
+			perCollection = append(perCollection, hits)
+		}
+	}
+	sort.Slice(perCollection, func(i, j int) bool {
+		return perCollection[i][0].Score > perCollection[j][0].Score
+	})
+	merged := make([]Hit, 0, limit)
+	for round := 0; len(merged) < limit; round++ {
+		advanced := false
+		for _, hits := range perCollection {
+			if round < len(hits) {
+				merged = append(merged, hits[round])
+				advanced = true
+				if len(merged) == limit {
+					break
+				}
+			}
+		}
+		if !advanced {
+			break
+		}
+	}
+	return merged
 }
 
 func (s *Store) search(

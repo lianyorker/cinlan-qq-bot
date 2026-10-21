@@ -53,6 +53,38 @@ func TestLoadDirAndPluginContext(t *testing.T) {
 	}
 }
 
+func TestSearchScopedInterleavesCollections(t *testing.T) {
+	store := NewStore()
+	// A fat corpus whose every document mentions the term crowds the
+	// global ranking; the small collection still must surface a hit.
+	for i := 0; i < 30; i++ {
+		if err := store.Add(Document{
+			ID:         "big-" + string(rune('a'+i)),
+			Collection: "big",
+			Content:    "购买 下单 支付 退款 订单流程说明 购买 下单 支付 退款",
+		}); err != nil {
+			t.Fatalf("Add(big) error = %v", err)
+		}
+	}
+	if err := store.Add(Document{
+		ID:         "small",
+		Collection: "small",
+		Content:    "卡网（购买 / 在线支付）地址见文档。",
+	}); err != nil {
+		t.Fatalf("Add(small) error = %v", err)
+	}
+	hits := store.SearchScoped("购买", 3, []string{"big", "small"})
+	found := false
+	for _, hit := range hits {
+		if hit.DocumentID == "small" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("small collection starved out of top-k: %#v", hits)
+	}
+}
+
 func TestSearchScopedDoesNotLeakAcrossCollections(t *testing.T) {
 	store := NewStore()
 	for _, document := range []Document{
