@@ -21,6 +21,8 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
+	"github.com/lianyorker/cinlan-qq-bot/internal/cron"
+	"github.com/lianyorker/cinlan-qq-bot/internal/interaction"
 	"github.com/lianyorker/cinlan-qq-bot/internal/media"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
@@ -32,6 +34,8 @@ func registerLocalExtensions(
 	cfg config.Config,
 	service *bot.Service,
 	imageGenerator *media.ImageGenerator,
+	scheduler *cron.Scheduler,
+	caller interaction.ActionCaller,
 	logger *slog.Logger,
 ) error {
 	store, err := chatprefs.Load(cfg.ChatPrefsFile)
@@ -41,6 +45,25 @@ func registerLocalExtensions(
 	service.SetChatPrefs(store)
 	if imageGenerator != nil {
 		imageGenerator.SetReferenceResolver(store.LatestImage)
+	}
+	if scheduler != nil {
+		if registerErr := service.ToolRegistry().Register(
+			cron.Tool(scheduler),
+		); registerErr != nil {
+			logger.Error("failed to register schedule tool", "error", registerErr)
+		}
+	}
+	if caller != nil {
+		if registerErr := service.ToolRegistry().Register(
+			interaction.PokeTool(caller),
+		); registerErr != nil {
+			logger.Error("failed to register poke tool", "error", registerErr)
+		}
+	}
+	if registerErr := service.ToolRegistry().Register(
+		interaction.QuietTool(store, time.Now),
+	); registerErr != nil {
+		logger.Error("failed to register quiet tool", "error", registerErr)
 	}
 
 	service.SetMemeDir(

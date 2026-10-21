@@ -211,10 +211,39 @@ type Config struct {
 	MediaToolConcurrency int
 	MessageDedupeTTL     time.Duration
 
+	// Humanization layer — makes the bot behave like a person rather than
+	// a vending machine. All persona-agnostic; personas stay operator-owned.
+	TypingSim      bool          // human-like delay before sending
+	TypingBase     time.Duration // base delay before first reply part
+	TypingPerRune  time.Duration // extra delay per rune of the first part
+	TypingMax      time.Duration // cap for the typing delay
+	MoodEnabled    bool          // per-chat mood meter + prompt hint
+	SleepStart     int           // hour sleep window begins (-1 disables)
+	SleepEnd       int           // hour sleep window ends
+	Proactive      bool          // ambient opener engine
+	ProactiveTick  time.Duration // sweep interval
+	ProactiveIdle  time.Duration // required chat silence before eligible
+	ProactiveWait  time.Duration // cooldown between proactive sends
+	ProactiveProb  float64       // per-tick fire probability
+	ProactiveDaily int           // per-chat daily cap
+
 	HandoffReply string
 	ResumeReply  string
 	ClearReply   string
 	ErrorReply   string
+}
+
+// Asleep reports whether hour-of-day now falls inside the configured sleep
+// window. Windows may wrap midnight (e.g. 1..8 means 01:00-07:59 asleep).
+func (c Config) Asleep(now time.Time) bool {
+	if c.SleepStart < 0 {
+		return false
+	}
+	hour := now.Hour()
+	if c.SleepStart <= c.SleepEnd {
+		return hour >= c.SleepStart && hour < c.SleepEnd
+	}
+	return hour >= c.SleepStart || hour < c.SleepEnd
 }
 
 func Load() (Config, error) {
@@ -493,6 +522,20 @@ func Load() (Config, error) {
 		&errs,
 	)
 	cfg.MessageDedupeTTL = parseDuration("BOT_MESSAGE_DEDUPE_TTL", 10*time.Minute, true, &errs)
+
+	cfg.TypingSim = parseBool("QQ_TYPING_SIM", true, &errs)
+	cfg.TypingBase = parseDuration("QQ_TYPING_BASE", 1200*time.Millisecond, true, &errs)
+	cfg.TypingPerRune = parseDuration("QQ_TYPING_PER_RUNE", 55*time.Millisecond, true, &errs)
+	cfg.TypingMax = parseDuration("QQ_TYPING_MAX", 8*time.Second, true, &errs)
+	cfg.MoodEnabled = parseBool("QQ_MOOD_ENABLED", true, &errs)
+	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
+	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
+	cfg.Proactive = parseBool("QQ_PROACTIVE", false, &errs)
+	cfg.ProactiveTick = parseDuration("QQ_PROACTIVE_TICK", 5*time.Minute, true, &errs)
+	cfg.ProactiveIdle = parseDuration("QQ_PROACTIVE_IDLE", 45*time.Minute, true, &errs)
+	cfg.ProactiveWait = parseDuration("QQ_PROACTIVE_COOLDOWN", 4*time.Hour, true, &errs)
+	cfg.ProactiveProb = parseFloat("QQ_PROACTIVE_CHANCE", 0.12, 0, 1, &errs)
+	cfg.ProactiveDaily = parseInt("QQ_PROACTIVE_DAILY", 5, 1, &errs)
 
 	if err := cfg.Validate(); err != nil {
 		errs = append(errs, err)

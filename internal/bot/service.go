@@ -145,6 +145,8 @@ type Service struct {
 	requestTimes     map[string][]time.Time
 	attentionTimes   map[string][]time.Time
 	seenMessages     map[string]time.Time
+	lastActivity     map[string]time.Time
+	activityMu       sync.RWMutex
 	dedupeCounter    uint64
 	rateCounter      uint64
 	attentionCounter uint64
@@ -221,6 +223,7 @@ func NewWithRuntime(
 		requestTimes:       make(map[string][]time.Time),
 		attentionTimes:     make(map[string][]time.Time),
 		seenMessages:       make(map[string]time.Time),
+		lastActivity:       make(map[string]time.Time),
 		providers:          providers,
 		plugins:            plugins,
 		commands:           command.NewRegistry(),
@@ -258,8 +261,25 @@ func (s *Service) CommandRegistry() *command.Registry {
 	return s.commands
 }
 
-// SetChatPrefs wires the per-chat preference store (notification switch and
-// remembered notes) used by the pipeline and admin commands.
+// TouchActivity records that a chat saw traffic (inbound message or our
+// own outbound) at now. The proactive engine keys off this to stay quiet
+// in lively chats.
+func (s *Service) TouchActivity(chatType, chatID string) {
+	if chatType == "" || chatID == "" {
+		return
+	}
+	s.activityMu.Lock()
+	s.lastActivity[chatType+":"+chatID] = s.now()
+	s.activityMu.Unlock()
+}
+
+// LastActivity returns when the chat last saw traffic, zero if unknown.
+func (s *Service) LastActivity(chatType, chatID string) time.Time {
+	s.activityMu.RLock()
+	defer s.activityMu.RUnlock()
+	return s.lastActivity[chatType+":"+chatID]
+}
+
 func (s *Service) SetChatPrefs(store *chatprefs.Store) {
 	s.chatPrefs = store
 }
@@ -762,7 +782,11 @@ func (s *Service) sendTextParts(
 		return false
 	}
 	for index, part := range parts {
-		if index > 0 && !waitForReplyPart(ctx, s.replyPartDelay(parts[index-1])) {
+		if index == 0 {
+			if !waitForReplyPart(ctx, s.typingDelay(part)) {
+				return false
+			}
+		} else if !waitForReplyPart(ctx, s.replyPartDelay(parts[index-1])) {
 			return false
 		}
 		quote := s.cfg.QuoteReply && index == 0 && s.shouldQuoteReply(chatType)
@@ -951,6 +975,27 @@ func (s *Service) replyPartDelay(previous string) time.Duration {
 	}
 	extraRunes := min(utf8.RuneCountInString(previous), 80)
 	return s.cfg.ReplyPartDelay + time.Duration(extraRunes)*8*time.Millisecond
+}
+
+// typingDelay simulates the pause before a person sends their first
+// message: a base beat plus per-rune typing time, jittered and capped so
+// long replies still feel human rather than sluggish.
+func (s *Service) typingDelay(first string) time.Duration {
+	if !s.cfg.TypingSim || s.cfg.TypingBase <= 0 {
+		return 0
+	}
+	delay := s.cfg.TypingBase +
+		time.Duration(utf8.RuneCountInString(first))*s.cfg.TypingPerRune
+	// ±35% jitter so the cadence isn't metronomic.
+	jitter := time.Duration(rand.Int63n(int64(delay/3) + 1))
+	delay += jitter - delay/6
+	if s.cfg.TypingMax > 0 && delay > s.cfg.TypingMax {
+		delay = s.cfg.TypingMax
+	}
+	if delay < 0 {
+		delay = 0
+	}
+	return delay
 }
 
 func waitForReplyPart(ctx context.Context, delay time.Duration) bool {

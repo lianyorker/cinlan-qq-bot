@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 const maxNotesPerChat = 50
@@ -26,6 +27,9 @@ type chatEntry struct {
 	Persona    string      `json:"persona,omitempty"`
 	Notes      []string    `json:"notes,omitempty"`
 	ImageNotes []imageNote `json:"image_notes,omitempty"`
+	Mood       int         `json:"mood,omitempty"`
+	MoodAt     time.Time   `json:"mood_at,omitempty"`
+	MuteUntil  time.Time   `json:"mute_until,omitempty"`
 }
 
 // Store is a small JSON-file-backed per-chat preference store keyed by
@@ -204,6 +208,77 @@ func (s *Store) NotesText(chatType, chatID string) string {
 		b.WriteString(note)
 	}
 	return b.String()
+}
+
+// moodDecayPerHour pulls the mood score back toward zero this many points
+// per hour so a bad morning does not sour the whole week.
+const moodDecayPerHour = 6
+
+func decayedMood(e *chatEntry, now time.Time) int {
+	if e == nil || e.Mood == 0 {
+		return 0
+	}
+	if e.MoodAt.IsZero() {
+		return e.Mood
+	}
+	steps := int(now.Sub(e.MoodAt).Hours() * moodDecayPerHour)
+	if steps <= 0 {
+		return e.Mood
+	}
+	if e.Mood > 0 {
+		if v := e.Mood - steps; v > 0 {
+			return v
+		}
+		return 0
+	}
+	if v := e.Mood + steps; v < 0 {
+		return v
+	}
+	return 0
+}
+
+// BumpMood adjusts the chat mood score by delta (clamped -100..100) and
+// persists. Returns the resulting decayed-adjusted score.
+func (s *Store) BumpMood(chatType, chatID string, delta int, now time.Time) (int, error) {
+	if delta == 0 {
+		return s.MoodScore(chatType, chatID, now), nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(chatType, chatID)
+	mood := decayedMood(e, now) + delta
+	if mood > 100 {
+		mood = 100
+	} else if mood < -100 {
+		mood = -100
+	}
+	e.Mood = mood
+	e.MoodAt = now
+	return mood, s.saveLocked()
+}
+
+// MoodScore returns the decayed mood score for the chat (0 when unset).
+func (s *Store) MoodScore(chatType, chatID string, now time.Time) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return decayedMood(s.data[key(chatType, chatID)], now)
+}
+
+// SetMuteUntil makes the bot ignore the chat until the given time —
+// the "go quiet" tool's backing switch.
+func (s *Store) SetMuteUntil(chatType, chatID string, until time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entry(chatType, chatID).MuteUntil = until
+	return s.saveLocked()
+}
+
+// Muted reports whether the chat is currently self-muted.
+func (s *Store) Muted(chatType, chatID string, now time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	return e != nil && !e.MuteUntil.IsZero() && now.Before(e.MuteUntil)
 }
 
 func (s *Store) saveLocked() error {

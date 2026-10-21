@@ -34,6 +34,7 @@ type Job struct {
 	Interval  time.Duration `json:"interval"`
 	NextRun   time.Time     `json:"next_run"`
 	Enabled   bool          `json:"enabled"`
+	Once      bool          `json:"once,omitempty"`
 	LastError string        `json:"last_error,omitempty"`
 }
 
@@ -214,6 +215,10 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 		s.mu.Lock()
 		delete(s.running, job.ID)
 		current, exists := s.jobs[job.ID]
+		if exists && job.Once && err == nil {
+			delete(s.jobs, job.ID)
+			exists = false
+		}
 		if exists {
 			if err != nil {
 				current.LastError = err.Error()

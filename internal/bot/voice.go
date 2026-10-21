@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
@@ -83,6 +84,62 @@ func sanitizeVoiceClip(text string) string {
 	}
 }
 
+// voiceClipJunkPatterns match content that TTS would read literally and
+// sound terrible: URLs, OneBot CQ codes, markdown fences/emphasis.
+var voiceClipJunkPatterns = []*regexp.Regexp{
+	regexp.MustCompile(`https?://\S+|www\.\S+`),
+	regexp.MustCompile(`\[CQ:[^\]]+\]`),
+	regexp.MustCompile("```[^`]*```|`[^`]*`"),
+	regexp.MustCompile(`[*_~#>]+`),
+}
+
+// prosodyNormalizeVoiceClip turns raw clip text into speakable prose with
+// audible pacing: drop unspeakable symbols, collapse whitespace into
+// comma/period pauses, dedupe punctuation, and guarantee a terminal mark.
+func prosodyNormalizeVoiceClip(text string) string {
+	for _, pat := range voiceClipJunkPatterns {
+		text = pat.ReplaceAllString(text, "")
+	}
+	// Keep only runes a voice can voice: letters, digits, CJK punctuation
+	// and the pause marks. Emoji, dingbats, control chars all go.
+	text = strings.Map(func(r rune) rune {
+		switch {
+		case unicode.IsLetter(r) || unicode.IsDigit(r):
+			return r
+		case unicode.IsPunct(r):
+			return r
+		case unicode.IsSpace(r):
+			return r
+		case r == '～' || r == '♪':
+			return '…'
+		default:
+			return -1
+		}
+	}, text)
+	// Newlines and long spaces become comma pauses; if the char before the
+	// break already ends the sentence, the comma is unnecessary.
+	text = regexp.MustCompile(`\s*\n\s*`).ReplaceAllString(text, "，")
+	text = regexp.MustCompile(`[ \t]{2,}`).ReplaceAllString(text, " ")
+	// Collapse repeated punctuation into a single longer pause.
+	text = regexp.MustCompile(`，{2,}`).ReplaceAllString(text, "，")
+	text = regexp.MustCompile(`。{2,}`).ReplaceAllString(text, "。")
+	text = regexp.MustCompile(`…{2,}`).ReplaceAllString(text, "……")
+	text = regexp.MustCompile(`~{2,}`).ReplaceAllString(text, "～")
+	// A comma right after a terminal mark is a stutter — drop it.
+	text = regexp.MustCompile(`([。！？…])，+`).ReplaceAllString(text, "$1")
+	text = strings.TrimSpace(text)
+	text = strings.Trim(text, "，、")
+	if text == "" {
+		return ""
+	}
+	// Guarantee a terminal pause so the clip doesn't clip mid-breath.
+	last := []rune(text)
+	if !strings.ContainsRune("。！？…～", last[len(last)-1]) {
+		text += "。"
+	}
+	return text
+}
+
 // extractVoiceMarkers returns the reply with all voice markers removed and
 // the list of voice clips inside them (capped at 2 clips).
 func extractVoiceMarkers(reply string) (string, []voiceClip) {
@@ -101,7 +158,9 @@ func extractVoiceMarkers(reply string) (string, []voiceClip) {
 				rate = v
 			}
 		}
-		if text := sanitizeVoiceClip(match[3]); text != "" {
+		if text := prosodyNormalizeVoiceClip(
+			sanitizeVoiceClip(match[3]),
+		); text != "" {
 			clips = append(clips, voiceClip{
 				Text:    text,
 				Singing: strings.EqualFold(match[1], "sing"),

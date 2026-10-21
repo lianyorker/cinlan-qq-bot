@@ -17,6 +17,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+	"github.com/lianyorker/cinlan-qq-bot/internal/mood"
 	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
@@ -114,6 +115,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	state.messageID = event.Event.MessageID
 	state.errorReply = s.cfg.ErrorReply
 	state.allowLinks = true
+	s.TouchActivity(state.chatType, state.chatID)
 
 	if !event.Event.IsChatMessage() ||
 		state.userID == "" ||
@@ -221,6 +223,25 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	if strings.TrimSpace(state.text) == "" {
 		state.ignored = true
 		event.Stop("empty_message")
+		return nil
+	}
+	// Mood bumps apply even to messages we end up ignoring — being cursed
+	// at while quiet is exactly what sours a mood. Self-mute (装死) then
+	// drops everything, mentions included; it expires on its own.
+	if s.cfg.MoodEnabled && s.chatPrefs != nil {
+		if delta := mood.Score(state.text, state.eventMentioned); delta != 0 {
+			if _, err := s.chatPrefs.BumpMood(
+				state.chatType, state.chatID, delta, s.now(),
+			); err != nil {
+				s.logger.Warn("mood update failed", "error", err.Error())
+			}
+		}
+	}
+	if s.chatPrefs != nil && s.chatPrefs.Muted(
+		state.chatType, state.chatID, s.now(),
+	) {
+		state.ignored = true
+		event.Stop("self_muted")
 		return nil
 	}
 	switch state.replyPolicy.Mode {
@@ -698,6 +719,21 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
 		}
+	}
+	// Humanization hints: current mood tier + late-night drowsiness. Both
+	// are persona-agnostic nudges, appended after operator notes.
+	if s.cfg.MoodEnabled && s.chatPrefs != nil {
+		if hint := mood.Hint(s.chatPrefs.MoodScore(
+			state.chatType, state.chatID, s.now(),
+		)); hint != "" {
+			request.SystemPrompt += "\n\n" + hint
+		}
+	}
+	if s.cfg.Asleep(s.now()) {
+		request.SystemPrompt += fmt.Sprintf(
+			"\n\n现在是深夜 %s，你很困——回复短一点迷糊一点，闲聊可以装没看全。",
+			s.now().Format("15:04"),
+		)
 	}
 	if appendPrompt, ok := event.Values["agent.system_prompt_append"].(string); ok {
 		appendPrompt = strings.TrimSpace(appendPrompt)

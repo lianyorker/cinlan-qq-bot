@@ -20,6 +20,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
 	"github.com/lianyorker/cinlan-qq-bot/internal/cron"
 	"github.com/lianyorker/cinlan-qq-bot/internal/filedelivery"
+	"github.com/lianyorker/cinlan-qq-bot/internal/interaction"
 	"github.com/lianyorker/cinlan-qq-bot/internal/knowledge"
 	"github.com/lianyorker/cinlan-qq-bot/internal/mcp"
 	"github.com/lianyorker/cinlan-qq-bot/internal/media"
@@ -30,6 +31,7 @@ import (
 	onebotplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/onebot"
 	qqntplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/qqnt"
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
+	"github.com/lianyorker/cinlan-qq-bot/internal/proactive"
 	"github.com/lianyorker/cinlan-qq-bot/internal/provider"
 	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
@@ -446,10 +448,57 @@ func main() {
 			logger.Warn("file catalog contains no enabled files", "file", cfg.FileCatalogPath)
 		}
 	}
-	if extensionErr := registerLocalExtensions(ctx, cfg, botService, imageGenerator, logger); extensionErr != nil {
+		// Micro-action tools need a raw-action channel: multi-account adapters
+	// expose CallFor(selfID, ...); single-account ones only Call, so wrap it.
+	var actionCaller interaction.ActionCaller
+	if multi, ok := qqAdapter.(interface {
+		CallFor(context.Context, string, string, map[string]any) (any, error)
+	}); ok {
+		actionCaller = multi
+	} else if single, ok := qqAdapter.(interface {
+		Call(context.Context, string, map[string]any) (any, error)
+	}); ok {
+		actionCaller = interaction.Wrap(single.Call)
+	}
+	if extensionErr := registerLocalExtensions(
+		ctx, cfg, botService, imageGenerator, scheduler, actionCaller, logger,
+	); extensionErr != nil {
 		logger.Error("failed to register local extensions", "error", extensionErr)
 		os.Exit(2)
 	}
+
+	// Ambient opener: the free-range piece — persona may speak first in a
+	// quiet group. Gates: QQ_PROACTIVE, notify switch, mute, sleep window.
+	platformName := platform.PlatformQQOneBot
+	if cfg.QQPlatform == "qqnt" {
+		platformName = platform.PlatformQQNative
+	}
+	go proactive.New(
+		proactive.Config{
+			Enabled:    cfg.Proactive,
+			Tick:       cfg.ProactiveTick,
+			MinIdle:    cfg.ProactiveIdle,
+			Cooldown:   cfg.ProactiveWait,
+			Chance:     cfg.ProactiveProb,
+			DailyLimit: cfg.ProactiveDaily,
+			SleepStart: cfg.SleepStart,
+			SleepEnd:   cfg.SleepEnd,
+		},
+		proactive.Deps{
+			Providers: providerRegistry,
+			Send: func(sendCtx context.Context, out platform.Outbound) error {
+				return qqAdapter.Send(sendCtx, out)
+			},
+			Bindings:  bindings,
+			Personas:  botService.PersonaRegistry(),
+			Sessions:  sessionStore,
+			ChatPrefs: botService.ChatPrefs(),
+			Activity:  botService.LastActivity,
+			Touch:     botService.TouchActivity,
+			Platform:  platformName,
+			Logger:    logger,
+		},
+	).Run(ctx)
 	mediaLimiter.Notify = func(name string, actor tool.Actor, used, limit int) {
 		if name != "generate_image" || actor.ChatID == "" {
 			return
