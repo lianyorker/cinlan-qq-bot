@@ -129,6 +129,62 @@ func parseFaceMarkers(text string) (message.Chain, string, bool) {
 	return chain, cleaned.String(), true
 }
 
+// atMarkerPattern matches [[AT]] (at the current sender) and
+// [[AT:12345678]] (at a specific member by QQ id). Like the other
+// markers the model can learn these from the system prompt note.
+var atMarkerPattern = regexp.MustCompile(
+	`\[\[(?:AT|at)(?::\s*([0-9]{5,12}))?\]\]`,
+)
+
+const maxAtPerPart = 3
+
+// expandAtMarkers post-processes a parsed part chain: at-markers inside
+// text components become real at-segments so the model can ping members.
+// defaultUserID is the sender being replied to, used for bare [[AT]].
+// Markers past the cap degrade to stripped text (never leak literally).
+func expandAtMarkers(chain message.Chain, defaultUserID string) (message.Chain, string) {
+	var out message.Chain
+	var cleaned strings.Builder
+	ats := 0
+	for _, comp := range chain {
+		if comp.Type != message.TypeText {
+			out = append(out, comp)
+			continue
+		}
+		text, _ := comp.Data["text"].(string)
+		matches := atMarkerPattern.FindAllStringSubmatchIndex(text, -1)
+		if len(matches) == 0 {
+			out = append(out, comp)
+			cleaned.WriteString(text)
+			continue
+		}
+		cursor := 0
+		for _, m := range matches {
+			if segment := text[cursor:m[0]]; segment != "" {
+				out = append(out, message.Text(segment))
+				cleaned.WriteString(segment)
+			}
+			target := defaultUserID
+			if m[2] >= 0 {
+				target = strings.TrimSpace(text[m[2]:m[3]])
+			}
+			if target != "" && ats < maxAtPerPart {
+				out = append(out, message.At(target))
+				ats++
+			}
+			cursor = m[1]
+		}
+		if tail := text[cursor:]; tail != "" {
+			out = append(out, message.Text(tail))
+			cleaned.WriteString(tail)
+		}
+	}
+	if len(out) == 0 {
+		out = chain
+	}
+	return out, cleaned.String()
+}
+
 func planReplyParts(reply string) []string {
 	reply = strings.TrimSpace(reply)
 	if reply == "" {

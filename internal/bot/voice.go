@@ -61,6 +61,11 @@ const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOI
 // cannot command voice lines.
 const voicePrivilegedRequestNote = `- 对方明确要求听语音（"叫声xx给我听""用语音说"之类）时，要用 [[VOICE]] 把那句台词真的念出来，不能只在文字里假装说过。`
 
+// atPromptNote (group chats only) teaches the marker that becomes a real
+// @ notification — the human touch for calling someone out or stirring
+// the pot. The cap and "don't spam" hint keep it from pinging everyone.
+const atPromptNote = `- 想@某人时在回复里写 [[AT]]（@当前说话的人）或 [[AT:QQ号]]（@指定成员），对方会真的收到@提醒。点名回怼、叫人来围观时用，一条消息最多@3次，别见人就@。`
+
 // voiceClipMetaPatterns strip leftover stage directions like （温柔地唱）
 // or meta sentences like "这是一段设计的音色" at the start of a clip
 // before synthesis.

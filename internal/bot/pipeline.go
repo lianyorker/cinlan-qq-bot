@@ -735,6 +735,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n" + voicePrivilegedRequestNote
 		}
 	}
+	// Group chats get the @ marker so replies can ping members for real —
+	// quoting is passive; an @ is how a person calls someone out.
+	if state.chatType == platform.ChatGroup {
+		request.SystemPrompt += "\n" + atPromptNote
+	}
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
@@ -1100,6 +1105,11 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				continue
 			}
 			chain, plain, _ := parseFaceMarkers(part)
+			if state.chatType == platform.ChatGroup {
+				// [[AT]] pings the sender, [[AT:qq]] pings a specific
+				// member — real @ notifications, not literal text.
+				chain, plain = expandAtMarkers(chain, state.userID)
+			}
 			chains = append(chains, chain)
 			cleaned = append(cleaned, strings.TrimSpace(plain))
 		}
