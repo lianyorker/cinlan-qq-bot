@@ -79,25 +79,6 @@ func New(cfg Config) (Provider, error) {
 			timeout: cfg.Timeout,
 			client:  &http.Client{Timeout: cfg.Timeout},
 		}, nil
-	case "dashscope":
-		if strings.TrimSpace(cfg.APIKey) == "" {
-			return nil, fmt.Errorf("tts dashscope mode needs DASHSCOPE_API_KEY")
-		}
-		voice := strings.TrimSpace(cfg.Voice)
-		if voice == "" || strings.HasPrefix(voice, "zh-CN-") {
-			voice = "zhichu"
-		}
-		model := strings.TrimSpace(cfg.Model)
-		if model == "" {
-			model = "sambert-zhichu-v1"
-		}
-		return &dashProvider{
-			apiKey:  cfg.APIKey,
-			baseURL: cfg.APIURL,
-			model:   model,
-			voice:   voice,
-			timeout: cfg.Timeout,
-		}, nil
 	case "command":
 		if strings.TrimSpace(cfg.Command) == "" {
 			return nil, fmt.Errorf("tts command mode needs a command template")

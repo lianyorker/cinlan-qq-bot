@@ -61,58 +61,6 @@ func try(name, base, gecVer, origin, ua string, extra http.Header) {
 	_ = conn.Close()
 }
 
-func dash(key, model, voice, text, base string) {
-	header := http.Header{}
-	header.Set("Authorization", "Bearer "+key)
-	conn, resp, err := websocket.DefaultDialer.Dial(base, header)
-	if err != nil {
-		status := "no-resp"
-		if resp != nil {
-			status = resp.Status
-		}
-		fmt.Printf("[dash] dial FAIL %s | %v\n", status, err)
-		return
-	}
-	defer conn.Close()
-	taskID := randHex(16)
-	run := map[string]any{
-		"header": map[string]any{
-			"action": "run-task", "task_id": taskID, "streaming": "out",
-		},
-		"payload": map[string]any{
-			"task_group": "aigc", "task": "tts",
-			"function": "SpeechSynthesizer", "model": model,
-			"parameters": map[string]any{
-				"voice": voice, "format": "mp3", "sample_rate": 22050,
-			},
-			"input": map[string]any{"text": text},
-		},
-	}
-	if err := conn.WriteJSON(run); err != nil {
-		fmt.Printf("[dash] run-task write: %v\n", err)
-		return
-	}
-	audio := 0
-	for {
-		msgType, payload, err := conn.ReadMessage()
-		if err != nil {
-			fmt.Printf("[dash] read: %v (audio=%d)\n", err, audio)
-			return
-		}
-		if msgType == websocket.BinaryMessage {
-			audio += len(payload)
-			continue
-		}
-		body := string(payload)
-		fmt.Printf("[dash] TEXT: %s\n", truncate(body, 300))
-		if strings.Contains(body, "task-finished") ||
-			strings.Contains(body, "task-failed") {
-			fmt.Printf("[dash] DONE audio=%d bytes\n", audio)
-			return
-		}
-	}
-}
-
 func truncate(text string, limit int) string {
 	runes := []rune(text)
 	if len(runes) <= limit {
@@ -150,23 +98,6 @@ func main() {
 	}
 	if len(os.Args) > 2 && os.Args[2] == "synth" {
 		synth(newURL, ver, extOrigin, ua130, "测试合成，一二三")
-		return
-	}
-	if len(os.Args) > 2 && os.Args[2] == "dash" {
-		key := os.Getenv("DASHSCOPE_API_KEY")
-		model := "sambert-zhichu-v1"
-		voice := "zhichu"
-		if len(os.Args) > 3 {
-			model = os.Args[3]
-		}
-		if len(os.Args) > 4 {
-			voice = os.Args[4]
-		}
-		base := "wss://dashscope.aliyuncs.com/api-ws/v1/inference/"
-		if len(os.Args) > 5 {
-			base = os.Args[5]
-		}
-		dash(key, model, voice, "测试语音一二三", base)
 		return
 	}
 	try("new/ver-"+ver, newURL, ver, extOrigin, ua130, nil)

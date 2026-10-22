@@ -232,9 +232,9 @@ func registerLocalExtensions(
 	})
 
 	register(command.Definition{
-		Name:        "唱歌",
-		Aliases:     []string{"语音", "voice"},
-		Description: "开关本群语音回复（/唱歌 开启|关闭）",
+		Name:        "语音",
+		Aliases:     []string{"唱歌", "voice"},
+		Description: "开关本群语音回复（/语音 开启|关闭）",
 		Permission:  command.PermissionEveryone,
 		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
 			if !isOperator(c) {
@@ -248,7 +248,7 @@ func registerLocalExtensions(
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
-				return command.Result{Handled: true, Reply: "语音已开启，点歌就能唱了。"}, nil
+				return command.Result{Handled: true, Reply: "语音已开启，可以点语音/哼歌了。"}, nil
 			case "关闭", "关", "off":
 				if err := store.SetVoiceEnabled(
 					c.Event.MessageType, c.Event.ChatID, false,
@@ -263,7 +263,7 @@ func registerLocalExtensions(
 				) {
 					state = "关闭"
 				}
-				return command.Result{Handled: true, Reply: "当前语音：" + state + "（/唱歌 开启|关闭）"}, nil
+				return command.Result{Handled: true, Reply: "当前语音：" + state + "（/语音 开启|关闭）"}, nil
 			}
 		},
 	})
