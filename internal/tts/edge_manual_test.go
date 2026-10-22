@@ -26,10 +26,12 @@ func TestManualEdgeSynth(t *testing.T) {
 		style:   style,
 		timeout: 20 * time.Second,
 	}
+	text := os.Getenv("TTS_TEXT")
+	if text == "" {
+		text = "七七上线啦！今天也要元气满满哦，想听点什么尽管说。"
+	}
 	err := p.Synthesize(
-		context.Background(),
-		"七七上线啦！今天也要元气满满哦，想听点什么尽管说。",
-		out, voice, 1.0,
+		context.Background(), text, out, voice, 1.0,
 	)
 	if err != nil {
 		t.Fatalf("synthesize failed: %v", err)

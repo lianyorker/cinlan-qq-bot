@@ -54,6 +54,22 @@ func (p *edgeProvider) Synthesize(
 		defer cancel()
 	}
 
+	// Clause-level prosody jitter occasionally trips the consumer
+	// endpoint's SSML parser on longer texts ("SSML is invalid") —
+	// retry once with the plain single-prosody format before giving up.
+	err := p.attempt(ctx, text, outPath, voice, rate, false)
+	if err != nil && strings.Contains(err.Error(), "SSML is invalid") {
+		err = p.attempt(ctx, text, outPath, voice, rate, true)
+	}
+	return err
+}
+
+func (p *edgeProvider) attempt(
+	ctx context.Context,
+	text, outPath, voice string,
+	rate float64,
+	plainSSML bool,
+) error {
 	connID := randHex(16)
 	wsURL := fmt.Sprintf(
 		"%s?Ocp-Apim-Subscription-Key=%s&Sec-MS-GEC=%s"+
@@ -109,7 +125,7 @@ func (p *edgeProvider) Synthesize(
 	if err := p.writeText(conn, speechConfigMessage()); err != nil {
 		return err
 	}
-	if err := p.writeText(conn, ssmlMessage(connID, voiceName, p.style, ratePercent, p.pitch, text)); err != nil {
+	if err := p.writeText(conn, ssmlMessage(connID, voiceName, p.style, ratePercent, p.pitch, text, plainSSML)); err != nil {
 		return err
 	}
 
@@ -174,8 +190,15 @@ func speechConfigMessage() string {
 		`"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`
 }
 
-func ssmlMessage(connID, voice, style, rate, pitch, text string) string {
+func ssmlMessage(connID, voice, style, rate, pitch, text string, plainSSML bool) string {
 	inner := prosodyClauses(pitch, rate, text)
+	if plainSSML {
+		inner = fmt.Sprintf(
+			`<prosody pitch='%s' rate='%s' volume='+0%%'>%s</prosody>`,
+			defaultOr(pitch, "+0Hz"), defaultOr(rate, "+0%"),
+			xmlEscape(text),
+		)
+	}
 	if strings.TrimSpace(style) != "" {
 		inner = fmt.Sprintf(
 			`<mstts:express-as style='%s' styledegree='1.2'>%s</mstts:express-as>`,
@@ -239,6 +262,12 @@ func splitVoiceClauses(text string) []string {
 	}
 	if seg := strings.TrimSpace(string(runes[start:])); seg != "" {
 		clauses = append(clauses, seg)
+	}
+	// Cap at 4 prosody siblings — the drift pattern cycles at 4 anyway,
+	// and long sibling lists are what the endpoint choked on.
+	for len(clauses) > 4 {
+		clauses[2] += clauses[3]
+		clauses = append(clauses[:3], clauses[4:]...)
 	}
 	return clauses
 }
