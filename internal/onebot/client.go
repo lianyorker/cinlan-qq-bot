@@ -585,7 +585,9 @@ func toSegments(chain message.Chain) []MessageSegment {
 		for key, value := range component.Data {
 			data[key] = normalizeSegmentValue(key, value)
 		}
-		if component.Type == message.TypeImage {
+		switch component.Type {
+		case message.TypeImage, message.TypeRecord,
+			message.TypeVideo, message.TypeFile:
 			if file, ok := data["file"].(string); ok {
 				data["file"] = absoluteLocalPath(file)
 			}

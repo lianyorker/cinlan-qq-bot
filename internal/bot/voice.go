@@ -401,7 +401,15 @@ func (s *Service) sendVoiceClips(
 			time.Now().UnixNano(),
 			opaqueAttentionID(selfID, chatID, text),
 		)
-		chain := message.Chain{message.Record(path)}
+		// NapCat needs a real file:// URI — a relative path like
+		// "data/voice/x.mp3" is rejected as 识别URL失败 (retcode 1200).
+		absPath, absErr := filepath.Abs(path)
+		if absErr != nil {
+			absPath = path
+		}
+		chain := message.Chain{
+			message.Record("file://" + filepath.ToSlash(absPath)),
+		}
 		if err := s.voiceProvider.Synthesize(
 			ctx, text, path, voiceName, rate,
 		); err != nil {
