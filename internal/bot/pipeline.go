@@ -60,6 +60,9 @@ type flowState struct {
 	moderation      *binding.ModerationPolicy
 	learning        bool
 	allowLinks      bool
+	// prevActivityAt is the chat's previous traffic timestamp captured
+	// at ingress — after TouchActivity runs, lastActivity is already now.
+	prevActivityAt  time.Time
 	affinityPrompts map[string]string
 	errorReply      string
 	response        domain.AgentResponse
@@ -115,6 +118,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	state.messageID = event.Event.MessageID
 	state.errorReply = s.cfg.ErrorReply
 	state.allowLinks = true
+	state.prevActivityAt = s.LastActivity(state.chatType, state.chatID)
 	s.TouchActivity(state.chatType, state.chatID)
 
 	if !event.Event.IsChatMessage() ||
@@ -695,11 +699,21 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// The model has no clock — inject wall time so "现在几点" and
 	// "睡醒了/刚起床" style messages get grounded, honest answers.
 	now := time.Now()
-	request.SystemPrompt += fmt.Sprintf(
+	clockLine := fmt.Sprintf(
 		"\n\n当前时间：%s %s。",
 		now.Format("2006-01-02 15:04"),
 		[]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[now.Weekday()],
 	)
+	// Long silence + "睡醒了" needs an honest gap, not "过去好久了". Only
+	// surface meaningful gaps — minute-level pauses are prompt noise.
+	if !state.prevActivityAt.IsZero() {
+		if gap := now.Sub(state.prevActivityAt); gap >= 30*time.Minute {
+			clockLine += fmt.Sprintf(
+				"距离上一条消息已过去约 %s。", humanizeGap(gap),
+			)
+		}
+	}
+	request.SystemPrompt += clockLine
 	if state.chatType == platform.ChatGroup {
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
@@ -1353,6 +1367,22 @@ func prependBeginDialogs(dialogs []persona.Dialogue, history []domain.ChatMessag
 		)
 	}
 	return append(result, history...)
+}
+
+// humanizeGap renders an elapsed duration coarsely — precision past the
+// hour is noise ("约12小时" reads human, "11小时47分" reads machine).
+func humanizeGap(d time.Duration) string {
+	hours := int(d.Hours())
+	switch {
+	case hours >= 72:
+		return fmt.Sprintf("%d天", hours/24)
+	case hours >= 24:
+		return "一天多"
+	case hours >= 1:
+		return fmt.Sprintf("%d小时", hours)
+	default:
+		return fmt.Sprintf("%d分钟", int(d.Minutes()))
+	}
 }
 
 func eventTime(event platform.Event) int64 {
