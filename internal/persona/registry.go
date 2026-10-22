@@ -43,6 +43,7 @@ type Registry struct {
 	profiles    map[string]Profile
 	defaultName string
 	path        string
+	packsDir    string
 	persistErr  error
 }
 
@@ -204,6 +205,54 @@ func (r *Registry) Path() string {
 	return r.path
 }
 
+// PacksDir reports the persona packs directory when UsePacksDir is active.
+func (r *Registry) PacksDir() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.packsDir
+}
+
+// UsePacksDir switches the registry to persona-pack mode: profiles are
+// loaded from subdirectories of dir, and subsequent mutations persist
+// back to pack directories instead of personas.json. A missing dir is
+// a no-op returning nil so deployments without packs keep the
+// personas.json path unchanged.
+func (r *Registry) UsePacksDir(dir string) error {
+	dir = strings.TrimSpace(dir)
+	if dir == "" {
+		return errors.New("persona packs dir is empty")
+	}
+	info, err := os.Stat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return nil
+		}
+		return fmt.Errorf("stat persona packs dir: %w", err)
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("persona packs path %q is not a directory", dir)
+	}
+	packs, defaultName, err := LoadPacksDir(dir)
+	if err != nil {
+		return err
+	}
+	if len(packs) == 0 {
+		return fmt.Errorf("persona packs dir %q contains no enabled packs", dir)
+	}
+	replacement := make(map[string]Profile, len(packs))
+	for _, pack := range packs {
+		replacement[pack.Profile.Name] = pack.Profile
+	}
+	r.mu.Lock()
+	r.profiles = replacement
+	r.defaultName = defaultName
+	r.path = ""
+	r.packsDir = dir
+	r.persistErr = nil
+	r.mu.Unlock()
+	return nil
+}
+
 func (r *Registry) PersistenceError() error {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -211,6 +260,10 @@ func (r *Registry) PersistenceError() error {
 }
 
 func (r *Registry) persistLocked() {
+	if r.packsDir != "" {
+		r.persistPacksLocked()
+		return
+	}
 	if r.path == "" {
 		r.persistErr = nil
 		return
@@ -232,6 +285,43 @@ func (r *Registry) persistLocked() {
 		err = writeAtomic(r.path, ".personas-*.tmp", data)
 	}
 	r.persistErr = err
+}
+
+// persistPacksLocked writes every profile back to its pack directory and
+// removes pack dirs whose persona is no longer registered. Only dirs
+// carrying our manifest schema are removed—foreign directories survive.
+func (r *Registry) persistPacksLocked() {
+	var err error
+	defer func() { r.persistErr = err }()
+
+	alive := make(map[string]struct{}, len(r.profiles))
+	for _, profile := range r.profiles {
+		alive[sanitizeDirName(profile.Name)] = struct{}{}
+		if err = WritePack(r.packsDir, profile, profile.Name == r.defaultName); err != nil {
+			return
+		}
+	}
+	entries, readErr := os.ReadDir(r.packsDir)
+	if readErr != nil {
+		err = readErr
+		return
+	}
+	for _, entry := range entries {
+		if !entry.IsDir() {
+			continue
+		}
+		if _, keep := alive[entry.Name()]; keep {
+			continue
+		}
+		sub := filepath.Join(r.packsDir, entry.Name())
+		manifest, readErr := readManifest(sub)
+		if readErr != nil || manifest.Schema != PackSchema {
+			continue
+		}
+		if err = os.RemoveAll(sub); err != nil {
+			return
+		}
+	}
 }
 
 func normalizeProfile(profile Profile) (Profile, error) {

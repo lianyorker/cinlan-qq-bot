@@ -159,14 +159,48 @@ func (s *Store) AddExchange(key, userText, assistantText string) {
 	defer s.mu.Unlock()
 
 	current, _ := s.getLocked(key)
+	// If the inbound was already recorded as an observation (stageSession
+	// logs every inbound, including messages we don't answer), don't
+	// duplicate the user line — just append the assistant reply.
+	last := len(current.History) - 1
+	if last < 0 ||
+		current.History[last].Role != "user" ||
+		current.History[last].Content != userText {
+		current.History = append(current.History,
+			domain.ChatMessage{Role: "user", Content: userText},
+		)
+	}
 	current.History = append(current.History,
-		domain.ChatMessage{Role: "user", Content: userText},
 		domain.ChatMessage{Role: "assistant", Content: assistantText},
 	)
 	if overflow := len(current.History) - s.maxHistory; overflow > 0 {
 		if overflow%2 != 0 {
 			overflow++
 		}
+		current.History = append([]domain.ChatMessage(nil), current.History[overflow:]...)
+	}
+	current.UpdatedAt = s.now()
+	s.entries[key] = current
+	s.persistLocked()
+}
+
+// AddObservation records an inbound message the bot saw but did not
+// answer — ambient group chatter still needs to land in history so the
+// model has real context for what people were talking about between
+// replies.
+func (s *Store) AddObservation(key, userText string) {
+	userText = strings.TrimSpace(userText)
+	if userText == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	current, _ := s.getLocked(key)
+	current.History = append(current.History,
+		domain.ChatMessage{Role: "user", Content: userText},
+	)
+	if overflow := len(current.History) - s.maxHistory; overflow > 0 {
 		current.History = append([]domain.ChatMessage(nil), current.History[overflow:]...)
 	}
 	current.UpdatedAt = s.now()

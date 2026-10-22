@@ -26,6 +26,11 @@ type Adapter struct {
 	// requested resource file).
 	FriendWelcomeText string
 	FriendFilePath    string
+	// FriendFileGroups, when non-empty, restricts the welcome file to
+	// requesters who are members of at least one listed group — keeps a
+	// community-specific file (e.g. zkmall SQL) from leaking to anyone
+	// who merely adds the bot.
+	FriendFileGroups []string
 	// GroupWelcomeImage / GroupWelcomeGroups deliver an at-mention plus a
 	// welcome image when a member joins a listed group.
 	GroupWelcomeImage  string
@@ -322,6 +327,19 @@ func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {
 		}
 	}
 	if path := strings.TrimSpace(a.FriendFilePath); path != "" {
+		allowed := len(a.FriendFileGroups) == 0
+		for _, groupID := range a.FriendFileGroups {
+			if member, err := a.IsGroupMember(ctx, "", groupID, userID); err == nil && member {
+				allowed = true
+				break
+			}
+		}
+		if !allowed {
+			a.logger.Warn(
+				"friend welcome file skipped — user not in allowed groups",
+				"user_id", userID, "groups", a.FriendFileGroups)
+			return
+		}
 		name := filepath.Base(path)
 		if _, err := a.client.UploadPrivateFile(ctx, userID, path, name); err != nil {
 			a.logger.Warn("failed to send friend welcome file",

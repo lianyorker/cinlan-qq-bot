@@ -34,32 +34,32 @@ var outboundLinkPattern = regexp.MustCompile(
 )
 
 type flowState struct {
-	event           platform.Event
-	platform        string
-	chatType        string
-	chatID          string
-	groupID         string
-	userID          string
-	selfID          string
-	messageID       string
-	text            string
-	promptText      string
-	eventMentioned  bool
-	sessionID       string
-	rateLimitID     string
-	history         []domain.ChatMessage
-	summary         string
-	memory          string
-	personaName     string
-	providerName    string
-	allowedTools    []string
-	allowedSkills   []string
-	knowledgeBases  []string
-	mcpServers      []string
-	replyPolicy     binding.ReplyPolicy
-	moderation      *binding.ModerationPolicy
-	learning        bool
-	allowLinks      bool
+	event          platform.Event
+	platform       string
+	chatType       string
+	chatID         string
+	groupID        string
+	userID         string
+	selfID         string
+	messageID      string
+	text           string
+	promptText     string
+	eventMentioned bool
+	sessionID      string
+	rateLimitID    string
+	history        []domain.ChatMessage
+	summary        string
+	memory         string
+	personaName    string
+	providerName   string
+	allowedTools   []string
+	allowedSkills  []string
+	knowledgeBases []string
+	mcpServers     []string
+	replyPolicy    binding.ReplyPolicy
+	moderation     *binding.ModerationPolicy
+	learning       bool
+	allowLinks     bool
 	// prevActivityAt is the chat's previous traffic timestamp captured
 	// at ingress — after TouchActivity runs, lastActivity is already now.
 	prevActivityAt  time.Time
@@ -72,6 +72,10 @@ type flowState struct {
 	ignored         bool
 	pluginHandled   bool
 	securityDenied  bool
+	// spamPenalty is the affinity points deducted this event because the
+	// user repeated the same message; non-zero tells the prompt builder to
+	// let the persona scold in character.
+	spamPenalty int
 }
 
 func (s *Service) newPipeline() *pipeline.Pipeline {
@@ -229,6 +233,12 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		event.Stop("empty_message")
 		return nil
 	}
+	if handled := s.checkRepeatSpam(ctx, event, state); handled {
+		return nil
+	}
+	if handled := s.checkMentionFatigue(ctx, event, state); handled {
+		return nil
+	}
 	// Mood bumps apply even to messages we end up ignoring — being cursed
 	// at while quiet is exactly what sours a mood. Self-mute (装死) then
 	// drops everything, mentions included; it expires on its own.
@@ -292,6 +302,10 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.promptText = groupPromptText(state.event.SenderName, state.userID, state.text)
 	}
 	state.rateLimitID = state.platform + ":self:" + state.selfID + ":actor:" + state.userID
+	// Ambient context: log the inbound into session history even when it
+	// gets ignored later — group chatter she doesn't reply to is still
+	// stuff she heard, and AddExchange dedupes the line on an answer.
+	s.sessions.AddObservation(state.sessionID, state.promptText)
 	event.Values["tools"] = s.tools
 	event.Values["scope.skills"] = append([]string(nil), state.allowedSkills...)
 	event.Values["scope.knowledge_bases"] = append(
@@ -419,6 +433,32 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			continue
 		}
 		if kt.filePath != "" && s.fileSender != nil {
+			if len(kt.groups) > 0 {
+				// Community-scoped file: group chat must be one of the
+				// allowed groups; private chat requires the sender to be
+				// a member of one. Ineligible chats never see the guide.
+				eligible := false
+				if state.chatType == platform.ChatGroup {
+					for _, groupID := range kt.groups {
+						if state.chatID == groupID {
+							eligible = true
+							break
+						}
+					}
+				} else {
+					for _, groupID := range kt.groups {
+						if s.groupMemberOf(
+							ctx, state.selfID, groupID, state.userID,
+						) {
+							eligible = true
+							break
+						}
+					}
+				}
+				if !eligible {
+					continue
+				}
+			}
 			canDeliver := state.chatType == platform.ChatPrivate
 			if !canDeliver && state.chatType == platform.ChatGroup {
 				friend, friendErr := s.fileSender.IsFriend(
@@ -771,6 +811,12 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			level, percent, hint,
 		)
 		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
+	}
+	if state.spamPenalty > 0 {
+		request.SystemPrompt += fmt.Sprintf(
+			"\n\n对方一直重复发同样的内容刷屏，你已经没耐心了，好感度还因此扣了%d点。像真人一样表现出不耐烦：冷淡回一句、敷衍掉，或者干脆不理——不用长篇讲道理，也别跟着刷。",
+			state.spamPenalty,
+		)
 	}
 	if s.voiceProvider != nil {
 		if s.chatPrefs != nil &&
@@ -1176,6 +1222,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			cleaned = append(cleaned, fallback)
 		}
 		state.reply = strings.Join(cleaned, "\n")
+		// Voice first, text after — hearing her voice before reading
+		// the follow-up text is the intended order.
+		s.deliverVoiceClips(ctx, state, voiceClips)
 		if !s.sendChains(
 			ctx,
 			state.selfID,
@@ -1188,7 +1237,10 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		) {
 			return nil
 		}
-		s.deliverVoiceClips(ctx, state, voiceClips)
+		s.noteReplySent(
+			state.platform+":"+state.chatType+":"+state.chatID,
+			state.userID,
+		)
 		if state.agentErr == nil && !state.securityDenied {
 			s.recordExchange(ctx, state)
 		}
@@ -1207,6 +1259,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			)
 		}
 	}
+	s.deliverVoiceClips(ctx, state, voiceClips)
 	if !s.sendChain(
 		ctx,
 		state.selfID,
@@ -1219,7 +1272,10 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	) {
 		return nil
 	}
-	s.deliverVoiceClips(ctx, state, voiceClips)
+	s.noteReplySent(
+		state.platform+":"+state.chatType+":"+state.chatID,
+		state.userID,
+	)
 	if state.agentErr == nil && !state.securityDenied {
 		s.recordExchange(ctx, state)
 	}

@@ -209,35 +209,35 @@ func planReplyParts(reply string) []string {
 	return []string{parts[0], strings.Join(parts[1:], "\n")}
 }
 
-// splitMarkerLines splits a reply part into sub-parts so a marker line mixed
-// with text ("嗯 抱着了\n[[MEME:害羞]]") still becomes its own bubble instead
-// of leaking as literal text.
+// inlineMarkerPattern finds [[MEME...]] / [[IMG:...]] / [[IMAGE:...]] /
+// [[PHOTO:...]] markers anywhere inside a line — including glued to the
+// end of a sentence — so they never reach chat as literal text.
+var inlineMarkerPattern = regexp.MustCompile(
+	`\[\[\s*(?:MEME|IMG|IMAGE|PHOTO)\s*(?:[:：][^\[\]]{1,40})?\s*\]\]`,
+)
+
+// splitMarkerLines splits a reply part into sub-parts so a marker mixed
+// with text ("嗯 抱着了\n[[MEME:害羞]]" or "骂你[[MEME:无语]]") becomes its
+// own bubble — resolvable markers turn into image sends, unresolvable
+// ones get skipped, and neither leaks as literal text.
 func splitMarkerLines(part string) []string {
-	lines := strings.Split(part, "\n")
-	var (
-		result []string
-		buffer []string
-	)
-	flush := func() {
-		if text := strings.TrimSpace(strings.Join(buffer, "\n")); text != "" {
-			result = append(result, text)
+	var result []string
+	cursor := 0
+	for _, span := range inlineMarkerPattern.FindAllStringIndex(part, -1) {
+		if segment := strings.TrimSpace(part[cursor:span[0]]); segment != "" {
+			result = append(result, segment)
 		}
-		buffer = buffer[:0]
+		marker := part[span[0]:span[1]]
+		if _, ok := parseMemeMarker(marker); ok {
+			result = append(result, marker)
+		} else if _, ok := parseStoredImageMarker(marker); ok {
+			result = append(result, marker)
+		}
+		cursor = span[1]
 	}
-	for _, line := range lines {
-		if _, ok := parseMemeMarker(line); ok {
-			flush()
-			result = append(result, strings.TrimSpace(line))
-			continue
-		}
-		if _, ok := parseStoredImageMarker(line); ok {
-			flush()
-			result = append(result, strings.TrimSpace(line))
-			continue
-		}
-		buffer = append(buffer, line)
+	if tail := strings.TrimSpace(part[cursor:]); tail != "" {
+		result = append(result, tail)
 	}
-	flush()
 	return result
 }
 

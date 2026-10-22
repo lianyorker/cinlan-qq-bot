@@ -217,11 +217,13 @@ func (m *MultiAdapter) SetAutoAcceptFriend(enabled bool) {
 }
 
 // SetFriendWelcome configures the text/file delivered privately right after
-// an auto-accepted friend request on every account.
-func (m *MultiAdapter) SetFriendWelcome(text, filePath string) {
+// an auto-accepted friend request on every account. groups restricts the
+// file to requesters who are members of at least one listed group.
+func (m *MultiAdapter) SetFriendWelcome(text, filePath string, groups []string) {
 	for _, account := range m.accounts {
 		account.adapter.FriendWelcomeText = text
 		account.adapter.FriendFilePath = filePath
+		account.adapter.FriendFileGroups = append([]string(nil), groups...)
 	}
 }
 

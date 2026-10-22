@@ -25,6 +25,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/interaction"
 	"github.com/lianyorker/cinlan-qq-bot/internal/media"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
+	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
 // registerLocalExtensions wires the chat preference store and the operator
@@ -36,6 +37,7 @@ func registerLocalExtensions(
 	imageGenerator *media.ImageGenerator,
 	scheduler *cron.Scheduler,
 	caller interaction.ActionCaller,
+	platforms *platform.Registry,
 	logger *slog.Logger,
 ) error {
 	store, err := chatprefs.Load(cfg.ChatPrefsFile)
@@ -70,6 +72,15 @@ func registerLocalExtensions(
 	); registerErr != nil {
 		logger.Error("failed to register remember tool", "error", registerErr)
 	}
+	// channel_action bridges the agent to the platform Call surface —
+	// reads open to everyone, writes/moderation admin-gated.
+	if platforms != nil {
+		if registerErr := service.ToolRegistry().Register(
+			tool.ChannelActionTool(platforms, cfg.BotAllowedRoot),
+		); registerErr != nil {
+			logger.Error("failed to register channel action tool", "error", registerErr)
+		}
+	}
 
 	service.SetMemeDir(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "chat-images", "memes"),
@@ -82,6 +93,7 @@ func registerLocalExtensions(
 		regexp.MustCompile(`(?i)sql\s*文件|\.sql|数据库脚本`),
 		cfg.FriendFilePath,
 		"要 zkmall 的 .sql 数据库文件直接加我好友（QQ 2740954283），通过后自动发你文件。",
+		cfg.FriendFileGroups,
 	)
 
 	isOperator := func(c *command.Context) bool {

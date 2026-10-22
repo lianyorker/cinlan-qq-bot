@@ -107,8 +107,11 @@ type Config struct {
 	OneBotAccountsFile string
 	OneBotAutoAccept   bool
 
-	FriendWelcomeText  string
-	FriendFilePath     string
+	FriendWelcomeText string
+	FriendFilePath    string
+	// FriendFileGroups limits the friend-welcome file to members of
+	// these groups (comma-separated group ids); empty = send to anyone.
+	FriendFileGroups   []string
 	GroupWelcomeImage  string
 	GroupWelcomeGroups []string
 	AdminUserIDs       []string
@@ -151,19 +154,43 @@ type Config struct {
 	ImageTimeout   time.Duration
 	ImageRetention time.Duration
 
-	VoiceMode       string
-	VoiceName       string
-	VoiceStyle      string
-	VoiceAPIURL     string
-	VoiceAPIKey     string
-	VoiceModel      string
-	VoiceCommand    string
-	VoiceDir        string
-	VoiceMaxRunes   int
-	VoiceCooldown   time.Duration
-	VoiceTimeout    time.Duration
-	VoiceDailyLimit int
-	ImageEnhance    bool
+	VoiceMode           string
+	VoiceName           string
+	VoiceStyle          string
+	VoiceAPIURL         string
+	VoiceAPIKey         string
+	VoiceModel          string
+	VoiceCommand        string
+	VoiceVolcAppID      string
+	VoiceVolcToken      string
+	VoiceVolcResourceID string
+	VoiceVolcEmotion    string
+	VoiceDir            string
+	VoiceMaxRunes       int
+	VoiceCooldown       time.Duration
+	VoiceTimeout        time.Duration
+	VoiceDailyLimit     int
+	ImageEnhance        bool
+
+	// Repeat-spam handling: same normalized text N times inside the
+	// window deducts affinity once per streak. SPAM_REPEAT_MODE accepts
+	// a single mode or a weighted mix rolled per trigger:
+	// "hint" (model gets a nudge and scolds in character), "voice"
+	// (one canned voice scold, message dropped), "ignore" (silent
+	// drop), "off" — e.g. "hint:50,voice:25,ignore:25".
+	SpamRepeatMode      string
+	SpamRepeatCount     int
+	SpamRepeatWindow    time.Duration
+	SpamRepeatPenalty   int
+	SpamRepeatVoiceText string
+
+	// Mention fatigue: after N consecutive replies to the same user in
+	// one group chat, further messages from them get ignored with
+	// MentionFatigueIgnorePct probability until the window lapses —
+	// like a human drifting off when someone keeps poking. 0 = off.
+	MentionFatigueCount     int
+	MentionFatigueWindow    time.Duration
+	MentionFatigueIgnorePct int
 
 	WebScreenshotEnabled      bool
 	WebScreenshotBrowserPath  string
@@ -193,6 +220,7 @@ type Config struct {
 	PluginsFile          string
 	ProvidersFile        string
 	PersonasFile         string
+	PersonaPacksDir      string
 	ChatBindingsFile     string
 	FileCatalogPath      string
 	FileMaxBytes         int64
@@ -292,6 +320,7 @@ func Load() (Config, error) {
 		OneBotAutoAccept:   parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
 		FriendWelcomeText:  envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
 		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
+		FriendFileGroups:   parseList(os.Getenv("FRIEND_FILE_GROUPS")),
 		GroupWelcomeImage:  envOrAllowEmpty("GROUP_WELCOME_IMAGE", ""),
 		GroupWelcomeGroups: parseList(envOrAllowEmpty("GROUP_WELCOME_GROUPS", "")),
 		ChatPrefsFile:      envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
@@ -313,6 +342,7 @@ func Load() (Config, error) {
 		AgentAuthHeader:   envOr("AGENT_AUTH_HEADER", "Authorization"),
 		AgentAuthScheme:   envOr("AGENT_AUTH_SCHEME", "Bearer"),
 		PersonasFile:      envOrAllowEmpty("PERSONAS_FILE", "data/personas.json"),
+		PersonaPacksDir:   envOrAllowEmpty("PERSONA_PACKS_DIR", ""),
 		ChatBindingsFile:  envOrAllowEmpty("CHAT_BINDINGS_FILE", "data/chat-bindings.json"),
 
 		HandoffReply: envOr("QQ_HANDOFF_REPLY", "已转入人工服务，机器人将暂停回复。群聊发送“@机器人 /恢复”，私聊发送“/恢复”可重新启用机器人。"),
@@ -408,12 +438,26 @@ func Load() (Config, error) {
 	cfg.VoiceModel = envOr("VOICE_MODEL", "tts-1-hd")
 	cfg.VoiceStyle = envOrAllowEmpty("VOICE_STYLE", "")
 	cfg.VoiceCommand = envOrAllowEmpty("VOICE_COMMAND", "")
+	cfg.VoiceVolcAppID = envOrAllowEmpty("VOICE_VOLC_APP_ID", "")
+	cfg.VoiceVolcToken = envOrAllowEmpty("VOICE_VOLC_TOKEN", "")
+	cfg.VoiceVolcResourceID = envOrAllowEmpty("VOICE_VOLC_RESOURCE_ID", "")
+	cfg.VoiceVolcEmotion = envOrAllowEmpty("VOICE_VOLC_EMOTION", "")
 	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
 	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)
 	cfg.VoiceCooldown = parseDuration("VOICE_COOLDOWN", 45*time.Second, true, &errs)
 	cfg.VoiceTimeout = parseDuration("VOICE_TIMEOUT", 15*time.Second, true, &errs)
 	cfg.VoiceDailyLimit = parseInt("VOICE_DAILY_LIMIT", 50, 0, &errs)
 	cfg.ImageEnhance = parseBool("IMAGE_ENHANCE_PROMPT", true, &errs)
+
+	cfg.SpamRepeatMode = envOr("SPAM_REPEAT_MODE", "hint")
+	cfg.SpamRepeatCount = parseInt("SPAM_REPEAT_COUNT", 3, 0, &errs)
+	cfg.SpamRepeatWindow = parseDuration("SPAM_REPEAT_WINDOW", 2*time.Minute, true, &errs)
+	cfg.SpamRepeatPenalty = parseInt("SPAM_REPEAT_PENALTY", 3, 0, &errs)
+	cfg.SpamRepeatVoiceText = envOrAllowEmpty("SPAM_REPEAT_VOICE_TEXT", "")
+
+	cfg.MentionFatigueCount = parseInt("MENTION_FATIGUE_COUNT", 3, 0, &errs)
+	cfg.MentionFatigueWindow = parseDuration("MENTION_FATIGUE_WINDOW", 10*time.Minute, true, &errs)
+	cfg.MentionFatigueIgnorePct = parseInt("MENTION_FATIGUE_IGNORE_PCT", 65, 0, &errs)
 
 	cfg.WebScreenshotEnabled = parseBool("WEB_SCREENSHOT_ENABLED", false, &errs)
 	cfg.WebScreenshotBrowserPath = strings.TrimSpace(

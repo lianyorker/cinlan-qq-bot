@@ -150,6 +150,10 @@ type Service struct {
 	dedupeCounter    uint64
 	rateCounter      uint64
 	attentionCounter uint64
+	spamMu           sync.Mutex
+	spamRepeats      map[string]spamRepeatEntry
+	fatigueMu        sync.Mutex
+	chatFatigue      map[string]fatigueEntry
 
 	flow *pipeline.Pipeline
 
@@ -358,11 +362,12 @@ func (s *Service) RegisterKeywordMeme(pattern *regexp.Regexp) {
 type keywordTool struct {
 	pattern   *regexp.Regexp
 	tool      string
-	binding   string // optional: only fire for this binding name
-	reply     string // optional: fixed text reply instead of a tool call
-	promptArg string // optional: pass text after the match as this JSON argument
-	filePath  string // optional: upload this file in private chat on match
-	meme      bool   // optional: send a random meme from the chat pool
+	binding   string   // optional: only fire for this binding name
+	reply     string   // optional: fixed text reply instead of a tool call
+	promptArg string   // optional: pass text after the match as this JSON argument
+	filePath  string   // optional: upload this file in private chat on match
+	meme      bool     // optional: send a random meme from the chat pool
+	groups    []string // optional: file only for these groups/their members
 }
 
 // SetFileSender wires the private-file upload path used by keyword file
@@ -494,7 +499,7 @@ func (s *Service) RegisterKeywordReply(pattern *regexp.Regexp, bindingName, text
 // RegisterKeywordFile delivers a local file in private chat on match and
 // falls back to the fixed reply text everywhere else (or when the upload
 // path is unavailable).
-func (s *Service) RegisterKeywordFile(pattern *regexp.Regexp, filePath, text string) {
+func (s *Service) RegisterKeywordFile(pattern *regexp.Regexp, filePath, text string, groups []string) {
 	if pattern == nil || strings.TrimSpace(filePath) == "" ||
 		strings.TrimSpace(text) == "" {
 		return
@@ -503,6 +508,7 @@ func (s *Service) RegisterKeywordFile(pattern *regexp.Regexp, filePath, text str
 		pattern:  pattern,
 		filePath: filePath,
 		reply:    text,
+		groups:   groups,
 	})
 }
 

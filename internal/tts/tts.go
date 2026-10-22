@@ -16,15 +16,25 @@ import (
 
 // Config configures a voice provider.
 type Config struct {
-	// Mode: "edge" (default), "openai", "command", or "off".
+	// Mode: "edge" (default), "openai", "volcano", "command", or "off".
 	Mode string
 	// Voice is the voice name, e.g. zh-CN-XiaoyiNeural (edge) or nova (openai).
 	Voice string
 	// APIURL/APIKey/Model are used in "openai" mode — APIURL is the full
-	// /audio/speech endpoint.
+	// /audio/speech endpoint. In "volcano" mode APIURL can override the
+	// openspeech endpoint (defaults to api/v1/tts).
 	APIURL string
 	APIKey string
 	Model  string
+	// Volc* fields configure "volcano" mode (openspeech.bytedance.com
+	// 豆包语音合成大模型 V3). VolcToken is the console API Key (new
+	// console, X-Api-Key); VolcAppID is only needed for the old console
+	// (X-Api-App-Id + X-Api-Access-Key pair). ResourceID defaults to
+	// seed-tts-2.0; Emotion optionally tags multi-emotion voices.
+	VolcAppID      string
+	VolcToken      string
+	VolcResourceID string
+	VolcEmotion    string
 	// Rate/Pitch map to SSML prosody (edge only, e.g. "+10%", "+2Hz").
 	Rate  string
 	Pitch string
@@ -81,6 +91,33 @@ func New(cfg Config) (Provider, error) {
 			voice:   voice,
 			timeout: cfg.Timeout,
 			client:  &http.Client{Timeout: cfg.Timeout},
+		}, nil
+	case "volcano", "volc", "doubao":
+		if strings.TrimSpace(cfg.VolcToken) == "" {
+			return nil, fmt.Errorf(
+				"tts volcano mode needs VOICE_VOLC_TOKEN (console API Key)")
+		}
+		voice := strings.TrimSpace(cfg.Voice)
+		if voice == "" || strings.HasPrefix(voice, "zh-CN-") {
+			voice = "zh_female_vv_uranus_bigtts"
+		}
+		resourceID := strings.TrimSpace(cfg.VolcResourceID)
+		if resourceID == "" {
+			resourceID = "seed-tts-2.0"
+		}
+		apiURL := strings.TrimSpace(cfg.APIURL)
+		if apiURL == "" {
+			apiURL = volcanoDefaultEndpoint
+		}
+		return &volcanoProvider{
+			apiURL:     apiURL,
+			apiKey:     cfg.VolcToken,
+			appID:      cfg.VolcAppID,
+			resourceID: resourceID,
+			voice:      voice,
+			emotion:    strings.TrimSpace(cfg.VolcEmotion),
+			timeout:    cfg.Timeout,
+			client:     &http.Client{Timeout: cfg.Timeout},
 		}, nil
 	case "command":
 		if strings.TrimSpace(cfg.Command) == "" {

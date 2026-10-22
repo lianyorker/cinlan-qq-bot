@@ -249,7 +249,7 @@ func main() {
 				os.Exit(2)
 			}
 			multiAdapter.SetAutoAcceptFriend(cfg.OneBotAutoAccept)
-			multiAdapter.SetFriendWelcome(cfg.FriendWelcomeText, cfg.FriendFilePath)
+			multiAdapter.SetFriendWelcome(cfg.FriendWelcomeText, cfg.FriendFilePath, cfg.FriendFileGroups)
 			qqAdapter = multiAdapter
 		} else {
 			oneBotURL := cfg.OneBotWSURL
@@ -269,6 +269,7 @@ func main() {
 			oneBotAdapter.AutoAcceptFriend = cfg.OneBotAutoAccept
 			oneBotAdapter.FriendWelcomeText = cfg.FriendWelcomeText
 			oneBotAdapter.FriendFilePath = cfg.FriendFilePath
+			oneBotAdapter.FriendFileGroups = cfg.FriendFileGroups
 			oneBotAdapter.GroupWelcomeImage = cfg.GroupWelcomeImage
 			oneBotAdapter.GroupWelcomeGroups = make(map[string]bool, len(cfg.GroupWelcomeGroups))
 			for _, groupID := range cfg.GroupWelcomeGroups {
@@ -335,14 +336,18 @@ func main() {
 		logger.Info("affinity tracking enabled", "file", cfg.AffinityFile)
 	}
 	if voiceProvider, voiceErr := tts.New(tts.Config{
-		Mode:    cfg.VoiceMode,
-		Voice:   cfg.VoiceName,
-		Style:   cfg.VoiceStyle,
-		APIURL:  cfg.VoiceAPIURL,
-		APIKey:  cfg.VoiceAPIKey,
-		Model:   cfg.VoiceModel,
-		Command: cfg.VoiceCommand,
-		Timeout: cfg.VoiceTimeout,
+		Mode:           cfg.VoiceMode,
+		Voice:          cfg.VoiceName,
+		Style:          cfg.VoiceStyle,
+		APIURL:         cfg.VoiceAPIURL,
+		APIKey:         cfg.VoiceAPIKey,
+		Model:          cfg.VoiceModel,
+		Command:        cfg.VoiceCommand,
+		Timeout:        cfg.VoiceTimeout,
+		VolcAppID:      cfg.VoiceVolcAppID,
+		VolcToken:      cfg.VoiceVolcToken,
+		VolcResourceID: cfg.VoiceVolcResourceID,
+		VolcEmotion:    cfg.VoiceVolcEmotion,
 	}); voiceErr != nil {
 		logger.Warn("voice tts unavailable", "error", voiceErr)
 	} else if voiceProvider != nil {
@@ -386,6 +391,21 @@ func main() {
 			"file", cfg.PersonasFile,
 			"personas", len(botService.PersonaRegistry().List()),
 		)
+	}
+	// Persona packs (dir-of-dirs format) override personas.json when the
+	// configured directory exists — mutations then persist back per-pack.
+	if cfg.PersonaPacksDir != "" {
+		if packErr := botService.PersonaRegistry().UsePacksDir(cfg.PersonaPacksDir); packErr != nil {
+			logger.Error("failed to load persona packs", "error", packErr)
+			os.Exit(2)
+		}
+		if botService.PersonaRegistry().PacksDir() != "" {
+			logger.Info(
+				"persona packs loaded",
+				"dir", cfg.PersonaPacksDir,
+				"personas", len(botService.PersonaRegistry().List()),
+			)
+		}
 	}
 	var bindings *binding.Registry
 	if cfg.ChatBindingsFile != "" {
@@ -449,7 +469,7 @@ func main() {
 			logger.Warn("file catalog contains no enabled files", "file", cfg.FileCatalogPath)
 		}
 	}
-		// Micro-action tools need a raw-action channel: multi-account adapters
+	// Micro-action tools need a raw-action channel: multi-account adapters
 	// expose CallFor(selfID, ...); single-account ones only Call, so wrap it.
 	var actionCaller interaction.ActionCaller
 	if multi, ok := qqAdapter.(interface {
@@ -462,7 +482,7 @@ func main() {
 		actionCaller = interaction.Wrap(single.Call)
 	}
 	if extensionErr := registerLocalExtensions(
-		ctx, cfg, botService, imageGenerator, scheduler, actionCaller, logger,
+		ctx, cfg, botService, imageGenerator, scheduler, actionCaller, platforms, logger,
 	); extensionErr != nil {
 		logger.Error("failed to register local extensions", "error", extensionErr)
 		os.Exit(2)
