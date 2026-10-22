@@ -24,6 +24,8 @@ type imageNote struct {
 type chatEntry struct {
 	NotifyOff  bool        `json:"notify_off,omitempty"`
 	VoiceOff   bool        `json:"voice_off,omitempty"`
+	// SingOn gates [[SING]] clips — default OFF until real singing lands.
+	SingOn     bool        `json:"sing_on,omitempty"`
 	Persona    string      `json:"persona,omitempty"`
 	Notes      []string    `json:"notes,omitempty"`
 	ImageNotes []imageNote `json:"image_notes,omitempty"`
@@ -108,6 +110,23 @@ func (s *Store) VoiceEnabled(chatType, chatID string) bool {
 	defer s.mu.RUnlock()
 	e := s.data[key(chatType, chatID)]
 	return e == nil || !e.VoiceOff
+}
+
+// SetSingEnabled toggles [[SING]] clips for the chat. Unlike voice,
+// singing defaults OFF — operators opt in with /唱歌 开启.
+func (s *Store) SetSingEnabled(chatType, chatID string, enabled bool) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.entry(chatType, chatID).SingOn = enabled
+	return s.saveLocked()
+}
+
+// SingEnabled reports whether [[SING]] clips are allowed for the chat.
+func (s *Store) SingEnabled(chatType, chatID string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	return e != nil && e.SingOn
 }
 
 // SetPersona pins the active persona for the chat; empty restores the

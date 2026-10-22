@@ -752,6 +752,12 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	}
 	if s.voiceProvider != nil {
 		request.SystemPrompt += "\n\n" + voicePromptNote
+		if s.chatPrefs != nil &&
+			s.chatPrefs.SingEnabled(state.chatType, state.chatID) {
+			request.SystemPrompt += "\n" + singPromptNote
+		} else {
+			request.SystemPrompt += "\n" + singDisabledNote
+		}
 		if state.chatType == platform.ChatPrivate ||
 			state.replyPolicy.AllowsUser(state.userID) {
 			request.SystemPrompt += "\n" + voicePrivilegedRequestNote

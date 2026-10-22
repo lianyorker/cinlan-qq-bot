@@ -45,14 +45,21 @@ type voiceSynth interface {
 	) error
 }
 
-const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOICE]]，唱歌歌词用 [[SING]]词[[/SING]]（最多两段，每段不超过200字，要口语化，可以带语气词、拟声词）。
+const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOICE]]（最多两段，每段不超过200字，要口语化，可以带语气词、拟声词）。
 
 使用规则：
-- 对方让你唱歌时就用 [[SING]] 唱一小段（自己编的歌词小段，不用是真实歌词）；发普通语音用 [[VOICE]]；没说清楚唱什么时可以先反问。
-- 语速按歌本身定：标记名后可写冒号+倍速，慢歌/摇篮曲用 [[SING:0.7]]，正常节奏 [[SING:1.0]]，活泼快歌 [[SING:1.2]]；不写就用人格默认语速。说话也可用 [[VOICE:1.1]] 微调。
-- 标记内只放要被原样念出来的台词/歌词本身，禁止写"这是一段语音""这是设计的音色"之类的说明文字，也不要写（温柔地唱）这类括号舞台指示。
-- 对方连续反复要求唱歌/语音时可以按你的人设傲娇拒绝，不必每次都唱。
+- 发普通语音用 [[VOICE]]；语速微调写冒号+倍速，如 [[VOICE:1.1]]。
+- 标记内只放要被原样念出来的台词本身，禁止写"这是一段语音""这是设计的音色"之类的说明文字，也不要写（温柔地说）这类括号舞台指示。
+- 对方连续反复要求语音时可以按你的人设傲娇拒绝，不必每次都念。
 - 平时闲聊不要随便用语音，保持稀罕感。`
+
+// singPromptNote is appended only when the chat has singing enabled —
+// it teaches the [[SING]] marker the model otherwise must not emit.
+const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 哼一小段（自己编的歌词小段，不用真实歌词，不超过两段每段200字内）；语速按歌定 [[SING:0.7]] 慢歌、[[SING:1.2]] 快歌；没说清唱什么可以先反问。坦白说自己是电子音念唱、不是真人唱歌也别谦虚过头。`
+
+// singDisabledNote is appended while singing is off — the model must
+// admit it cannot sing instead of silently emitting a dropped marker.
+const singDisabledNote = `- 唱歌功能暂未开放：对方要你唱歌就直说不会唱/还没学会，严禁打 [[SING]] 标记；可以主动提"要不我给你念一段"改走 [[VOICE]]。`
 
 // voicePrivilegedRequestNote is only injected for trusted senders (private
 // whitelist chats, group admins/owners, binding allowed_users): it tells the
@@ -324,9 +331,24 @@ func (s *Service) deliverVoiceClips(
 	if len(clips) == 0 || s.voiceProvider == nil {
 		return
 	}
-	if s.chatPrefs != nil &&
-		!s.chatPrefs.VoiceEnabled(state.chatType, state.chatID) {
-		return
+	if s.chatPrefs != nil {
+		if !s.chatPrefs.VoiceEnabled(state.chatType, state.chatID) {
+			return
+		}
+		// Belt-and-braces: even if the model ignored the disabled note
+		// and emitted [[SING]], drop those clips unless sing is on.
+		if !s.chatPrefs.SingEnabled(state.chatType, state.chatID) {
+			kept := clips[:0]
+			for _, clip := range clips {
+				if !clip.Singing {
+					kept = append(kept, clip)
+				}
+			}
+			clips = kept
+			if len(clips) == 0 {
+				return
+			}
+		}
 	}
 	cooldown := s.cfg.VoiceCooldown
 	if cooldown <= 0 {

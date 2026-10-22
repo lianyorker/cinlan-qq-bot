@@ -233,8 +233,8 @@ func registerLocalExtensions(
 
 	register(command.Definition{
 		Name:        "语音",
-		Aliases:     []string{"唱歌", "voice"},
-		Description: "开关本群语音回复（/语音 开启|关闭）",
+		Aliases:     []string{"voice"},
+		Description: "开关本群说话语音（/语音 开启|关闭）",
 		Permission:  command.PermissionEveryone,
 		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
 			if !isOperator(c) {
@@ -248,7 +248,7 @@ func registerLocalExtensions(
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
-				return command.Result{Handled: true, Reply: "语音已开启，可以点语音/哼歌了。"}, nil
+				return command.Result{Handled: true, Reply: "语音已开启，可以点语音了。"}, nil
 			case "关闭", "关", "off":
 				if err := store.SetVoiceEnabled(
 					c.Event.MessageType, c.Event.ChatID, false,
@@ -264,6 +264,43 @@ func registerLocalExtensions(
 					state = "关闭"
 				}
 				return command.Result{Handled: true, Reply: "当前语音：" + state + "（/语音 开启|关闭）"}, nil
+			}
+		},
+	})
+
+	register(command.Definition{
+		Name:        "唱歌",
+		Aliases:     []string{"sing"},
+		Description: "开关本群唱歌能力（/唱歌 开启|关闭，默认关闭）",
+		Permission:  command.PermissionEveryone,
+		Handler: func(_ context.Context, c *command.Context) (command.Result, error) {
+			if !isOperator(c) {
+				return command.Result{Handled: true, Reply: "权限不足。"}, nil
+			}
+			arg := strings.TrimSpace(strings.Join(c.Args, " "))
+			switch arg {
+			case "开启", "开", "on":
+				if err := store.SetSingEnabled(
+					c.Event.MessageType, c.Event.ChatID, true,
+				); err != nil {
+					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
+				}
+				return command.Result{Handled: true, Reply: "唱歌已开启（目前是电子音念唱，不是真歌声）。"}, nil
+			case "关闭", "关", "off":
+				if err := store.SetSingEnabled(
+					c.Event.MessageType, c.Event.ChatID, false,
+				); err != nil {
+					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
+				}
+				return command.Result{Handled: true, Reply: "唱歌已关闭。"}, nil
+			default:
+				state := "关闭"
+				if store.SingEnabled(
+					c.Event.MessageType, c.Event.ChatID,
+				) {
+					state = "开启"
+				}
+				return command.Result{Handled: true, Reply: "当前唱歌：" + state + "（/唱歌 开启|关闭）"}, nil
 			}
 		},
 	})
