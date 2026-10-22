@@ -793,7 +793,7 @@ func (s *Service) sendTextParts(
 		chain := message.Chain{message.Text(normalizeHTMLBreaks(part))}
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
-			chain = append(message.Chain{message.AtNamed(userID, senderName)}, chain...)
+			chain = withSenderAt(chain, userID, senderName)
 		}
 		err := s.sender.Send(ctx, platform.Outbound{
 			ChatType: chatType,
@@ -818,6 +818,19 @@ func (s *Service) sendTextParts(
 		s.stats.replied.Add(1)
 	}
 	return true
+}
+
+// withSenderAt prepends the group @-mention for the sender and pads a
+// leading space onto the first text segment so the bubble renders
+// "@nick 文字" instead of "@nick文字". Non-text segments stay untouched.
+func withSenderAt(chain message.Chain, userID, senderName string) message.Chain {
+	out := append(message.Chain{message.AtNamed(userID, senderName)}, chain...)
+	if len(out) > 1 && out[1].Type == message.TypeText {
+		if text, ok := out[1].Data["text"].(string); ok && text != "" && !strings.HasPrefix(text, " ") {
+			out[1] = message.Text(" " + text)
+		}
+	}
+	return out
 }
 
 // sendChains sends pre-built chains one message at a time with the same
@@ -847,10 +860,7 @@ func (s *Service) sendChains(
 		outbound := normalizeChainHTMLBreaks(chain.Clone())
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
-			outbound = append(
-				message.Chain{message.AtNamed(userID, senderName)},
-				outbound...,
-			)
+			outbound = withSenderAt(outbound, userID, senderName)
 		}
 		err := s.sender.Send(ctx, platform.Outbound{
 			ChatType: chatType,
@@ -902,7 +912,7 @@ func (s *Service) sendChain(
 	}
 	outbound := normalizeChainHTMLBreaks(chain.Clone())
 	if s.cfg.GroupAtSender && chatType == platform.ChatGroup && !s.cfg.QuoteReply {
-		outbound = append(message.Chain{message.AtNamed(userID, senderName)}, outbound...)
+		outbound = withSenderAt(outbound, userID, senderName)
 	}
 	err := s.sender.Send(ctx, platform.Outbound{
 		ChatType: chatType,
