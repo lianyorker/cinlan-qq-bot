@@ -174,7 +174,7 @@ func speechConfigMessage() string {
 
 func ssmlMessage(connID, voice, rate, pitch, text string) string {
 	prosody := fmt.Sprintf(
-		`<prosody pitch='%s' rate='%s' volume='+0%%'>`,
+		`<prosody pitch='%s' rate='%s' volume='+0%'>`,
 		defaultOr(pitch, "+0Hz"), defaultOr(rate, "+0%"),
 	)
 	ssml := fmt.Sprintf(
