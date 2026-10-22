@@ -942,7 +942,12 @@ func (s *Service) sendChain(
 // visible text instead of a line break.
 var htmlBreakPattern = regexp.MustCompile(`(?i)<br\s*/?>`)
 
+// blankLinePattern collapses paragraph gaps — a real person sends one
+// line break at a time inside a bubble; blank-line separation reads AI.
+var blankLinePattern = regexp.MustCompile(`\n{2,}`)
+
 func normalizeHTMLBreaks(text string) string {
+	text = blankLinePattern.ReplaceAllString(text, "\n")
 	if !strings.Contains(text, "<") {
 		return text
 	}
