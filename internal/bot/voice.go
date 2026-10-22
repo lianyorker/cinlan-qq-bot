@@ -61,6 +61,11 @@ const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SIN
 // admit it cannot sing instead of silently emitting a dropped marker.
 const singDisabledNote = `- 唱歌功能暂未开放：对方要你唱歌就直说不会唱/还没学会，严禁打 [[SING]] 标记；可以主动提"要不我给你念一段"改走 [[VOICE]]。`
 
+// voiceDisabledNote replaces voicePromptNote when the chat's voice switch
+// is off — the model must admit it cannot speak instead of emitting
+// markers that get dropped on the floor.
+const voiceDisabledNote = `语音功能当前已关闭：对方要语音就直说现在开不了/没开，严禁打 [[VOICE]] 或 [[SING]] 标记假装发过——这些标记会被直接丢掉，对方什么都听不到。`
+
 // voicePrivilegedRequestNote is only injected for trusted senders (private
 // whitelist chats, group admins/owners, binding allowed_users): it tells the
 // model explicit "say this for me" requests must actually be spoken, not

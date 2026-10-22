@@ -692,6 +692,14 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			}
 		}
 	}
+	// The model has no clock — inject wall time so "现在几点" and
+	// "睡醒了/刚起床" style messages get grounded, honest answers.
+	now := time.Now()
+	request.SystemPrompt += fmt.Sprintf(
+		"\n\n当前时间：%s %s。",
+		now.Format("2006-01-02 15:04"),
+		[]string{"周日", "周一", "周二", "周三", "周四", "周五", "周六"}[now.Weekday()],
+	)
 	if state.chatType == platform.ChatGroup {
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
@@ -751,16 +759,23 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
 	}
 	if s.voiceProvider != nil {
-		request.SystemPrompt += "\n\n" + voicePromptNote
 		if s.chatPrefs != nil &&
-			s.chatPrefs.SingEnabled(state.chatType, state.chatID) {
-			request.SystemPrompt += "\n" + singPromptNote
+			!s.chatPrefs.VoiceEnabled(state.chatType, state.chatID) {
+			// Voice off — teaching [[VOICE]] here makes the model fake
+			// sending clips that the delivery layer then silently drops.
+			request.SystemPrompt += "\n\n" + voiceDisabledNote
 		} else {
-			request.SystemPrompt += "\n" + singDisabledNote
-		}
-		if state.chatType == platform.ChatPrivate ||
-			state.replyPolicy.AllowsUser(state.userID) {
-			request.SystemPrompt += "\n" + voicePrivilegedRequestNote
+			request.SystemPrompt += "\n\n" + voicePromptNote
+			if s.chatPrefs != nil &&
+				s.chatPrefs.SingEnabled(state.chatType, state.chatID) {
+				request.SystemPrompt += "\n" + singPromptNote
+			} else {
+				request.SystemPrompt += "\n" + singDisabledNote
+			}
+			if state.chatType == platform.ChatPrivate ||
+				state.replyPolicy.AllowsUser(state.userID) {
+				request.SystemPrompt += "\n" + voicePrivilegedRequestNote
+			}
 		}
 	}
 	// Group chats get the @ marker so replies can ping members for real —
