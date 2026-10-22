@@ -28,6 +28,8 @@ type Config struct {
 	// Rate/Pitch map to SSML prosody (edge only, e.g. "+10%", "+2Hz").
 	Rate  string
 	Pitch string
+	// Style wraps output in mstts:express-as (edge only, e.g. "chat").
+	Style string
 	// Command is used in "command" mode, e.g.
 	// "edge-tts --voice zh-CN-XiaoyiNeural --write-media {out} --text {text}".
 	Command string
@@ -57,6 +59,7 @@ func New(cfg Config) (Provider, error) {
 			voice:   voice,
 			rate:    cfg.Rate,
 			pitch:   cfg.Pitch,
+			style:   cfg.Style,
 			timeout: cfg.Timeout,
 		}, nil
 	case "openai":

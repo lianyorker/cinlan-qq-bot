@@ -153,6 +153,7 @@ type Config struct {
 
 	VoiceMode       string
 	VoiceName       string
+	VoiceStyle      string
 	VoiceAPIURL     string
 	VoiceAPIKey     string
 	VoiceModel      string
@@ -405,6 +406,7 @@ func Load() (Config, error) {
 		cfg.VoiceAPIKey = cfg.AgentAPIKey
 	}
 	cfg.VoiceModel = envOr("VOICE_MODEL", "tts-1-hd")
+	cfg.VoiceStyle = envOrAllowEmpty("VOICE_STYLE", "")
 	cfg.VoiceCommand = envOrAllowEmpty("VOICE_COMMAND", "")
 	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
 	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)

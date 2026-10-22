@@ -11,6 +11,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -33,6 +34,7 @@ type edgeProvider struct {
 	voice   string
 	rate    string
 	pitch   string
+	style   string
 	timeout time.Duration
 }
 
@@ -107,7 +109,7 @@ func (p *edgeProvider) Synthesize(
 	if err := p.writeText(conn, speechConfigMessage()); err != nil {
 		return err
 	}
-	if err := p.writeText(conn, ssmlMessage(connID, voiceName, ratePercent, p.pitch, text)); err != nil {
+	if err := p.writeText(conn, ssmlMessage(connID, voiceName, p.style, ratePercent, p.pitch, text)); err != nil {
 		return err
 	}
 
@@ -172,15 +174,19 @@ func speechConfigMessage() string {
 		`"outputFormat":"audio-24khz-48kbitrate-mono-mp3"}}}}`
 }
 
-func ssmlMessage(connID, voice, rate, pitch, text string) string {
-	prosody := fmt.Sprintf(
-		`<prosody pitch='%s' rate='%s' volume='+0%%'>`,
-		defaultOr(pitch, "+0Hz"), defaultOr(rate, "+0%"),
-	)
+func ssmlMessage(connID, voice, style, rate, pitch, text string) string {
+	inner := prosodyClauses(pitch, rate, text)
+	if strings.TrimSpace(style) != "" {
+		inner = fmt.Sprintf(
+			`<mstts:express-as style='%s' styledegree='1.2'>%s</mstts:express-as>`,
+			style, inner,
+		)
+	}
 	ssml := fmt.Sprintf(
 		`<speak version='1.0' xmlns='http://www.w3.org/2001/10/synthesis'`+
-			` xml:lang='en-US'><voice name='%s'>%s%s</prosody></voice></speak>`,
-		voice, prosody, xmlEscape(text),
+			` xmlns:mstts='https://www.w3.org/2001/mstts'`+
+			` xml:lang='en-US'><voice name='%s'>%s</voice></speak>`,
+		voice, inner,
 	)
 	return fmt.Sprintf(
 		"X-RequestId:%s\r\nContent-Type:application/ssml+xml\r\n"+
@@ -189,6 +195,72 @@ func ssmlMessage(connID, voice, rate, pitch, text string) string {
 		isoTimestamp(),
 		ssml,
 	)
+}
+
+// prosodyClauses splits the text into spoken clauses and emits each in
+// its own prosody with a subtle alternating pitch/rate offset — one flat
+// prosody for the whole line is what makes the voice sound monotone.
+func prosodyClauses(pitch, rate, text string) string {
+	basePitch := defaultOr(pitch, "+0Hz")
+	baseRate := defaultOr(rate, "+0%")
+	clauses := splitVoiceClauses(text)
+	if len(clauses) <= 1 {
+		return fmt.Sprintf(
+			`<prosody pitch='%s' rate='%s' volume='+0%%'>%s</prosody>`,
+			basePitch, baseRate, xmlEscape(text),
+		)
+	}
+	var b strings.Builder
+	for i, clause := range clauses {
+		b.WriteString(fmt.Sprintf(
+			`<prosody pitch='%s' rate='%s'>%s</prosody>`,
+			shiftPitch(basePitch, i), shiftRate(baseRate, i),
+			xmlEscape(clause),
+		))
+	}
+	return b.String()
+}
+
+// splitVoiceClauses cuts at terminal punctuation and at mid pauses once
+// a clause runs long, so breathing rhythm lands at natural seams.
+func splitVoiceClauses(text string) []string {
+	var clauses []string
+	runes := []rune(text)
+	start := 0
+	for i, r := range runes {
+		terminal := strings.ContainsRune("。！？?!；;\n", r)
+		midPause := strings.ContainsRune("，,、：:~～…", r)
+		if terminal || (midPause && i-start >= 18) {
+			if seg := strings.TrimSpace(string(runes[start : i+1])); seg != "" {
+				clauses = append(clauses, seg)
+			}
+			start = i + 1
+		}
+	}
+	if seg := strings.TrimSpace(string(runes[start:])); seg != "" {
+		clauses = append(clauses, seg)
+	}
+	return clauses
+}
+
+var clausePitchDrift = []int{0, 9, -5, 4}
+var clauseRateDrift = []int{0, 4, -4, 2}
+
+func shiftValue(base string, drift int, unit string) string {
+	trimmed := strings.TrimSuffix(strings.TrimSpace(base), unit)
+	value, err := strconv.Atoi(trimmed)
+	if err != nil {
+		return base
+	}
+	return fmt.Sprintf("%+d%s", value+drift, unit)
+}
+
+func shiftPitch(base string, idx int) string {
+	return shiftValue(base, clausePitchDrift[idx%len(clausePitchDrift)], "Hz")
+}
+
+func shiftRate(base string, idx int) string {
+	return shiftValue(base, clauseRateDrift[idx%len(clauseRateDrift)], "%")
 }
 
 // edgeSecMSGEC derives the DRM token: uppercase SHA-256 of the Windows-filetime
