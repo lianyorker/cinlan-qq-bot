@@ -2,6 +2,7 @@ package bot
 
 import (
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 
@@ -70,15 +71,87 @@ var faceNameToID = map[string]int{
 	"哈欠": 104, "鄙视": 105, "委屈": 106, "快哭了": 107, "阴险": 108,
 	"亲亲": 109, "吓": 110, "可怜": 111, "菜刀": 112, "西瓜": 113,
 	"啤酒": 114, "篮球": 115, "乒乓": 116,
+	// aliases so natural-language tags hit real QQ faces too
+	"生气": 11, "脸红": 6, "开心": 28, "笑": 28,
+	"哭": 9, "哭哭": 9, "亲": 109, "么么哒": 109,
+}
+
+// emotionToEmoji covers persona emotion tags that have no classic QQ
+// face id — they degrade to a unicode emoji (QQ clients render these
+// natively) instead of leaking the literal tag.
+var emotionToEmoji = map[string]string{
+	"傲娇": "\U0001f624", "气鼓鼓": "\U0001f624", "星星眼": "\U0001f929",
+	"卖萌": "\U0001f970", "撒娇": "\U0001f97a", "委屈巴巴": "\U0001f97a",
+	"装死": "\U0001f480", "躺平": "\U0001fae0", "吃瓜": "\U0001f349",
+	"狗头": "\U0001f436", "泪目": "\U0001f97b", "感动": "\U0001f97b",
+	"黑线": "\U0001f611", "汗颜": "\U0001f605", "捂脸": "\U0001f926",
+	"偷看": "\U0001fae3", "偷瞄": "\U0001fae3", "啵": "\U0001f61a",
+	"mua": "\U0001f618", "蹭": "\U0001f970", "蹭蹭": "\U0001f970",
+	"叹气": "\U0001f62e\u200d\U0001f4a8", "震惊": "\U0001f631", "呆滞": "\U0001f636",
+	"哭唧唧": "\U0001f62d", "嘤嘤": "\U0001f62d", "比耶": "\u270c\ufe0f",
+	"打call": "\U0001f4e3", "撒花": "\U0001f389", "送花": "\U0001f490",
+	"晚安": "\U0001f634", "早安": "\U0001f31e", "饿": "\U0001f924",
+	"馋": "\U0001f924", "流口水": "\U0001f924", "贴贴": "\U0001f970",
+	"举爪": "\U0001f64b", "沉思": "\U0001f914", "笑死": "\U0001f923",
+	"偷乐": "\U0001f92d", "坏坏": "\U0001f60f", "得瑟": "\U0001f60f",
+	"炸毛": "\U0001f63e", "凶": "\U0001f620", "凶巴巴": "\U0001f620",
+	"害羞羞": "\U0001f648", "脸红红": "\u263a\ufe0f", "冒心心": "\U0001f60d",
+	"眼冒心心": "\U0001f60d", "爱心眼": "\U0001f60d", "崇拜": "\U0001f929",
+	"跪了": "\U0001f647", "加油鸭": "\U0001f4aa", "冲鸭": "\U0001f986",
+	"摸头": "\U0001faf3", "捏脸": "\U0001f90f", "抱抱": "\U0001f917",
+	"举高高": "\U0001f64c", "干杯": "\U0001f37b", "吃糖": "\U0001f36c",
+}
+
+var bareEmotionPattern = buildBareEmotionPattern()
+
+func buildBareEmotionPattern() *regexp.Regexp {
+	names := make([]string, 0, len(faceNameToID)+len(emotionToEmoji))
+	for n := range faceNameToID {
+		names = append(names, n)
+	}
+	for n := range emotionToEmoji {
+		names = append(names, n)
+	}
+	sort.Slice(names, func(i, j int) bool {
+		return len(names[i]) > len(names[j])
+	})
+	quoted := make([]string, len(names))
+	for i, n := range names {
+		quoted[i] = regexp.QuoteMeta(n)
+	}
+	return regexp.MustCompile(`\[(?:` + strings.Join(quoted, "|") + `)\]`)
+}
+
+// expandBareEmotionTags converts the bare "[亲亲]"-style tags the model
+// actually emits (no face:/表情: prefix) into the canonical face marker
+// when a QQ face id exists, else a unicode emoji. Unknown brackets are
+// left untouched so real text in [] survives.
+func expandBareEmotionTags(text string) string {
+	return bareEmotionPattern.ReplaceAllStringFunc(
+		text,
+		func(tag string) string {
+			name := strings.TrimSuffix(strings.TrimPrefix(tag, "["), "]")
+			if _, ok := faceNameToID[name]; ok {
+				return "[face:" + name + "]"
+			}
+			if emoji, ok := emotionToEmoji[name]; ok {
+				return emoji
+			}
+			return tag
+		},
+	)
 }
 
 // parseFaceMarkers splits text into a chain of text/face components.
 // Returns the chain, the marker-stripped plain text, and whether any
 // marker was consumed. Unknown face names are removed silently.
 func parseFaceMarkers(text string) (message.Chain, string, bool) {
+	orig := text
+	text = expandBareEmotionTags(text)
+	expanded := text != orig
 	matches := faceMarkerPattern.FindAllStringSubmatchIndex(text, -1)
 	if len(matches) == 0 {
-		return message.Chain{message.Text(text)}, text, false
+		return message.Chain{message.Text(text)}, text, expanded
 	}
 	var (
 		chain   message.Chain
@@ -102,9 +175,15 @@ func parseFaceMarkers(text string) (message.Chain, string, bool) {
 		if err != nil {
 			mapped, ok := faceNameToID[value]
 			if !ok {
-				// Unknown name: still consume the marker so it never leaks
-				// into the chat as literal text.
 				flush(m[0])
+				if emoji, has := emotionToEmoji[value]; has {
+					// Named but unmapped emotion: emit the unicode
+					// emoji rather than swallowing the marker.
+					chain = append(chain, message.Text(emoji))
+					cleaned.WriteString(emoji)
+				}
+				// Fully unknown name: still consume the marker so it
+				// never leaks into the chat as literal text.
 				cursor = m[1]
 				found = true
 				continue
@@ -123,7 +202,7 @@ func parseFaceMarkers(text string) (message.Chain, string, bool) {
 		found = true
 	}
 	flush(len(text))
-	if !found {
+	if !found && !expanded {
 		return message.Chain{message.Text(text)}, text, false
 	}
 	return chain, cleaned.String(), true

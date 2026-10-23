@@ -192,8 +192,12 @@ func TestFailedSendDoesNotEnterHistory(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("send-failed", "hello", true))
 
 	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
-	if len(snapshot.History) != 0 {
-		t.Fatalf("failed reply entered history: %#v", snapshot.History)
+	// Ambient observation logs the heard message even when the send
+	// fails — only the (never-sent) assistant reply stays out.
+	if len(snapshot.History) != 1 ||
+		snapshot.History[0].Role != "user" ||
+		snapshot.History[0].Content != "[tester (20002)]: hello" {
+		t.Fatalf("failed send history = %#v", snapshot.History)
 	}
 	if service.Stats().SendErrors != 1 {
 		t.Fatalf("SendErrors = %d, want 1", service.Stats().SendErrors)
@@ -675,7 +679,8 @@ func TestPersonaBeginDialogsAndCustomErrorMessage(t *testing.T) {
 		t.Fatalf("agent calls = %d, want 1", len(agentClient.requests))
 	}
 	history := agentClient.requests[0].History
-	if len(history) != 2 || history[0].Content != "hello" || history[1].Content != "welcome" {
+	if len(history) != 2 || history[0].Content != "hello" ||
+		history[1].Content != "welcome" {
 		t.Fatalf("begin dialogs = %#v", history)
 	}
 	if len(sender.messages) != 1 || sender.messages[0].text != "community unavailable" {

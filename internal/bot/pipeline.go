@@ -305,7 +305,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	// Ambient context: log the inbound into session history even when it
 	// gets ignored later — group chatter she doesn't reply to is still
 	// stuff she heard, and AddExchange dedupes the line on an answer.
-	s.sessions.AddObservation(state.sessionID, state.promptText)
+	// Commands are operator ops, not ambient chatter — skip them so a
+	// denied "/status" doesn't linger as fake conversational context.
+	if !s.commandMessage(state.text) {
+		s.sessions.AddObservation(state.sessionID, state.promptText)
+	}
 	event.Values["tools"] = s.tools
 	event.Values["scope.skills"] = append([]string(nil), state.allowedSkills...)
 	event.Values["scope.knowledge_bases"] = append(
@@ -393,6 +397,10 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 	refs := s.EventImageRefs(ctx, state.selfID, state.event.Chain)
 	if len(refs) > 0 {
 		go s.collectMemes(state.chatType, state.chatID, refs)
+		s.noteRecentImage(
+			state.chatType, state.chatID, state.userID,
+			refs[len(refs)-1],
+		)
 	}
 	for _, kt := range s.keywordTools {
 		if !kt.pattern.MatchString(state.text) {
@@ -620,7 +628,16 @@ func (s *Service) stageSession(_ context.Context, event *pipeline.Context) error
 		event.Stop("human_handoff")
 		return nil
 	}
-	state.history = snapshot.History
+	// The ambient observation for THIS inbound was logged upstream; it
+	// would otherwise sit at the tail of history while request.Text carries
+	// the same line — the model then perceives the message as duplicated.
+	history := snapshot.History
+	if n := len(history); n > 0 &&
+		history[n-1].Role == "user" &&
+		history[n-1].Content == state.promptText {
+		history = history[:n-1]
+	}
+	state.history = history
 	state.summary = snapshot.Summary
 	if state.learning {
 		state.memory = snapshot.Memory
@@ -684,12 +701,40 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if replyID := state.event.Chain.ReplyID(); replyID != "" {
 		quoted = s.QuotedChain(ctx, state.selfID, state.event.Chain)
 	}
+	// The quoted message's own text never enters the prompt otherwise —
+	// "回复那条说啥意思" would ask blind. Inline it (truncated) so she
+	// actually knows what she's responding to.
+	if quoted != nil {
+		if qText, _ := quoted.PlainText(state.selfID); qText != "" {
+			runes := []rune(qText)
+			if len(runes) > 300 {
+				qText = string(runes[:300]) + "…"
+			}
+			request.Text = strings.TrimSpace(
+				"（引用：" + qText + "）\n" + request.Text,
+			)
+		}
+	}
 	if len(request.Chain.ImageReferences()) == 0 {
 		refs := state.event.Chain.ImageReferences()
 		if len(refs) == 0 && quoted != nil {
 			refs = quoted.ImageReferences()
 		}
 		for _, ref := range refs {
+			request.Chain = append(
+				request.Chain,
+				message.Attachment(
+					message.TypeImage,
+					map[string]any{"file_path": ref},
+				),
+			)
+		}
+	}
+	// Referential follow-up right after an image ("怎么回事"/"报错是啥"):
+	// reattach the freshest chat image so she actually sees it again
+	// instead of answering blind about "the picture".
+	if len(request.Chain.ImageReferences()) == 0 {
+		if ref := s.recentImageFor(state, 3*time.Minute); ref != "" {
 			request.Chain = append(
 				request.Chain,
 				message.Attachment(

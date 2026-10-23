@@ -154,8 +154,15 @@ type Service struct {
 	spamRepeats      map[string]spamRepeatEntry
 	fatigueMu        sync.Mutex
 	chatFatigue      map[string]fatigueEntry
+	chatMu           sync.Mutex
+	chatLocks        map[string]*sync.Mutex
+	recentMu         sync.Mutex
+	recentImages     map[string]recentImage
 
 	flow *pipeline.Pipeline
+
+	// recentImage holds the freshest image ref seen per chat so a
+	// text-only follow-up ("怎么回事"/"报错是啥") can reattach it.
 
 	maintenance        chan flowState
 	maintenanceRunning atomic.Bool
@@ -618,6 +625,63 @@ func (s *Service) RunPlatform(ctx context.Context, events <-chan platform.Event)
 	}
 }
 
+// chatLockFor returns the per-chat mutex that serializes pipeline turns.
+func (s *Service) chatLockFor(chatType, chatID string) *sync.Mutex {
+	s.chatMu.Lock()
+	defer s.chatMu.Unlock()
+	if s.chatLocks == nil {
+		s.chatLocks = map[string]*sync.Mutex{}
+	}
+	key := chatType + ":" + chatID
+	if m, ok := s.chatLocks[key]; ok {
+		return m
+	}
+	m := &sync.Mutex{}
+	s.chatLocks[key] = m
+	return m
+}
+
+// recentImage records a freshly seen image ref per chat.
+type recentImage struct {
+	ref    string
+	userID string
+	at     time.Time
+}
+
+func (s *Service) noteRecentImage(chatType, chatID, userID, ref string) {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return
+	}
+	s.recentMu.Lock()
+	defer s.recentMu.Unlock()
+	if s.recentImages == nil {
+		s.recentImages = map[string]recentImage{}
+	}
+	s.recentImages[chatType+":"+chatID] = recentImage{
+		ref: ref, userID: userID, at: time.Now(),
+	}
+}
+
+// imageRefHint marks texts that plausibly refer back to a just-sent
+// image; very short follow-ups ("怎么回事") count as referential too.
+var imageRefHint = regexp.MustCompile(
+	`图|截图|报错|照片|表情|画的|上面|那个|刚才|刚刚|看看`)
+
+func (s *Service) recentImageFor(state *flowState, window time.Duration) string {
+	s.recentMu.Lock()
+	defer s.recentMu.Unlock()
+	entry, ok := s.recentImages[state.chatType+":"+state.chatID]
+	if !ok || time.Since(entry.at) > window {
+		return ""
+	}
+	text := strings.TrimSpace(state.text)
+	if utf8.RuneCountInString(text) <= 14 || imageRefHint.MatchString(text) {
+		return entry.ref
+	}
+	return ""
+}
+
 func (s *Service) Stats() Stats {
 	return Stats{
 		Received:             s.stats.received.Load(),
@@ -676,6 +740,13 @@ func (s *Service) handleEvent(ctx context.Context, event onebot.Event) {
 
 func (s *Service) handlePlatformEvent(ctx context.Context, event platform.Event) {
 	s.stats.received.Add(1)
+	// Serialize turns within a chat: a follow-up event handled while an
+	// earlier reply is still in flight would snapshot history before the
+	// first exchange is recorded — producing contradictory answers on
+	// rapid @ mentions. Per-chat lock keeps observations+replies ordered.
+	lock := s.chatLockFor(event.MessageType, event.ChatID)
+	lock.Lock()
+	defer lock.Unlock()
 	if s.plugins != nil {
 		if err := s.plugins.Event(ctx, event); err != nil {
 			s.stats.ignored.Add(1)
@@ -792,7 +863,7 @@ func (s *Service) sendTextParts(
 			if !waitForReplyPart(ctx, s.typingDelay(part)) {
 				return false
 			}
-		} else if !waitForReplyPart(ctx, s.replyPartDelay(parts[index-1])) {
+		} else if !waitForReplyPart(ctx, s.replyPartDelay(part)) {
 			return false
 		}
 		quote := s.cfg.QuoteReply && index == 0 && s.shouldQuoteReply(chatType)
@@ -857,8 +928,8 @@ func (s *Service) sendChains(
 			continue
 		}
 		if index > 0 {
-			previous, _ := chains[index-1].PlainText("")
-			if !waitForReplyPart(ctx, s.replyPartDelay(previous)) {
+			current, _ := chain.PlainText("")
+			if !waitForReplyPart(ctx, s.replyPartDelay(current)) {
 				return false
 			}
 		}
@@ -990,12 +1061,15 @@ func (s *Service) shouldQuoteReply(chatType string) bool {
 	return rand.Float64() < prob
 }
 
-func (s *Service) replyPartDelay(previous string) time.Duration {
+// replyPartDelay simulates the time a person needs to type the part
+// about to be sent: the base beat plus ~30ms per rune (a longer message
+// visibly takes longer to type). Capped at 80 runes of extra time.
+func (s *Service) replyPartDelay(part string) time.Duration {
 	if s.cfg.ReplyPartDelay <= 0 {
 		return 0
 	}
-	extraRunes := min(utf8.RuneCountInString(previous), 80)
-	return s.cfg.ReplyPartDelay + time.Duration(extraRunes)*8*time.Millisecond
+	extraRunes := min(utf8.RuneCountInString(part), 80)
+	return s.cfg.ReplyPartDelay + time.Duration(extraRunes)*30*time.Millisecond
 }
 
 // typingDelay simulates the pause before a person sends their first
