@@ -688,6 +688,23 @@ func TestPersonaBeginDialogsAndCustomErrorMessage(t *testing.T) {
 	}
 }
 
+func TestErrorSilentDropsAgentErrorReply(t *testing.T) {
+	cfg := testBotConfig(t)
+	cfg.ErrorSilent = true
+	agentClient := &fakeAgent{err: errors.New("provider unavailable")}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+
+	service.handleEvent(context.Background(), testEvent("silent-error", "question", true))
+
+	if len(agentClient.requests) != 1 {
+		t.Fatalf("agent calls = %d, want 1", len(agentClient.requests))
+	}
+	if len(sender.messages) != 0 {
+		t.Fatalf("silent error reply = %#v, want no messages", sender.messages)
+	}
+}
+
 func testBotConfig(t *testing.T) config.Config {
 	t.Helper()
 	allowlist, err := config.ParseAllowlist("30003")

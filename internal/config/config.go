@@ -263,6 +263,10 @@ type Config struct {
 	ResumeReply  string
 	ClearReply   string
 	ErrorReply   string
+	// ErrorSilent drops all agent-error fallback replies instead of
+	// sending ErrorReply — a silent miss reads more human than a canned
+	// "service unavailable" notice. QQ_ERROR_SILENT opt-in.
+	ErrorSilent bool
 }
 
 // Asleep reports whether hour-of-day now falls inside the configured sleep
@@ -351,6 +355,7 @@ func Load() (Config, error) {
 		ErrorReply:   envOr("QQ_ERROR_REPLY", "服务暂时不可用，请稍后再试；群聊可发送“@机器人 /人工”，私聊可发送“/人工”。"),
 	}
 
+	cfg.ErrorSilent = parseBool("QQ_ERROR_SILENT", false, &errs)
 	cfg.RequireMention = parseBool("QQ_REQUIRE_MENTION", true, &errs)
 	cfg.QuoteReply = parseBool("QQ_QUOTE_REPLY", true, &errs)
 	cfg.QuoteGroupProb = parseFloat("QQ_QUOTE_GROUP_PROB", 0.4, 0, 1, &errs)

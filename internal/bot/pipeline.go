@@ -229,9 +229,15 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	state.event.Chain = chain
 	state.text, state.eventMentioned = chain.PlainText(state.selfID)
 	if strings.TrimSpace(state.text) == "" {
-		state.ignored = true
-		event.Stop("empty_message")
-		return nil
+		if state.eventMentioned {
+			// Bare @ with no content — treat it as a poke so the
+			// persona can react naturally instead of dropping it.
+			state.text = "（对方戳了戳你）"
+		} else {
+			state.ignored = true
+			event.Stop("empty_message")
+			return nil
+		}
 	}
 	if handled := s.checkRepeatSpam(ctx, event, state); handled {
 		return nil
@@ -852,7 +858,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			hint = affinity.GenericHint(level)
 		}
 		request.SystemPrompt += fmt.Sprintf(
-			"\n\n对方和你的亲密度：%s（%d/100）。%s对方直接问起你们之间的亲密度或好感度时，如实按这个数值回答。",
+			"\n\n对方和你的亲密度：%s（%d/100）。%s分数只用于你内心判断跟对方的距离，别往外报具体数字、别报「分」——对方问起亲密度或好感度时，像真人一样用等级感觉回答（刚认识/有点熟/聊得来/很亲）；对方要精确数字就让他发 /亲密度。",
 			level, percent, hint,
 		)
 		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
@@ -1138,6 +1144,12 @@ func (s *Service) stagePluginAfter(ctx context.Context, event *pipeline.Context)
 func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) error {
 	state := stateFrom(event)
 	if state.ignored || state.reply == "" {
+		return nil
+	}
+	if state.agentErr != nil && s.cfg.ErrorSilent {
+		// Agent call failed and the operator opted for silence — a
+		// no-reply reads human ("didn't see it") instead of the canned
+		// service-unavailable notice.
 		return nil
 	}
 	if containsProviderError(state.reply) {
