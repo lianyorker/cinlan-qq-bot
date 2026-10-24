@@ -106,6 +106,32 @@ func TestPersonaProfileScopedByPersona(t *testing.T) {
 	}
 }
 
+func TestUserCardPersistsBadgesAcrossRefreshes(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.SetUserBadge("10001", "30003",
+		GroupBadge{Role: "admin", Title: "大佬"}); err != nil {
+		t.Fatal(err)
+	}
+	// Profile refresh keeps group badges — SetUserCard must not wipe them.
+	if err := s.SetUserCard("10001", UserCard{
+		Nick: "阿茶", Sex: "female", Age: 24, Friend: true,
+		FetchedAt: time.Now(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	card, ok := s.UserCard("10001")
+	if !ok || card.Nick != "阿茶" || !card.Friend {
+		t.Fatalf("card = %#v ok=%v", card, ok)
+	}
+	if card.Badges["30003"].Role != "admin" || card.Badges["30003"].Title != "大佬" {
+		t.Fatalf("badge lost on refresh: %#v", card.Badges)
+	}
+	// A badge in another group stays isolated.
+	if _, ok := card.Badges["99999"]; ok {
+		t.Fatal("badge leaked across groups")
+	}
+}
+
 func TestLegacyJSONMigratesStringFacts(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "prefs.json")

@@ -324,6 +324,9 @@ func main() {
 	if checker, ok := qqAdapter.(bot.GroupMemberChecker); ok {
 		botService.SetGroupMemberChecker(checker)
 	}
+	if profiler, ok := qqAdapter.(bot.UserProfiler); ok {
+		botService.SetUserProfiler(profiler)
+	}
 	peerSelfIDs := append([]string(nil), cfg.PeerBotIDs...)
 	if multi, ok := qqAdapter.(*onebotplatform.MultiAdapter); ok {
 		accounts := multi.Accounts()

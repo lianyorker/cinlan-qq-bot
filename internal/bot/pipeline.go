@@ -15,6 +15,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/affinity"
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
+	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/mood"
@@ -923,15 +924,27 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
 		}
+		// Who is this person — cached QQ profile, refreshed weekly. It's
+		// the little card a human glances at before replying.
+		s.refreshUserCard(ctx, state)
+		if line := s.describeUserCard(state); line != "" {
+			request.SystemPrompt += "\n\n" + line
+		}
 		// Self-learned layer, human-shaped: a steady core of fresh facts,
 		// plus memories this message just pulled back to mind. Lower trust
 		// than operator notes — the remember tool keeps them editable.
+		// Rune budgets keep the whole memory layer bounded per request.
 		learned := make([]string, 0)
 		recentSet := map[string]bool{}
+		learnedRunes := 0
 		for _, f := range s.chatPrefs.RecentFacts(
 			state.chatType, state.chatID, 10,
 		) {
+			if learnedRunes+len([]rune(f.Text)) > learnedBudgetRunes {
+				continue
+			}
 			recentSet[f.Text] = true
+			learnedRunes += len([]rune(f.Text))
 			learned = append(learned, "· "+f.Text)
 		}
 		if len(learned) > 0 {
@@ -939,12 +952,17 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 				strings.Join(learned, "\n")
 		}
 		recalled := make([]string, 0)
+		recalledRunes := 0
 		for _, f := range s.chatPrefs.RecallFacts(
 			state.chatType, state.chatID, state.text, 5,
 		) {
 			if recentSet[f.Text] {
 				continue
 			}
+			if recalledRunes+len([]rune(f.Text)) > recalledBudgetRunes {
+				continue
+			}
+			recalledRunes += len([]rune(f.Text))
 			age := humanizeGap(now.Sub(f.CreatedAt))
 			if age == "0分钟" {
 				age = "刚才"
@@ -1596,6 +1614,183 @@ func humanizeGap(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%d分钟", int(d.Minutes()))
 	}
+}
+
+const (
+	// learnedBudgetRunes / recalledBudgetRunes cap how much self-learned
+	// memory reaches the prompt — bounded tokens, oldest lines drop first.
+	learnedBudgetRunes  = 420
+	recalledBudgetRunes = 300
+	// userCardTTL refreshes QQ profiles weekly; a failed fetch leaves
+	// Nick empty and retries after the shorter retry TTL.
+	userCardTTL      = 7 * 24 * time.Hour
+	userCardRetryTTL = time.Hour
+)
+
+// refreshUserCard keeps the cached QQ profile for the current speaker
+// warm: stranger info weekly, group badge when missing. Lookups fail
+// silent — the bot just talks without the extra context.
+func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
+	if s.chatPrefs == nil || s.userProfiler == nil || state.userID == "" {
+		return
+	}
+	now := s.now()
+	card, ok := s.chatPrefs.UserCard(state.userID)
+	needProfile := !ok || card.FetchedAt.IsZero() ||
+		now.Sub(card.FetchedAt) > userCardTTL ||
+		(card.Nick == "" && now.Sub(card.FetchedAt) > userCardRetryTTL)
+	if needProfile {
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		raw, err := s.userProfiler.Call(cctx, "get_stranger_info",
+			map[string]any{"user_id": state.userID})
+		card = chatprefs.UserCard{FetchedAt: now}
+		if err == nil {
+			if m := actionResultMap(raw); m != nil {
+				card.Nick = strField(m, "nickname")
+				card.Sex = strField(m, "sex")
+				card.Age = intField(m, "age")
+				card.Sign = strField(m, "sign")
+				if card.Sign == "" {
+					card.Sign = strField(m, "long_nick")
+				}
+				card.Friend = s.friendListed(cctx, state.userID)
+			}
+		}
+		_ = s.chatPrefs.SetUserCard(state.userID, card)
+	}
+	if state.chatType == platform.ChatGroup && state.chatID != "" {
+		if _, has := card.Badges[state.chatID]; has && !needProfile {
+			return
+		}
+		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
+		defer cancel()
+		raw, err := s.userProfiler.Call(cctx, "get_group_member_info",
+			map[string]any{
+				"group_id": state.chatID,
+				"user_id":  state.userID,
+			})
+		if err == nil {
+			if m := actionResultMap(raw); m != nil {
+				_ = s.chatPrefs.SetUserBadge(state.userID, state.chatID,
+					chatprefs.GroupBadge{
+						Role:  strField(m, "role"),
+						Title: strField(m, "title"),
+					})
+			}
+		}
+	}
+}
+
+// friendListed checks the friend list once during a card refresh — a
+// human knows who's already a friend, and so should she.
+func (s *Service) friendListed(ctx context.Context, userID string) bool {
+	raw, err := s.userProfiler.Call(ctx, "get_friend_list", map[string]any{})
+	if err != nil {
+		return false
+	}
+	blob, err := json.Marshal(raw)
+	if err != nil {
+		return false
+	}
+	var entries []map[string]any
+	if err := json.Unmarshal(blob, &entries); err != nil {
+		return false
+	}
+	for _, e := range entries {
+		if fmt.Sprint(e["user_id"]) == userID {
+			return true
+		}
+	}
+	return false
+}
+
+// describeUserCard renders the cached profile as one compact prompt line
+// — bounded to ~90 chars so it costs tens of tokens, not hundreds.
+func (s *Service) describeUserCard(state *flowState) string {
+	card, ok := s.chatPrefs.UserCard(state.userID)
+	if !ok || card.Nick == "" {
+		return ""
+	}
+	parts := make([]string, 0, 6)
+	parts = append(parts, card.Nick)
+	switch card.Sex {
+	case "male":
+		parts = append(parts, "男")
+	case "female":
+		parts = append(parts, "女")
+	}
+	if card.Age > 0 {
+		parts = append(parts, fmt.Sprintf("%d岁", card.Age))
+	}
+	if card.Sign != "" {
+		sign := card.Sign
+		if r := []rune(sign); len(r) > 30 {
+			sign = string(r[:30]) + "…"
+		}
+		parts = append(parts, "签名“"+sign+"”")
+	}
+	if card.Friend {
+		parts = append(parts, "你们已是QQ好友")
+	}
+	label := "对方"
+	if state.chatType == platform.ChatGroup {
+		label = "发言者"
+	}
+	line := label + "资料：" + strings.Join(parts, "，")
+	if state.chatType == platform.ChatGroup {
+		if badge, ok := card.Badges[state.chatID]; ok {
+			if badge.Role == "owner" {
+				line += "，是群主"
+			} else if badge.Role == "admin" {
+				line += "，是管理员"
+			}
+			if badge.Title != "" {
+				line += fmt.Sprintf("，头衔「%s」", badge.Title)
+			}
+		}
+	}
+	return line
+}
+
+// actionResultMap normalizes a platform Call result (raw JSON or an
+// already-decoded map) into a plain map for field reads.
+func actionResultMap(v any) map[string]any {
+	switch m := v.(type) {
+	case map[string]any:
+		return m
+	}
+	blob, err := json.Marshal(v)
+	if err != nil {
+		return nil
+	}
+	var m map[string]any
+	if err := json.Unmarshal(blob, &m); err != nil {
+		return nil
+	}
+	return m
+}
+
+func strField(m map[string]any, key string) string {
+	if v, ok := m[key]; ok {
+		if s, ok := v.(string); ok {
+			return strings.TrimSpace(s)
+		}
+	}
+	return ""
+}
+
+func intField(m map[string]any, key string) int {
+	switch v := m[key].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	case json.Number:
+		n, _ := v.Int64()
+		return int(n)
+	}
+	return 0
 }
 
 func eventTime(event platform.Event) int64 {

@@ -72,6 +72,14 @@ type GroupMemberChecker interface {
 	IsGroupMember(ctx context.Context, selfID, groupID, userID string) (bool, error)
 }
 
+// UserProfiler is the raw platform action surface used to look up who a
+// person is — get_stranger_info / get_friend_list / get_group_member_info.
+// The platform adapters already expose Call; this narrows it to what the
+// profile cache needs.
+type UserProfiler interface {
+	Call(ctx context.Context, action string, params map[string]any) (any, error)
+}
+
 const memberCacheTTL = 10 * time.Minute
 
 type memberCacheEntry struct {
@@ -119,6 +127,7 @@ type Service struct {
 	chainFetcher   MessageFetcher
 	groupModerator GroupModerator
 	memberChecker  GroupMemberChecker
+	userProfiler   UserProfiler
 	memberMu       sync.Mutex
 	memberCache    map[string]memberCacheEntry
 	warnStore      *moderation.Store
@@ -342,6 +351,12 @@ func (s *Service) ClearHandoff(sessionID string) {
 // binding selectors (private-chat routing by community membership).
 func (s *Service) SetGroupMemberChecker(checker GroupMemberChecker) {
 	s.memberChecker = checker
+}
+
+// SetUserProfiler wires the action caller used to refresh cached QQ
+// profiles (nickname/sex/sign/friend flag/group badges).
+func (s *Service) SetUserProfiler(profiler UserProfiler) {
+	s.userProfiler = profiler
 }
 
 // groupMemberOf answers whether userID is in groupID, caching each pair for

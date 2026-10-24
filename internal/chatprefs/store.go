@@ -69,6 +69,28 @@ type chatEntry struct {
 type persistedStore struct {
 	Chats    map[string]*chatEntry `json:"chats"`
 	Profiles map[string]fact       `json:"profiles,omitempty"` // key = persona+"|"+userID
+	Cards    map[string]UserCard   `json:"cards,omitempty"`    // key = userID
+}
+
+// GroupBadge is what a member is inside one group — public group data,
+// keyed by groupID so badges never bleed across groups.
+type GroupBadge struct {
+	Role  string `json:"role,omitempty"`  // owner / admin / member
+	Title string `json:"title,omitempty"` // 专属头衔
+}
+
+// UserCard caches the QQ profile the bot fetched for one person — the
+// stuff a human glances at: nick, sex, age, signature, whether they're
+// already a friend, plus per-group role/title. Public profile data, so
+// a single global cache per userID is correct (not conversation content).
+type UserCard struct {
+	Nick      string                `json:"nick,omitempty"`
+	Sex       string                `json:"sex,omitempty"` // male / female / unknown
+	Age       int                   `json:"age,omitempty"`
+	Sign      string                `json:"sign,omitempty"`
+	Friend    bool                  `json:"friend,omitempty"`
+	Badges    map[string]GroupBadge `json:"badges,omitempty"`
+	FetchedAt time.Time             `json:"fetched_at"`
 }
 
 // Store is a small JSON-file-backed per-chat preference store keyed by
@@ -78,6 +100,7 @@ type Store struct {
 	mu       sync.RWMutex
 	data     map[string]*chatEntry
 	profiles map[string]fact
+	cards    map[string]UserCard
 	now      func() time.Time
 }
 
@@ -86,6 +109,7 @@ func Load(path string) (*Store, error) {
 		path:     path,
 		data:     map[string]*chatEntry{},
 		profiles: map[string]fact{},
+		cards:    map[string]UserCard{},
 		now:      time.Now,
 	}
 	raw, err := os.ReadFile(path)
@@ -107,6 +131,7 @@ func Load(path string) (*Store, error) {
 		}
 		store.data = p.Chats
 		store.profiles = p.Profiles
+		store.cards = p.Cards
 	} else if err := json.Unmarshal(raw, &store.data); err != nil {
 		return nil, err
 	}
@@ -115,6 +140,9 @@ func Load(path string) (*Store, error) {
 	}
 	if store.profiles == nil {
 		store.profiles = map[string]fact{}
+	}
+	if store.cards == nil {
+		store.cards = map[string]UserCard{}
 	}
 	return store, nil
 }
@@ -616,6 +644,48 @@ func (s *Store) Profile(persona, userID string) fact {
 	return s.profiles[strings.TrimSpace(persona)+"|"+strings.TrimSpace(userID)]
 }
 
+// UserCard returns the cached QQ profile for one person.
+func (s *Store) UserCard(userID string) (UserCard, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	c, ok := s.cards[strings.TrimSpace(userID)]
+	return c, ok
+}
+
+// SetUserCard upserts the cached profile. Callers may store a card with
+// only FetchedAt set to mark "fetch tried and failed" — Nick stays empty
+// so retries follow the short retry TTL, not the full card TTL.
+func (s *Store) SetUserCard(userID string, card UserCard) error {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return errors.New("user id is empty")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	old := s.cards[userID]
+	card.Badges = old.Badges // badges are group-scoped, kept across refreshes
+	s.cards[userID] = card
+	return s.saveLocked()
+}
+
+// SetUserBadge records role/title a user holds in one group.
+func (s *Store) SetUserBadge(userID, groupID string, badge GroupBadge) error {
+	userID = strings.TrimSpace(userID)
+	groupID = strings.TrimSpace(groupID)
+	if userID == "" || groupID == "" {
+		return errors.New("badge needs user and group")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	c := s.cards[userID]
+	if c.Badges == nil {
+		c.Badges = map[string]GroupBadge{}
+	}
+	c.Badges[groupID] = badge
+	s.cards[userID] = c
+	return s.saveLocked()
+}
+
 // NotesText returns the remembered notes for the chat joined with newlines.
 func (s *Store) NotesText(chatType, chatID string) string {
 	s.mu.RLock()
@@ -716,6 +786,7 @@ func (s *Store) saveLocked() error {
 	raw, err := json.MarshalIndent(persistedStore{
 		Chats:    s.data,
 		Profiles: s.profiles,
+		Cards:    s.cards,
 	}, "", "  ")
 	if err != nil {
 		return err
