@@ -161,6 +161,7 @@ func (s *Service) stageModeration(
 			count, limit, limit,
 		)
 	}
+	notice = s.personaModerationNotice(ctx, state, notice)
 	if !s.sendChain(
 		ctx,
 		state.selfID,
@@ -248,6 +249,85 @@ func (s *Service) classifySpam(
 		return false, "", nil
 	}
 	return verdict.Spam, strings.TrimSpace(verdict.Reason), nil
+}
+
+// moderationVoicePrompt asks the persona to rewrite the system-banner
+// warning in her own voice — a person scolding an ad spammer, not a
+// notification template.
+const moderationVoicePrompt = `你是群里的普通人，刚替群撤回了一条广告/违规消息。把下面的系统提示改写成一句你自己的话：像真人在群里说话，短、直接、带你的性格，不要“检测到”“第X次警告”这种系统腔，但语义必须保留（警告了几次、再犯会被禁言或移除）。只输出改写后的一句话，不要引号不要解释。`
+
+// personaModerationNotice swaps the fixed template for a persona-voiced
+// line. Model failure, empty output, or anything that still smells like a
+// marker/template falls back to the original template.
+func (s *Service) personaModerationNotice(
+	ctx context.Context,
+	state *flowState,
+	template string,
+) string {
+	profile, ok := s.personas.Get(state.personaName)
+	if !ok || strings.TrimSpace(profile.SystemPrompt) == "" {
+		return template
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.cfg.AttentionTimeout)
+	defer cancel()
+	request := domain.AgentRequest{
+		RequestID: "moderation-notice:" + opaqueAttentionID(
+			state.sessionID, state.messageID,
+		),
+		SessionID: "maintenance:moderation:" + opaqueAttentionID(
+			state.sessionID, "",
+		),
+		Text:          template,
+		SystemPrompt:  profile.SystemPrompt + "\n\n" + moderationVoicePrompt,
+		RestrictTools: true,
+	}
+	var response domain.AgentResponse
+	var err error
+	if s.providers != nil {
+		if state.providerName != "" {
+			response, err = s.providers.ReplyWith(callCtx, state.providerName, request)
+		} else {
+			response, err = s.providers.Reply(callCtx, request)
+		}
+	} else if s.agent != nil {
+		response, err = s.agent.Reply(callCtx, request)
+	} else {
+		return template
+	}
+	if err != nil {
+		s.logger.Warn("moderation notice voice failed", "error", err.Error())
+		return template
+	}
+	if voiced := sanitizeModerationVoice(response.Reply); voiced != "" {
+		return voiced
+	}
+	return template
+}
+
+// sanitizeModerationVoice keeps the first non-empty line of the model's
+// answer, strips wrapping quotes and stray [[..]] markers, and caps length
+// so a rambling model can't turn a warning into a speech.
+func sanitizeModerationVoice(reply string) string {
+	line := ""
+	for _, candidate := range strings.Split(reply, "\n") {
+		candidate = strings.TrimSpace(candidate)
+		if candidate != "" {
+			line = candidate
+			break
+		}
+	}
+	if line == "" || strings.Contains(line, "[[") {
+		return ""
+	}
+	line = strings.Trim(line, "\"'「」“”")
+	runes := []rune(line)
+	if len(runes) > 80 {
+		line = string(runes[:80])
+	}
+	if strings.TrimSpace(line) == "" {
+		return ""
+	}
+	return line
 }
 
 // decodeSpamVerdict parses the judge's JSON reply, tolerating surrounding
