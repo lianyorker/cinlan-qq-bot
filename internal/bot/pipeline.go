@@ -650,10 +650,11 @@ func (s *Service) stageSession(_ context.Context, event *pipeline.Context) error
 	// The ambient observation for THIS inbound was logged upstream; it
 	// would otherwise sit at the tail of history while request.Text carries
 	// the same line — the model then perceives the message as duplicated.
+	// Stored entries carry a [MM-DD HH:mm] stamp, so match by suffix.
 	history := snapshot.History
 	if n := len(history); n > 0 &&
 		history[n-1].Role == "user" &&
-		history[n-1].Content == state.promptText {
+		strings.HasSuffix(history[n-1].Content, state.promptText) {
 		history = history[:n-1]
 	}
 	state.history = history
@@ -922,18 +923,56 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
 		}
-		// Self-learned layer: chat facts the persona saved itself plus its
-		// take on the current speaker. Lower trust than operator notes —
-		// the model may update them via the remember tool.
-		if facts := s.chatPrefs.FactsText(state.chatType, state.chatID); facts != "" {
-			request.SystemPrompt += "\n\n你自己记住的关于这个聊天的信息：\n" + facts
+		// Self-learned layer, human-shaped: a steady core of fresh facts,
+		// plus memories this message just pulled back to mind. Lower trust
+		// than operator notes — the remember tool keeps them editable.
+		learned := make([]string, 0)
+		recentSet := map[string]bool{}
+		for _, f := range s.chatPrefs.RecentFacts(
+			state.chatType, state.chatID, 10,
+		) {
+			recentSet[f.Text] = true
+			learned = append(learned, "· "+f.Text)
 		}
-		if imp := s.chatPrefs.Impression(
+		if len(learned) > 0 {
+			request.SystemPrompt += "\n\n你自己记住的关于这个聊天的信息（可能过时，记不清就用'好像''大概'的语气）：\n" +
+				strings.Join(learned, "\n")
+		}
+		recalled := make([]string, 0)
+		for _, f := range s.chatPrefs.RecallFacts(
+			state.chatType, state.chatID, state.text, 5,
+		) {
+			if recentSet[f.Text] {
+				continue
+			}
+			age := humanizeGap(now.Sub(f.CreatedAt))
+			if age == "0分钟" {
+				age = "刚才"
+			}
+			recalled = append(recalled, fmt.Sprintf(
+				"你突然想起（%s记的）：%s", age, f.Text,
+			))
+		}
+		if len(recalled) > 0 {
+			request.SystemPrompt += "\n\n这条消息让你想起的旧记忆，提不提随你：\n" +
+				strings.Join(recalled, "\n")
+		}
+		// Her take on the speaker: chat-local first, then the persona-wide
+		// profile so she recognizes people across her own bindings.
+		imp := s.chatPrefs.Impression(
 			state.chatType, state.chatID, state.userID,
-		); imp != "" {
+		)
+		if imp.Text == "" && state.personaName != "" {
+			imp = s.chatPrefs.Profile(state.personaName, state.userID)
+		}
+		if imp.Text != "" {
+			suffix := ""
+			if !imp.CreatedAt.IsZero() {
+				suffix = fmt.Sprintf("（%s前记的）", humanizeGap(now.Sub(imp.CreatedAt)))
+			}
 			request.SystemPrompt += fmt.Sprintf(
-				"\n\n你对当前发言者 %s（QQ:%s）的印象：%s",
-				state.event.SenderName, state.userID, imp,
+				"\n\n你对当前发言者 %s（QQ:%s）的印象：%s%s",
+				state.event.SenderName, state.userID, imp.Text, suffix,
 			)
 		}
 	}

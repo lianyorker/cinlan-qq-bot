@@ -8,6 +8,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,9 +22,31 @@ type imageNote struct {
 	Path string `json:"path"`
 }
 
+// fact is one remembered line with time anchors. CreatedAt marks when
+// the persona first learned it; LastSeenAt bumps every time the line
+// resurfaces in a prompt — stale, never-recalled memories fade first.
+type fact struct {
+	Text       string    `json:"text"`
+	CreatedAt  time.Time `json:"created_at,omitempty"`
+	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
+}
+
+func (f *fact) UnmarshalJSON(raw []byte) error {
+	if len(raw) > 0 && raw[0] == '"' {
+		var s string
+		if err := json.Unmarshal(raw, &s); err != nil {
+			return err
+		}
+		*f = fact{Text: s}
+		return nil
+	}
+	type alias fact
+	return json.Unmarshal(raw, (*alias)(f))
+}
+
 type chatEntry struct {
-	NotifyOff  bool        `json:"notify_off,omitempty"`
-	VoiceOff   bool        `json:"voice_off,omitempty"`
+	NotifyOff bool `json:"notify_off,omitempty"`
+	VoiceOff  bool `json:"voice_off,omitempty"`
 	// SingOn gates [[SING]] clips — default OFF until real singing lands.
 	SingOn     bool        `json:"sing_on,omitempty"`
 	Persona    string      `json:"persona,omitempty"`
@@ -34,22 +57,37 @@ type chatEntry struct {
 	MuteUntil  time.Time   `json:"mute_until,omitempty"`
 	// Facts are self-learned chat facts written by the remember tool —
 	// trusted less than operator Notes.
-	Facts []string `json:"facts,omitempty"`
+	Facts []fact `json:"facts,omitempty"`
 	// Impressions maps a QQ user id to the persona's remembered take on
 	// that member ("爱抬杠","生日10.28"), updated by the remember tool.
-	Impressions map[string]string `json:"impressions,omitempty"`
+	Impressions map[string]fact `json:"impressions,omitempty"`
+}
+
+// persistedStore wraps the chat map with persona-scoped user profiles.
+// Profiles let the same persona keep one impression per member across
+// bindings that share her — scoped by persona name, never cross-domain.
+type persistedStore struct {
+	Chats    map[string]*chatEntry `json:"chats"`
+	Profiles map[string]fact       `json:"profiles,omitempty"` // key = persona+"|"+userID
 }
 
 // Store is a small JSON-file-backed per-chat preference store keyed by
 // "<chat_type>:<chat_id>".
 type Store struct {
-	path string
-	mu   sync.RWMutex
-	data map[string]*chatEntry
+	path     string
+	mu       sync.RWMutex
+	data     map[string]*chatEntry
+	profiles map[string]fact
+	now      func() time.Time
 }
 
 func Load(path string) (*Store, error) {
-	store := &Store{path: path, data: map[string]*chatEntry{}}
+	store := &Store{
+		path:     path,
+		data:     map[string]*chatEntry{},
+		profiles: map[string]fact{},
+		now:      time.Now,
+	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -57,13 +95,35 @@ func Load(path string) (*Store, error) {
 		}
 		return nil, err
 	}
-	if err := json.Unmarshal(raw, &store.data); err != nil {
+	// v2 layout wraps chats under "chats"; v1 files are the bare chat map.
+	var wrapped map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wrapped); err != nil {
+		return nil, err
+	}
+	if _, ok := wrapped["chats"]; ok {
+		var p persistedStore
+		if err := json.Unmarshal(raw, &p); err != nil {
+			return nil, err
+		}
+		store.data = p.Chats
+		store.profiles = p.Profiles
+	} else if err := json.Unmarshal(raw, &store.data); err != nil {
 		return nil, err
 	}
 	if store.data == nil {
 		store.data = map[string]*chatEntry{}
 	}
+	if store.profiles == nil {
+		store.profiles = map[string]fact{}
+	}
 	return store, nil
+}
+
+// SetClock overrides the time source (tests); production keeps time.Now.
+func (s *Store) SetClock(now func() time.Time) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.now = now
 }
 
 func key(chatType, chatID string) string {
@@ -216,10 +276,106 @@ func (s *Store) ImageForPrompt(chatType, chatID, prompt string) string {
 const (
 	maxFactsPerChat       = 40
 	maxImpressionsPerChat = 60
+	maxProfilesPerPersona = 120
+	// recentFactsPerPrompt keeps the freshest memories always visible;
+	// the rest only resurface when the current message brings them up.
+	recentFactsPerPrompt = 10
+	recallFactsPerPrompt = 5
+	// recallMinScore is the CJK-bigram overlap a fact needs before the
+	// bot "remembers" it mid-turn. 2 keeps real cues ("阿茶"+"咖啡")
+	// reachable while "今天天气" style chit-chat still misses.
+	recallMinScore = 2
 )
 
+// factAnchor returns the freshest timestamp a fact earned, for sorting
+// and pruning — a memory keeps its youth by being recalled.
+func factAnchor(f fact) time.Time {
+	if f.LastSeenAt.After(f.CreatedAt) {
+		return f.LastSeenAt
+	}
+	return f.CreatedAt
+}
+
+// textBigrams extracts CJK character bigrams plus ASCII word tokens,
+// the cheapest relevance signal for memory recall.
+func textBigrams(text string) map[string]bool {
+	text = strings.ToLower(text)
+	grams := map[string]bool{}
+	runes := []rune(text)
+	isCJK := func(r rune) bool {
+		return r >= 0x3000 && r <= 0x9fff
+	}
+	var word strings.Builder
+	flushWord := func() {
+		if w := word.String(); len(w) >= 2 {
+			grams["w:"+w] = true
+		}
+		word.Reset()
+	}
+	prevCJK := -1
+	for i, r := range runes {
+		if isCJK(r) {
+			flushWord()
+			if prevCJK >= 0 {
+				grams[string(runes[prevCJK:i+1])] = true
+			}
+			prevCJK = i
+			continue
+		}
+		if r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '_' {
+			word.WriteRune(r)
+			continue
+		}
+		flushWord()
+		prevCJK = -1
+	}
+	flushWord()
+	return grams
+}
+
+// scoreFact counts how much of a fact's vocabulary shows up in the
+// current message — the recall trigger.
+func scoreFact(f fact, query map[string]bool) int {
+	overlap := 0
+	for gram := range textBigrams(f.Text) {
+		if query[gram] {
+			overlap++
+		}
+	}
+	return overlap
+}
+
+// bestFactMatch finds the fact most similar to target (for replace /
+// forget); returns the index or -1 when nothing matches at all.
+// Destructive edits demand more than the recall floor — at least half
+// the fact's vocabulary must overlap, or the target must literally
+// contain it. Otherwise vague targets would erase the wrong memory.
+func bestFactMatch(facts []fact, target string) int {
+	query := textBigrams(target)
+	best, bestScore := -1, 0
+	for i, f := range facts {
+		if strings.Contains(f.Text, target) || strings.Contains(target, f.Text) {
+			return i
+		}
+		if sc := scoreFact(f, query); sc > bestScore {
+			best, bestScore = i, sc
+		}
+	}
+	if best < 0 {
+		return -1
+	}
+	need := len(textBigrams(facts[best].Text))/2 + 1
+	if need < recallMinScore {
+		need = recallMinScore
+	}
+	if bestScore < need {
+		return -1
+	}
+	return best
+}
+
 // AddFact stores a self-learned fact line for the chat. Duplicates are
-// ignored; the list is capped and oldest entries drop first.
+// ignored; over capacity the least-recently-recalled memory fades out.
 func (s *Store) AddFact(chatType, chatID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -227,28 +383,155 @@ func (s *Store) AddFact(chatType, chatID, text string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(chatType, chatID)
-	for _, f := range e.Facts {
-		if f == text {
-			return nil
+	return s.addFactLocked(s.entry(chatType, chatID), text, s.now())
+}
+
+// addFactLocked does the append/dedupe/prune under the held lock so
+// ReplaceFact can fall back without re-locking.
+func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
+	for i, f := range e.Facts {
+		if f.Text == text {
+			e.Facts[i].LastSeenAt = now
+			return s.saveLocked()
 		}
 	}
 	if len(e.Facts) >= maxFactsPerChat {
-		e.Facts = e.Facts[len(e.Facts)-maxFactsPerChat+1:]
+		oldest := 0
+		for i := range e.Facts {
+			if factAnchor(e.Facts[i]).Before(factAnchor(e.Facts[oldest])) {
+				oldest = i
+			}
+		}
+		e.Facts = append(e.Facts[:oldest], e.Facts[oldest+1:]...)
 	}
-	e.Facts = append(e.Facts, text)
+	e.Facts = append(e.Facts, fact{Text: text, CreatedAt: now, LastSeenAt: now})
 	return s.saveLocked()
 }
 
-// FactsText returns the chat's self-learned facts joined with newlines.
-func (s *Store) FactsText(chatType, chatID string) string {
+// ReplaceFact updates the closest existing fact with new text — the
+// "she corrected herself" path; falls back to AddFact when no match.
+func (s *Store) ReplaceFact(chatType, chatID, target, text string) error {
+	text = strings.TrimSpace(text)
+	target = strings.TrimSpace(target)
+	if text == "" || target == "" {
+		return errors.New("replace needs old and new text")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(chatType, chatID)
+	now := s.now()
+	if idx := bestFactMatch(e.Facts, target); idx >= 0 {
+		e.Facts[idx].Text = text
+		e.Facts[idx].LastSeenAt = now
+		return s.saveLocked()
+	}
+	return s.addFactLocked(e, text, now)
+}
+
+// ForgetFact drops the closest matching fact — deliberate forgetting.
+func (s *Store) ForgetFact(chatType, chatID, target string) error {
+	target = strings.TrimSpace(target)
+	if target == "" {
+		return errors.New("nothing to forget")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return errors.New("没有相关的记忆")
+	}
+	if idx := bestFactMatch(e.Facts, target); idx >= 0 {
+		e.Facts = append(e.Facts[:idx], e.Facts[idx+1:]...)
+		return s.saveLocked()
+	}
+	return errors.New("没找到要忘的内容")
+}
+
+// RecallFacts returns up to limit facts matching the message, freshest
+// first — memories the conversation just pulled back into her head.
+func (s *Store) RecallFacts(chatType, chatID, query string, limit int) []fact {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return nil
+	}
+	grams := textBigrams(query)
+	now := s.now()
+	type scored struct {
+		f     fact
+		score int
+		idx   int
+	}
+	hits := make([]scored, 0, len(e.Facts))
+	for i, f := range e.Facts {
+		if sc := scoreFact(f, grams); sc >= recallMinScore {
+			hits = append(hits, scored{f, sc, i})
+		}
+	}
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].score != hits[j].score {
+			return hits[i].score > hits[j].score
+		}
+		return factAnchor(hits[i].f).After(factAnchor(hits[j].f))
+	})
+	out := make([]fact, 0, limit)
+	for _, h := range hits {
+		if len(out) >= limit {
+			break
+		}
+		out = append(out, h.f)
+		// Recalled memories stay fresh — LastSeenAt is her "used it
+		// recently" signal for later pruning.
+		e.Facts[h.idx].LastSeenAt = now
+	}
+	if len(out) > 0 {
+		_ = s.saveLocked()
+	}
+	return out
+}
+
+// FactsSnapshot returns all chat facts, oldest first (compression,
+// admin views, tests).
+func (s *Store) FactsSnapshot(chatType, chatID string) []fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return nil
+	}
+	return append([]fact(nil), e.Facts...)
+}
+
+// RecentFacts returns the newest keepAlways facts — the steady core of
+// what she still holds about this chat.
+func (s *Store) RecentFacts(chatType, chatID string, keepAlways int) []fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.data[key(chatType, chatID)]
 	if e == nil || len(e.Facts) == 0 {
-		return ""
+		return nil
 	}
-	return strings.Join(e.Facts, "\n")
+	start := len(e.Facts) - keepAlways
+	if start < 0 {
+		start = 0
+	}
+	return append([]fact(nil), e.Facts[start:]...)
+}
+
+// ForgetImpression clears the take on one member of this chat.
+func (s *Store) ForgetImpression(chatType, chatID, userID string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil || e.Impressions == nil {
+		return errors.New("没有相关印象")
+	}
+	if _, ok := e.Impressions[strings.TrimSpace(userID)]; !ok {
+		return errors.New("没有相关印象")
+	}
+	delete(e.Impressions, strings.TrimSpace(userID))
+	return s.saveLocked()
 }
 
 // SetImpression overwrites the persona's remembered take on one member.
@@ -262,25 +545,75 @@ func (s *Store) SetImpression(chatType, chatID, userID, text string) error {
 	defer s.mu.Unlock()
 	e := s.entry(chatType, chatID)
 	if e.Impressions == nil {
-		e.Impressions = map[string]string{}
+		e.Impressions = map[string]fact{}
 	}
 	if _, exists := e.Impressions[userID]; !exists &&
 		len(e.Impressions) >= maxImpressionsPerChat {
-		return errors.New("impression limit reached")
+		// drop the stalest impression to make room
+		oldestUser, oldestTime := "", time.Now().AddDate(10, 0, 0)
+		for u, f := range e.Impressions {
+			if factAnchor(f).Before(oldestTime) {
+				oldestUser, oldestTime = u, factAnchor(f)
+			}
+		}
+		delete(e.Impressions, oldestUser)
 	}
-	e.Impressions[userID] = text
+	now := s.now()
+	e.Impressions[userID] = fact{Text: text, CreatedAt: now, LastSeenAt: now}
 	return s.saveLocked()
 }
 
 // Impression returns the remembered take on a member, empty if none.
-func (s *Store) Impression(chatType, chatID, userID string) string {
+func (s *Store) Impression(chatType, chatID, userID string) fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.data[key(chatType, chatID)]
 	if e == nil {
-		return ""
+		return fact{}
 	}
-	return e.Impressions[userID]
+	return e.Impressions[strings.TrimSpace(userID)]
+}
+
+// SetProfile writes a persona-scoped impression that follows the same
+// person across every binding this persona serves.
+func (s *Store) SetProfile(persona, userID, text string) error {
+	persona = strings.TrimSpace(persona)
+	userID = strings.TrimSpace(userID)
+	text = strings.TrimSpace(text)
+	if persona == "" || userID == "" || text == "" {
+		return errors.New("profile needs persona, user and text")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	key := persona + "|" + userID
+	if _, ok := s.profiles[key]; !ok {
+		count := 0
+		for k := range s.profiles {
+			if strings.HasPrefix(k, persona+"|") {
+				count++
+			}
+		}
+		if count >= maxProfilesPerPersona {
+			oldestKey, oldestTime := "", time.Now().AddDate(10, 0, 0)
+			for k, f := range s.profiles {
+				if strings.HasPrefix(k, persona+"|") && factAnchor(f).Before(oldestTime) {
+					oldestKey, oldestTime = k, factAnchor(f)
+				}
+			}
+			delete(s.profiles, oldestKey)
+		}
+	}
+	now := s.now()
+	s.profiles[key] = fact{Text: text, CreatedAt: now, LastSeenAt: now}
+	return s.saveLocked()
+}
+
+// Profile returns the persona-scoped take on a user, empty when she
+// never formed one under this persona.
+func (s *Store) Profile(persona, userID string) fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.profiles[strings.TrimSpace(persona)+"|"+strings.TrimSpace(userID)]
 }
 
 // NotesText returns the remembered notes for the chat joined with newlines.
@@ -380,7 +713,10 @@ func (s *Store) saveLocked() error {
 	if s.path == "" {
 		return nil
 	}
-	raw, err := json.MarshalIndent(s.data, "", "  ")
+	raw, err := json.MarshalIndent(persistedStore{
+		Chats:    s.data,
+		Profiles: s.profiles,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}

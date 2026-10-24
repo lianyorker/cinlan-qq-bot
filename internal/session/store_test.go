@@ -6,6 +6,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -21,8 +22,14 @@ func TestStoreKeepsCompleteRecentExchanges(t *testing.T) {
 	if handoff {
 		t.Fatalf("handoff = true, want false")
 	}
-	if len(history) != 2 || history[0].Content != "u2" || history[1].Content != "a2" {
+	// Entries carry a [MM-DD HH:mm] turn stamp — assert the payload tail.
+	if len(history) != 2 ||
+		!strings.HasSuffix(history[0].Content, "u2") ||
+		!strings.HasSuffix(history[1].Content, "a2") {
 		t.Fatalf("history = %#v, want latest complete exchange", history)
+	}
+	if !strings.HasPrefix(history[0].Content, "[") {
+		t.Fatalf("history entries should be timestamped: %#v", history[0])
 	}
 }
 
@@ -103,7 +110,7 @@ func TestEncryptedSQLiteMigratesAndArchivesLegacyJSON(t *testing.T) {
 	}
 	defer store.Close()
 	history, _ := store.Snapshot("qq-native:self:1:group:2")
-	if len(history) != 2 || history[1].Content != "legacy answer" {
+	if len(history) != 2 || !strings.HasSuffix(history[1].Content, "legacy answer") {
 		t.Fatalf("migrated history = %#v", history)
 	}
 	if _, err := os.Stat(legacyPath); !errors.Is(err, os.ErrNotExist) {
@@ -182,7 +189,8 @@ func TestStorePersistsAndRestoresWithoutMessageLeakInList(t *testing.T) {
 		t.Fatalf("restore Open() error = %v", err)
 	}
 	history, handoff := restored.Snapshot("qq:group:1:user:2")
-	if len(history) != 2 || !handoff || history[1].Content != "answer" {
+	if len(history) != 2 || !handoff ||
+		!strings.HasSuffix(history[1].Content, "answer") {
 		t.Fatalf("restored session = %#v, handoff=%v", history, handoff)
 	}
 	settings := restored.Settings("qq:group:1:user:2")
@@ -214,8 +222,8 @@ func TestApplyCompressionSnapshotPreservesAppendedMessages(t *testing.T) {
 	}
 	current := store.SnapshotState("session")
 	if len(current.History) != 4 ||
-		current.History[0].Content != "second" ||
-		current.History[2].Content != "new while compressing" ||
+		!strings.HasSuffix(current.History[0].Content, "second") ||
+		!strings.HasSuffix(current.History[2].Content, "new while compressing") ||
 		current.Summary != "old exchanges summarized" ||
 		current.Memory != "stable preference" {
 		t.Fatalf("compressed state = %#v", current)

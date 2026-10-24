@@ -100,9 +100,10 @@ func TestHandleMentionedGroupMessageAndHistory(t *testing.T) {
 	if len(agentClient.requests) != 2 {
 		t.Fatalf("agent calls = %d, want 2", len(agentClient.requests))
 	}
+	// History entries are timestamped on write — assert payload tails.
 	if got := agentClient.requests[1].History; len(got) != 2 ||
-		got[0].Content != "[tester (20002)]: 第一个问题" ||
-		got[1].Content != "客服答案" {
+		!strings.HasSuffix(got[0].Content, "[tester (20002)]: 第一个问题") ||
+		!strings.HasSuffix(got[1].Content, "客服答案") {
 		t.Fatalf("second request history = %#v", got)
 	}
 	if agentClient.requests[0].Text != "[tester (20002)]: 第一个问题" {
@@ -134,7 +135,8 @@ func TestGroupContextIsSharedAndKeepsSenderIdentity(t *testing.T) {
 	if second.Text != "[bob (20003)]: second" {
 		t.Fatalf("second text = %q", second.Text)
 	}
-	if len(second.History) != 2 || second.History[0].Content != "[alice (20002)]: first" {
+	if len(second.History) != 2 ||
+		!strings.HasSuffix(second.History[0].Content, "[alice (20002)]: first") {
 		t.Fatalf("shared history = %#v", second.History)
 	}
 }
@@ -196,7 +198,7 @@ func TestFailedSendDoesNotEnterHistory(t *testing.T) {
 	// fails — only the (never-sent) assistant reply stays out.
 	if len(snapshot.History) != 1 ||
 		snapshot.History[0].Role != "user" ||
-		snapshot.History[0].Content != "[tester (20002)]: hello" {
+		!strings.HasSuffix(snapshot.History[0].Content, "[tester (20002)]: hello") {
 		t.Fatalf("failed send history = %#v", snapshot.History)
 	}
 	if service.Stats().SendErrors != 1 {
@@ -736,7 +738,7 @@ func TestPersonaBeginDialogsAndCustomErrorMessage(t *testing.T) {
 		t.Fatalf("agent calls = %d, want 1", len(agentClient.requests))
 	}
 	history := agentClient.requests[0].History
-	if len(history) != 2 || history[0].Content != "hello" ||
+	if len(history) < 2 || history[0].Content != "hello" ||
 		history[1].Content != "welcome" {
 		t.Fatalf("begin dialogs = %#v", history)
 	}

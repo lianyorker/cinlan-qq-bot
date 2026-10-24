@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -154,6 +155,17 @@ func (s *Store) UpdateSettings(key string, persona, provider *string) Settings {
 	return Settings{Persona: current.Persona, Provider: current.Provider}
 }
 
+// stampPrefix formats a turn timestamp so history entries carry their own
+// time anchor — without it the model treats a 12-hour gap as "just now".
+var timestampPrefix = regexp.MustCompile(`^\[\d{2}-\d{2} \d{2}:\d{2}\]`)
+
+func (s *Store) stamped(content string) string {
+	if timestampPrefix.MatchString(content) {
+		return content
+	}
+	return "[" + s.now().Format("01-02 15:04") + "] " + content
+}
+
 func (s *Store) AddExchange(key, userText, assistantText string) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -165,13 +177,13 @@ func (s *Store) AddExchange(key, userText, assistantText string) {
 	last := len(current.History) - 1
 	if last < 0 ||
 		current.History[last].Role != "user" ||
-		current.History[last].Content != userText {
+		!strings.HasSuffix(current.History[last].Content, userText) {
 		current.History = append(current.History,
-			domain.ChatMessage{Role: "user", Content: userText},
+			domain.ChatMessage{Role: "user", Content: s.stamped(userText)},
 		)
 	}
 	current.History = append(current.History,
-		domain.ChatMessage{Role: "assistant", Content: assistantText},
+		domain.ChatMessage{Role: "assistant", Content: s.stamped(assistantText)},
 	)
 	if overflow := len(current.History) - s.maxHistory; overflow > 0 {
 		if overflow%2 != 0 {
@@ -198,7 +210,7 @@ func (s *Store) AddObservation(key, userText string) {
 
 	current, _ := s.getLocked(key)
 	current.History = append(current.History,
-		domain.ChatMessage{Role: "user", Content: userText},
+		domain.ChatMessage{Role: "user", Content: s.stamped(userText)},
 	)
 	if overflow := len(current.History) - s.maxHistory; overflow > 0 {
 		current.History = append([]domain.ChatMessage(nil), current.History[overflow:]...)
