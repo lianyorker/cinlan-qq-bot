@@ -98,9 +98,19 @@ func (l *MediaLimiter) Wrap(definition Definition) Definition {
 func (l *MediaLimiter) failureText(name, reason string) string {
 	lower := strings.ToLower(reason)
 	switch {
+	// Upstream moderation errors arrive in both languages:
+	// "content policy", "审核拒绝", "违规" — treat them all as a
+	// blocked description so she can offer a safer rephrase.
 	case strings.Contains(lower, "policy") ||
 		strings.Contains(lower, "prohibited") ||
-		strings.Contains(lower, "sensitive"):
+		strings.Contains(lower, "sensitive") ||
+		strings.Contains(lower, "moderation") ||
+		strings.Contains(lower, "reject") ||
+		strings.Contains(lower, "blocked") ||
+		strings.Contains(lower, "unsafe") ||
+		strings.Contains(lower, "审核") ||
+		strings.Contains(lower, "拒绝") ||
+		strings.Contains(lower, "违规"):
 		return "这个描述被拦了，换个说法我再试试"
 	case strings.Contains(lower, "timeout") ||
 		strings.Contains(lower, "deadline") ||
