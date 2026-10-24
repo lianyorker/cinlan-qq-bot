@@ -84,10 +84,13 @@ type GroupBadge struct {
 // already a friend, plus per-group role/title. Public profile data, so
 // a single global cache per userID is correct (not conversation content).
 type UserCard struct {
-	Nick      string                `json:"nick,omitempty"`
-	Sex       string                `json:"sex,omitempty"` // male / female / unknown
-	Age       int                   `json:"age,omitempty"`
-	Sign      string                `json:"sign,omitempty"`
+	Nick string `json:"nick,omitempty"`
+	Sex  string `json:"sex,omitempty"` // male / female / unknown
+	Age  int    `json:"age,omitempty"`
+	Sign string `json:"sign,omitempty"`
+	// Region is the QQ profile's self-declared location (地区), e.g.
+	// "浙江 杭州" — she knows where he lives without ever asking.
+	Region    string                `json:"region,omitempty"`
 	Friend    bool                  `json:"friend,omitempty"`
 	Badges    map[string]GroupBadge `json:"badges,omitempty"`
 	FetchedAt time.Time             `json:"fetched_at"`

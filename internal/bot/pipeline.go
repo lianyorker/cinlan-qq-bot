@@ -1662,6 +1662,14 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 				card.Sex = strField(m, "sex")
 				card.Age = intField(m, "age")
 				card.Sign = strField(m, "sign")
+				// QQ profile region (地区) — she knows where he is
+				// from the card, not from asking.
+				region := strings.TrimSpace(
+					strField(m, "province") + " " + strField(m, "city"))
+				if region == "" {
+					region = strField(m, "location")
+				}
+				card.Region = region
 				if card.Sign == "" {
 					card.Sign = strField(m, "long_nick")
 				}
@@ -1740,6 +1748,9 @@ func (s *Service) describeUserCard(state *flowState) string {
 			sign = string(r[:30]) + "…"
 		}
 		parts = append(parts, "签名“"+sign+"”")
+	}
+	if card.Region != "" {
+		parts = append(parts, "人在"+card.Region)
 	}
 	if card.Friend {
 		parts = append(parts, "你们已是QQ好友")
