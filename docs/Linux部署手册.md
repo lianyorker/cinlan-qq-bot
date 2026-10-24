@@ -163,6 +163,17 @@ QQ_ERROR_SILENT=true                # 报错不往群里发，只记日志
 CHAT_PREFS_FILE=data/chat-prefs.json
 CRON_STORE_PATH=data/cron.json        # 默认值，schedule_message 落盘
 KNOWLEDGE_DIR=data/knowledge
+# 自动记忆复盘整理（默认开启：facts>20自动合并、impressions>40浓缩群友速写、活跃聊天写日记·MM.DD）
+QQ_REFLECT=true
+QQ_REFLECT_TICK=30m
+QQ_REFLECT_FACTS_AT=20
+QQ_REFLECT_IMPS_AT=40
+QQ_REFLECT_JOURNAL_AGE=24h
+# 双引擎语义向量检索（不配 EMBEDDING_API_URL 时自动走内置 256 维本地概念簇+n-gram 语义向量；配了则走 /v1/embeddings + 本地混合检索）
+# EMBEDDING_API_URL=https://api.openai.com/v1
+# EMBEDDING_API_KEY=sk-xxx
+# EMBEDDING_MODEL=text-embedding-3-small
+EMBEDDING_CACHE_FILE=data/vec-cache.json
 IQ_CHART_INTERVAL=90m                 # 智商曲线聚合周期
 QQNT_IMAGE_ALLOWED_ROOTS=/root/.config/QQ;/opt/codepany/cinlan-qq-bot/bundle/data;/opt/codepany/cinlan-qq-bot/bundle
 GROUP_WELCOME_IMAGE=/opt/codepany/cinlan-qq-bot/bundle/data/cinlan-welcome.png

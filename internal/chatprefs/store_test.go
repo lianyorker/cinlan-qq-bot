@@ -160,3 +160,40 @@ func TestLegacyJSONMigratesStringFacts(t *testing.T) {
 		t.Fatal("expected v2 wrapped layout after save")
 	}
 }
+
+func TestRecallFactsSemanticAndArchivePool(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 10, 1, 12, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return now })
+
+	// First fact: sleep/fatigue domain, will be pushed out of the 40-slot
+	// active Facts ring into the long-term Archive.
+	if err := s.AddFact("private", "u1", "他经常熬夜通宵写代码"); err != nil {
+		t.Fatal(err)
+	}
+	for i := 0; i < 45; i++ {
+		now = now.Add(time.Minute)
+		if err := s.AddFact("private", "u1", "日常琐事编号"+string(rune('A'+i%20))+string(rune('0'+i/20))); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// Active Facts is capped at 40, so the earliest sleep fact is now in Archive.
+	if active := s.FactsSnapshot("private", "u1"); len(active) != maxFactsPerChat {
+		t.Fatalf("active facts = %d, want %d", len(active), maxFactsPerChat)
+	}
+
+	// Query has zero literal bigram overlap with "他经常熬夜通宵写代码",
+	// but hits the sleep/fatigue concept cluster and searches Archive.
+	recalled := s.RecallFacts("private", "u1", "最近睡眠不足好困想早点休息", 5)
+	found := false
+	for _, f := range recalled {
+		if f.Text == "他经常熬夜通宵写代码" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected archived semantic memory to be recalled, got %#v", recalled)
+	}
+}

@@ -12,9 +12,11 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
+	"github.com/lianyorker/cinlan-qq-bot/internal/vecstore"
 )
 
 const (
@@ -42,17 +44,27 @@ type Hit struct {
 
 type indexedDocument struct {
 	Document
-	terms  map[string]int
-	length int
+	terms    map[string]int
+	length   int
+	localVec []float32
 }
 
 type Store struct {
 	mu   sync.RWMutex
 	docs map[string]indexedDocument
+	vec  *vecstore.Engine
 }
 
 func NewStore() *Store {
 	return &Store{docs: make(map[string]indexedDocument)}
+}
+
+// SetVecEngine attaches an optional dual-mode vector engine for hybrid BM25 +
+// dense embedding retrieval.
+func (s *Store) SetVecEngine(v *vecstore.Engine) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vec = v
 }
 
 func (s *Store) Add(document Document) error {
@@ -72,7 +84,8 @@ func (s *Store) Add(document Document) error {
 	if document.Collection == "" {
 		document.Collection = "default"
 	}
-	terms := tokenize(document.Title + "\n" + document.Content)
+	fullText := document.Title + "\n" + document.Content
+	terms := tokenize(fullText)
 	if len(terms) == 0 {
 		return errors.New("knowledge document has no searchable terms")
 	}
@@ -85,6 +98,7 @@ func (s *Store) Add(document Document) error {
 		Document: document,
 		terms:    index,
 		length:   len(terms),
+		localVec: vecstore.LocalVector(fullText),
 	}
 	s.mu.Unlock()
 	return nil
@@ -181,6 +195,7 @@ func (s *Store) search(
 		return nil
 	}
 	s.mu.RLock()
+	vecEng := s.vec
 	docs := make([]indexedDocument, 0, len(s.docs))
 	for _, document := range s.docs {
 		if allowed != nil {
@@ -200,12 +215,33 @@ func (s *Store) search(
 		averageLength += float64(document.length)
 	}
 	averageLength /= float64(len(docs))
+	queryVec := vecstore.LocalVector(query)
+	var queryRemoteVec []float32
+	if vecEng != nil && vecEng.RemoteEnabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		queryRemoteVec, _ = vecEng.RemoteVector(ctx, query)
+		cancel()
+	}
+
 	type scored struct {
 		hit Hit
 	}
 	results := make([]scored, 0, len(docs))
 	for _, document := range docs {
 		score := bm25(document, queryTerms, docs, averageLength)
+		if cos := vecstore.Cosine(queryVec, document.localVec); cos >= 0.18 {
+			score += cos * 1.5
+		}
+		if len(queryRemoteVec) > 0 && vecEng != nil {
+			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+			docRemote, err := vecEng.RemoteVector(ctx, document.Title+"\n"+snippet(document.Content, queryTerms))
+			cancel()
+			if err == nil && len(docRemote) == len(queryRemoteVec) {
+				if rcos := vecstore.Cosine(queryRemoteVec, docRemote); rcos >= 0.35 {
+					score += rcos * 3.0
+				}
+			}
+		}
 		if score <= 0 {
 			continue
 		}
@@ -416,6 +452,7 @@ func tokenize(value string) []string {
 		}
 	}
 	flushASCII()
+	terms = append(terms, vecstore.ExpandQueryTerms(value)...)
 	return terms
 }
 

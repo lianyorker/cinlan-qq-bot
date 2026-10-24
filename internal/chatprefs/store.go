@@ -4,6 +4,7 @@
 package chatprefs
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/lianyorker/cinlan-qq-bot/internal/vecstore"
 )
 
 const maxNotesPerChat = 50
@@ -58,6 +61,10 @@ type chatEntry struct {
 	// Facts are self-learned chat facts written by the remember tool —
 	// trusted less than operator Notes.
 	Facts []fact `json:"facts,omitempty"`
+	// Archive holds older facts rotated out of the active 40-slot Facts
+	// ring so long-term semantic/vector recall can still resurface them
+	// months later instead of permanently forgetting.
+	Archive []fact `json:"archive,omitempty"`
 	// Impressions maps a QQ user id to the persona's remembered take on
 	// that member ("爱抬杠","生日10.28"), updated by the remember tool.
 	Impressions map[string]fact `json:"impressions,omitempty"`
@@ -105,6 +112,14 @@ type Store struct {
 	profiles map[string]fact
 	cards    map[string]UserCard
 	now      func() time.Time
+	vec      *vecstore.Engine
+}
+
+// SetVecEngine attaches an optional dual-mode vector engine for semantic recall.
+func (s *Store) SetVecEngine(v *vecstore.Engine) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.vec = v
 }
 
 func Load(path string) (*Store, error) {
@@ -313,6 +328,7 @@ func (s *Store) ImageForPrompt(chatType, chatID, prompt string) string {
 
 const (
 	maxFactsPerChat       = 40
+	maxArchivePerChat     = 400
 	maxImpressionsPerChat = 60
 	maxProfilesPerPersona = 120
 	// recentFactsPerPrompt keeps the freshest memories always visible;
@@ -412,8 +428,50 @@ func bestFactMatch(facts []fact, target string) int {
 	return best
 }
 
+// scoreFactHybrid combines CJK bigram overlap with local semantic concept
+// clusters and optional dense vector similarity so cross-word cues like
+// "天天熬夜写代码" <-> "睡眠不足想休息" still trigger memory recall.
+func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.Engine) int {
+	score := scoreFact(f, grams)
+	if concepts := vecstore.ConceptOverlap(f.Text, query); concepts > 0 {
+		score += concepts * 2
+	}
+	if vec != nil && vec.RemoteEnabled() {
+		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
+		sim := vec.Similarity(ctx, f.Text, query)
+		cancel()
+		if sim >= 0.45 {
+			score += int(sim * 6)
+		}
+	}
+	return score
+}
+
+func archiveFactLocked(e *chatEntry, evicted fact) {
+	if strings.TrimSpace(evicted.Text) == "" {
+		return
+	}
+	for i, a := range e.Archive {
+		if a.Text == evicted.Text {
+			e.Archive[i] = evicted
+			return
+		}
+	}
+	if len(e.Archive) >= maxArchivePerChat {
+		oldest := 0
+		for i := range e.Archive {
+			if factAnchor(e.Archive[i]).Before(factAnchor(e.Archive[oldest])) {
+				oldest = i
+			}
+		}
+		e.Archive = append(e.Archive[:oldest], e.Archive[oldest+1:]...)
+	}
+	e.Archive = append(e.Archive, evicted)
+}
+
 // AddFact stores a self-learned fact line for the chat. Duplicates are
-// ignored; over capacity the least-recently-recalled memory fades out.
+// ignored; over capacity the least-recently-recalled memory moves into
+// the long-term Archive instead of being lost.
 func (s *Store) AddFact(chatType, chatID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -440,6 +498,7 @@ func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
 				oldest = i
 			}
 		}
+		archiveFactLocked(e, e.Facts[oldest])
 		e.Facts = append(e.Facts[:oldest], e.Facts[oldest+1:]...)
 	}
 	e.Facts = append(e.Facts, fact{Text: text, CreatedAt: now, LastSeenAt: now})
@@ -487,6 +546,8 @@ func (s *Store) ForgetFact(chatType, chatID, target string) error {
 
 // RecallFacts returns up to limit facts matching the message, freshest
 // first — memories the conversation just pulled back into her head.
+// Searches both active Facts and long-term Archive via hybrid lexical +
+// semantic concept/vector scoring.
 func (s *Store) RecallFacts(chatType, chatID, query string, limit int) []fact {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -497,14 +558,25 @@ func (s *Store) RecallFacts(chatType, chatID, query string, limit int) []fact {
 	grams := textBigrams(query)
 	now := s.now()
 	type scored struct {
-		f     fact
-		score int
-		idx   int
+		f        fact
+		score    int
+		idx      int
+		archived bool
 	}
-	hits := make([]scored, 0, len(e.Facts))
+	seenText := make(map[string]bool, len(e.Facts))
+	hits := make([]scored, 0, len(e.Facts)+len(e.Archive))
 	for i, f := range e.Facts {
-		if sc := scoreFact(f, grams); sc >= recallMinScore {
-			hits = append(hits, scored{f, sc, i})
+		seenText[f.Text] = true
+		if sc := scoreFactHybrid(f, query, grams, s.vec); sc >= recallMinScore {
+			hits = append(hits, scored{f: f, score: sc, idx: i})
+		}
+	}
+	for i, f := range e.Archive {
+		if seenText[f.Text] {
+			continue
+		}
+		if sc := scoreFactHybrid(f, query, grams, s.vec); sc >= recallMinScore {
+			hits = append(hits, scored{f: f, score: sc, idx: i, archived: true})
 		}
 	}
 	sort.Slice(hits, func(i, j int) bool {
@@ -521,7 +593,11 @@ func (s *Store) RecallFacts(chatType, chatID, query string, limit int) []fact {
 		out = append(out, h.f)
 		// Recalled memories stay fresh — LastSeenAt is her "used it
 		// recently" signal for later pruning.
-		e.Facts[h.idx].LastSeenAt = now
+		if h.archived {
+			e.Archive[h.idx].LastSeenAt = now
+		} else {
+			e.Facts[h.idx].LastSeenAt = now
+		}
 	}
 	if len(out) > 0 {
 		_ = s.saveLocked()

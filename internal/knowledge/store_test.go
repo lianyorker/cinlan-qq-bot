@@ -103,3 +103,26 @@ func TestSearchScopedDoesNotLeakAcrossCollections(t *testing.T) {
 		t.Fatalf("empty scope returned hits: %#v", hits)
 	}
 }
+
+func TestSearchSemanticConceptRecallWithoutLiteralMatch(t *testing.T) {
+	store := NewStore()
+	_ = store.Add(Document{
+		ID:         "faq-shipping",
+		Collection: "zkmall",
+		Title:      "物流发货时效说明",
+		Content:    "下单后48小时内仓库安排快递寄出。",
+	})
+	_ = store.Add(Document{
+		ID:         "faq-tech",
+		Collection: "zkmall",
+		Title:      "服务器部署排错",
+		Content:    "接口报错时请检查数据库配置与编译日志。",
+	})
+
+	// Query uses "买东西多久能收到货" / "商城售后" which shares semantic
+	// commerce/shipping cluster with faq-shipping.
+	hits := store.SearchScoped("商城优惠券付款后多久发货", 2, []string{"zkmall"})
+	if len(hits) == 0 || hits[0].DocumentID != "faq-shipping" {
+		t.Fatalf("expected faq-shipping top hit via semantic concept + BM25, got %#v", hits)
+	}
+}

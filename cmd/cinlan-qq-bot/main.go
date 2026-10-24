@@ -41,6 +41,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/subagent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tts"
+	"github.com/lianyorker/cinlan-qq-bot/internal/vecstore"
 )
 
 func main() {
@@ -713,9 +714,20 @@ func main() {
 	for _, client := range agentClients {
 		client.SetTools(botService.ToolRegistry(), cfg.AgentMaxToolRounds)
 	}
+	vecEngine := vecstore.New(vecstore.Config{
+		APIURL:    cfg.EmbeddingAPIURL,
+		APIKey:    cfg.EmbeddingAPIKey,
+		Model:     cfg.EmbeddingModel,
+		CachePath: cfg.EmbeddingCacheFile,
+	})
+	defer func() { _ = vecEngine.Flush() }()
+	if botService.ChatPrefs() != nil {
+		botService.ChatPrefs().SetVecEngine(vecEngine)
+	}
 	var knowledgeStore *knowledge.Store
 	if cfg.KnowledgeDir != "" {
 		knowledgeStore = knowledge.NewStore()
+		knowledgeStore.SetVecEngine(vecEngine)
 		count, loadErr := knowledgeStore.LoadDir(cfg.KnowledgeDir)
 		if loadErr != nil {
 			logger.Error("failed to load knowledge directory", "directory", cfg.KnowledgeDir, "error", loadErr)

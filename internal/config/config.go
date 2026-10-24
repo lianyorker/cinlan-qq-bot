@@ -298,6 +298,13 @@ type Config struct {
 	ReflectMergeImps  int           // fold stale impressions past this count
 	ReflectJournalAge time.Duration // journal only chats this recently active
 
+	// Embedding configures the optional remote /v1/embeddings endpoint
+	// for hybrid vector + local semantic retrieval in chatprefs and knowledge.
+	EmbeddingAPIURL    string
+	EmbeddingAPIKey    string
+	EmbeddingModel     string
+	EmbeddingCacheFile string
+
 	HandoffReply string
 	ResumeReply  string
 	ClearReply   string
@@ -683,6 +690,11 @@ func Load() (Config, error) {
 	cfg.ReflectMergeImps = parseInt("QQ_REFLECT_IMPS_AT", 40, 1, &errs)
 	cfg.ReflectJournalAge = parseDuration(
 		"QQ_REFLECT_JOURNAL_AGE", 24*time.Hour, true, &errs)
+
+	cfg.EmbeddingAPIURL = envOrAllowEmpty("EMBEDDING_API_URL", "")
+	cfg.EmbeddingAPIKey = envOrAllowEmpty("EMBEDDING_API_KEY", "")
+	cfg.EmbeddingModel = envOr("EMBEDDING_MODEL", "text-embedding-3-small")
+	cfg.EmbeddingCacheFile = envOr("EMBEDDING_CACHE_FILE", "data/vec-cache.json")
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {
