@@ -290,6 +290,14 @@ type Config struct {
 	// pinging someone silent for weeks reads weird, not cute.
 	ProactiveStaleMax time.Duration
 
+	// Reflect is the memory-keeping engine — periodic consolidation
+	// of facts/impressions plus a daily journal per active chat.
+	Reflect           bool
+	ReflectTick       time.Duration // sweep interval
+	ReflectMergeFacts int           // consolidate facts past this count
+	ReflectMergeImps  int           // fold stale impressions past this count
+	ReflectJournalAge time.Duration // journal only chats this recently active
+
 	HandoffReply string
 	ResumeReply  string
 	ClearReply   string
@@ -664,6 +672,17 @@ func Load() (Config, error) {
 		"QQ_PROACTIVE_PRIVATE_IDLE", 2*time.Hour, true, &errs)
 	cfg.ProactiveStaleMax = parseDuration(
 		"QQ_PROACTIVE_STALE_MAX", 168*time.Hour, true, &errs)
+
+	// Memory-keeping: consolidation + daily journal run in the
+	// background and cost a few extra LLM calls per sweep — on by
+	// default since that tidying is what makes her feel continuous.
+	cfg.Reflect = parseBool("QQ_REFLECT", true, &errs)
+	cfg.ReflectTick = parseDuration(
+		"QQ_REFLECT_TICK", 30*time.Minute, true, &errs)
+	cfg.ReflectMergeFacts = parseInt("QQ_REFLECT_FACTS_AT", 20, 1, &errs)
+	cfg.ReflectMergeImps = parseInt("QQ_REFLECT_IMPS_AT", 40, 1, &errs)
+	cfg.ReflectJournalAge = parseDuration(
+		"QQ_REFLECT_JOURNAL_AGE", 24*time.Hour, true, &errs)
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {

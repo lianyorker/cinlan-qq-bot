@@ -161,6 +161,13 @@ func key(chatType, chatID string) string {
 	return strings.TrimSpace(chatType) + ":" + strings.TrimSpace(chatID)
 }
 
+func splitKey(k string) (chatType, chatID string) {
+	if i := strings.IndexByte(k, ':'); i >= 0 {
+		return k[:i], k[i+1:]
+	}
+	return k, ""
+}
+
 func (s *Store) entry(chatType, chatID string) *chatEntry {
 	e := s.data[key(chatType, chatID)]
 	if e == nil {
@@ -780,6 +787,135 @@ func (s *Store) Muted(chatType, chatID string, now time.Time) bool {
 	defer s.mu.RUnlock()
 	e := s.data[key(chatType, chatID)]
 	return e != nil && !e.MuteUntil.IsZero() && now.Before(e.MuteUntil)
+}
+
+// ChatKeys lists every chat that has a prefs entry — the reflect engine
+// sweeps these for consolidation work.
+func (s *Store) ChatKeys() [][2]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	out := make([][2]string, 0, len(s.data))
+	for k := range s.data {
+		chatType, chatID := splitKey(k)
+		out = append(out, [2]string{chatType, chatID})
+	}
+	return out
+}
+
+// FactTexts returns the chat's fact lines as plain strings.
+func (s *Store) FactTexts(chatType, chatID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil || len(e.Facts) == 0 {
+		return nil
+	}
+	out := make([]string, len(e.Facts))
+	for i, f := range e.Facts {
+		out[i] = f.Text
+	}
+	return out
+}
+
+// ImpressionSnapshot returns every member impression with its anchors,
+// so the reflect engine can sort by staleness.
+func (s *Store) ImpressionSnapshot(chatType, chatID string) map[string]fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil || len(e.Impressions) == 0 {
+		return nil
+	}
+	out := make(map[string]fact, len(e.Impressions))
+	for u, f := range e.Impressions {
+		out[u] = f
+	}
+	return out
+}
+
+// ImpressionTexts returns every member impression as userID -> text.
+func (s *Store) ImpressionTexts(chatType, chatID string) map[string]string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil || len(e.Impressions) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(e.Impressions))
+	for u, f := range e.Impressions {
+		out[u] = f.Text
+	}
+	return out
+}
+
+// HasFactPrefix reports whether any fact starts with the prefix — the
+// journal uses it to keep one diary entry per day.
+func (s *Store) HasFactPrefix(chatType, chatID, prefix string) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return false
+	}
+	for _, f := range e.Facts {
+		if strings.HasPrefix(f.Text, prefix) {
+			return true
+		}
+	}
+	return false
+}
+
+// RewriteFacts swaps the whole fact list for the consolidated lines the
+// reflect pass produced — anchors refresh because merged lines were
+// just re-thought, not rescued from a shelf.
+func (s *Store) RewriteFacts(chatType, chatID string, texts []string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(chatType, chatID)
+	now := s.now()
+	seen := map[string]bool{}
+	facts := make([]fact, 0, len(texts))
+	for _, t := range texts {
+		t = strings.TrimSpace(t)
+		if t == "" || seen[t] {
+			continue
+		}
+		seen[t] = true
+		facts = append(facts, fact{Text: t, CreatedAt: now, LastSeenAt: now})
+	}
+	if len(facts) > maxFactsPerChat {
+		facts = facts[len(facts)-maxFactsPerChat:]
+	}
+	e.Facts = facts
+	return s.saveLocked()
+}
+
+// RewriteImpressions replaces the member impressions wholesale — stale
+// members condensed into a roster fact have their entries dropped.
+func (s *Store) RewriteImpressions(chatType, chatID string, texts map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.data[key(chatType, chatID)]
+	if e == nil {
+		return errors.New("没有相关印象")
+	}
+	now := s.now()
+	out := map[string]fact{}
+	for u, t := range texts {
+		u = strings.TrimSpace(u)
+		t = strings.TrimSpace(t)
+		if u == "" || t == "" {
+			continue
+		}
+		old := e.Impressions[u]
+		f := fact{Text: t, CreatedAt: now, LastSeenAt: now}
+		if !old.CreatedAt.IsZero() {
+			f.CreatedAt = old.CreatedAt
+		}
+		out[u] = f
+	}
+	e.Impressions = out
+	return s.saveLocked()
 }
 
 func (s *Store) saveLocked() error {

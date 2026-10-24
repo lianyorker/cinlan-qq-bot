@@ -33,6 +33,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
 	"github.com/lianyorker/cinlan-qq-bot/internal/proactive"
 	"github.com/lianyorker/cinlan-qq-bot/internal/provider"
+	"github.com/lianyorker/cinlan-qq-bot/internal/reflect"
 	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 	"github.com/lianyorker/cinlan-qq-bot/internal/skill"
@@ -562,6 +563,28 @@ func main() {
 			ChatPrefs: botService.ChatPrefs(),
 			Activity:  botService.LastActivity,
 			Touch:     botService.TouchActivity,
+			Platform:  platformName,
+			Logger:    logger,
+		},
+	).Run(ctx)
+	// Memory-keeping: periodically merges bloated fact/impression
+	// lists and writes one diary line per active chat per day — the
+	// housekeeping that keeps her memory continuous instead of a pile.
+	go reflect.New(
+		reflect.Config{
+			Enabled:            cfg.Reflect,
+			Tick:               cfg.ReflectTick,
+			MergeFactsAt:       cfg.ReflectMergeFacts,
+			MergeImpressionsAt: cfg.ReflectMergeImps,
+			JournalMaxAge:      cfg.ReflectJournalAge,
+		},
+		reflect.Deps{
+			Providers: providerRegistry,
+			Bindings:  bindings,
+			Personas:  botService.PersonaRegistry(),
+			Sessions:  sessionStore,
+			ChatPrefs: botService.ChatPrefs(),
+			Activity:  botService.LastActivity,
 			Platform:  platformName,
 			Logger:    logger,
 		},
