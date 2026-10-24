@@ -104,7 +104,6 @@ func (a *Adapter) Run(ctx context.Context) error {
 						"group_id", groupID, "user_id", userID)
 					a.deliverGroupWelcome(ctx, groupID, userID)
 				}
-				continue
 			}
 			converted, err := convertEvent(event)
 			if err != nil {
@@ -433,14 +432,18 @@ func convertEvent(event onebot.Event) (platform.Event, error) {
 		return platform.Event{}, err
 	}
 	chatID := event.GroupID.String()
-	if event.MessageType == platform.ChatPrivate {
+	msgType := event.MessageType
+	if msgType == "" && event.PostType == "notice" && chatID != "" {
+		msgType = platform.ChatGroup
+	}
+	if msgType == platform.ChatPrivate {
 		chatID = event.UserID.String()
 	}
 	return platform.Event{
 		ID:          fmt.Sprintf("%s:%s", event.SelfID.String(), event.MessageID.String()),
 		Platform:    platform.PlatformQQOneBot,
 		PostType:    event.PostType,
-		MessageType: event.MessageType,
+		MessageType: msgType,
 		SubType:     event.SubType,
 		MessageID:   event.MessageID.String(),
 		SelfID:      event.SelfID.String(),

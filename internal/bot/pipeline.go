@@ -129,6 +129,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	if !event.Event.IsChatMessage() ||
 		state.userID == "" ||
 		state.userID == state.selfID {
+		s.observeGroupMemberNotice(ctx, state)
 		state.ignored = true
 		event.Stop("not_target_chat_message")
 		return nil
@@ -1836,4 +1837,35 @@ func eventTime(event platform.Event) int64 {
 		}
 	}
 	return 0
+}
+
+// observeGroupMemberNotice silently logs group_increase / group_decrease
+// notices into the group's session history and warms the member's UserCard
+// so the persona knows who just joined or left without ever speaking first.
+func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState) {
+	if s.sessions == nil ||
+		state.event.PostType != "notice" ||
+		state.chatID == "" ||
+		state.userID == "" ||
+		state.userID == state.selfID {
+		return
+	}
+	noticeType, _ := state.event.Metadata["notice_type"].(string)
+	if noticeType != "group_increase" && noticeType != "group_decrease" {
+		return
+	}
+	state.chatType = platform.ChatGroup
+	s.refreshUserCard(ctx, state)
+	display := state.userID
+	if s.chatPrefs != nil {
+		if card, ok := s.chatPrefs.UserCard(state.userID); ok && card.Nick != "" {
+			display = card.Nick + "(" + state.userID + ")"
+		}
+	}
+	sessionID := state.platform + ":self:" + state.selfID + ":group:" + state.chatID
+	if noticeType == "group_increase" {
+		s.sessions.AddObservation(sessionID, "[群事件] 新成员 "+display+" 加入了本群")
+	} else {
+		s.sessions.AddObservation(sessionID, "[群事件] 成员 "+display+" 离开了本群")
+	}
 }
