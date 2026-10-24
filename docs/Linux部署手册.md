@@ -155,8 +155,11 @@ VOICE_DAILY_LIMIT=50
 ### 其它业务钩子
 
 ```ini
-FRIEND_WELCOME_TEXT=你好，已通过好友申请，SQL 文件这就发你。
 FRIEND_FILE_PATH=/opt/codepany/cinlan-qq-bot/bundle/data/zkmall.sql
+WELCOME_FILE=data/welcome.json      # 好友/进群欢迎语（非空值才覆盖 env；FRIEND_WELCOME_TEXT 已清空走文件）
+BASE_PROMPT_FILE=data/prompts/base-human.md   # 公共真人准则，所有人格共用
+PEER_BOT_IDS=3457321354,3271460996  # 同伴 bot：只观察不回复、不计刷屏/疲劳、进群不欢迎
+QQ_ERROR_SILENT=true                # 报错不往群里发，只记日志
 CHAT_PREFS_FILE=data/chat-prefs.json
 CRON_STORE_PATH=data/cron.json        # 默认值，schedule_message 落盘
 KNOWLEDGE_DIR=data/knowledge
@@ -208,11 +211,11 @@ journalctl -u cinlan-qq-bot -f        # 结构化 JSON 日志
 
 | 绑定 | 范围 | 人格 | 工具白名单 | 知识库 |
 |---|---|---|---|---|
-| admin-private | 私聊 1483498231 | 贴心女友 | 生图+定时+戳+装死+remember | cinlan+zkmall |
-| cinlan-tsundere | 群 973636133/1023570334/1087767311 | 毒舌女仆 | 生图+智商曲线 | cinlan |
+| admin-private | 私聊 1483498231 | 贴心女友 | 生图+定时+戳+装死+remember+channel_action | cinlan+zkmall |
+| cinlan-tsundere | 群 973636133/1023570334/1087767311 | 邻家女孩 | 生图+智商曲线+channel_action | cinlan |
 | zkmall-community | 群 984772612/287214287 | 哈基咪·ZK | 生图 | zkmall |
-| friend-private-zk / friend-private-cinlan | 私聊 * | 哈基咪·ZK / 毒舌女仆 | 生图 | - |
-| renqi-group | 群 1126402476 | 人妻 | 无 | - |
+| friend-private-zk / friend-private-cinlan | 私聊 * | 哈基咪·ZK / 邻家女孩 | 生图 | - |
+| linjia-group-* | 群 1126402476/480214827/1057952511 | 邻家女孩 | channel_action（禁链接/禁学习） | - |
 
 > cinlan 与 zkmall 知识库按绑定分发、刻意隔离，不要互通。
 
@@ -259,11 +262,15 @@ EOF
 ```
 
 3. 修改 `package.json` 的 `main` 为 `./loadNapCat.cjs`
-4. 启动（快速登录加 `-q <QQ号>`）：
+4. 启动（快速登录加 `-q <QQ号>`）。生产用 detached screen + xvfb 常驻：
 
 ```bash
-xvfb-run -a /opt/QQ/qq --no-sandbox -q 123456789
+screen -dmS napcat xvfb-run -a /opt/QQ/qq --no-sandbox -q 123456789
 ```
+
+> **必须用 xvfb 虚拟显示**：QQNT 需要桌面环境，`xvfb-run` 给它一个假 X display。
+> 纯无头（无 X display）直接跑更容易被风控封号，不要用 `--headless` 之类
+> 的无显示启动方式替代。
 
 ### OneBot 配置
 
@@ -309,6 +316,7 @@ bot 侧对应 `ONEBOT_WS_URL=ws://127.0.0.1:3001`。
 
 ## 风控注意事项
 
+- **假显示启动**：一律 `xvfb-run` 提供虚拟桌面；无显示/纯无头启动更容易被风控封号
 - **固定 IP**：不要频繁切换服务器出口 IP，数据中心 IP 本身风险较高
 - **不要频繁重启**：每次重启都是一次新的登录记录；稳定挂机数天可降低风控评分
 - **不要多端同时登录**：同一账号两个 PC 端（Windows QQ + Linux NapCat）会互踢

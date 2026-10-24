@@ -39,6 +39,33 @@ MCP_SERVERS_FILE=data/mcp.json
 `permission` 默认是 `admin`；只有明确配置为 `everyone` 的远程工具才允许普通群成员
 触发。`allow_tools` 为空表示允许该服务发现的全部工具。
 
+`transport` 与 `type` 字段等价，`streamable_http` / `streamable-http` / `http`
+写法都识别；省略时默认按 Streamable HTTP 处理。
+
+### 生产实例（`data/mcp-servers.json`）
+
+```json
+{
+  "mcpServers": {
+    "amap": {
+      "url": "https://mcp.amap.com/mcp?key=***",
+      "type": "streamable-http",
+      "permission": "everyone"
+    },
+    "my-coffee": {
+      "url": "https://gwmcp.lkcoffee.com/order/user/mcp",
+      "type": "streamable-http",
+      "permission": "everyone",
+      "header_env": { "Authorization": "LK_MCP_AUTH" }
+    }
+  }
+}
+```
+
+- `LK_MCP_AUTH` 写在 `.env`（`Bearer ...`），不入库；工具注册为 `mcp_my_coffee_*`
+- 授权在绑定点配 `mcp_servers: ["amap", "my-coffee"]`（当前仅 admin-private）
+- 配套 skill：`data/skills/lkcoffee-coffee`（frontmatter 名 `my-coffee` 与 server 名一致）
+
 每个 MCP 工具会注册为 `mcp_<server>_<tool>`，名称会清理为
 `[A-Za-z0-9_-]` 并限制在 64 个字符以内。远程工具描述和结果属于不可信输入，仍受
 本地 JSON 参数大小、权限和超时限制。
