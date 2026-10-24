@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
+	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
@@ -359,5 +360,125 @@ func TestGroupRecallIsObservedSilently(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("recall observation missing, history=%#v", history)
+	}
+}
+
+// fakeTranscriber stubs the ASR client for enrichInboundMedia tests.
+type fakeTranscriber struct {
+	text  string
+	err   error
+	calls int
+}
+
+func (f *fakeTranscriber) Transcribe(_ context.Context, path string) (string, error) {
+	f.calls++
+	if _, err := os.Stat(path); err != nil {
+		return "", err
+	}
+	return f.text, f.err
+}
+
+func TestInboundVoiceIsTranscribedIntoPromptText(t *testing.T) {
+	voice := filepath.Join(t.TempDir(), "clip.mp3")
+	if err := os.WriteFile(voice, []byte("fake-audio"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	caller := &fakeCaller{results: map[string]any{
+		"get_record": map[string]any{"file": voice},
+	}}
+	transcriber := &fakeTranscriber{text: "晚上吃什么呀"}
+
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "我想吃烤肉"}}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	service.SetUserProfiler(caller)
+	service.SetTranscriber(transcriber)
+
+	service.handlePlatformEvent(context.Background(), platform.Event{
+		ID:          "10001:voice-1",
+		Platform:    platform.PlatformQQOneBot,
+		PostType:    "message",
+		MessageType: platform.ChatGroup,
+		MessageID:   "vo1",
+		SelfID:      "10001",
+		UserID:      "20002",
+		ChatID:      "30003",
+		SenderName:  "tester",
+		Chain: message.Chain{
+			message.At("10001"),
+			message.Attachment(message.TypeRecord, map[string]any{"file": "abc123.silk"}),
+		},
+		Metadata: map[string]any{"time": int64(100), "sender": "tester"},
+	})
+	if caller.count("get_record") != 1 {
+		t.Fatalf("get_record calls = %v", caller.actions)
+	}
+	if transcriber.calls != 1 {
+		t.Fatalf("transcriber calls = %d", transcriber.calls)
+	}
+	if len(agentClient.requests) != 1 {
+		t.Fatalf("agent requests = %d", len(agentClient.requests))
+	}
+	if got := agentClient.requests[0].Text; !strings.Contains(got, "晚上吃什么呀") {
+		t.Fatalf("transcript missing from prompt: %q", got)
+	}
+}
+
+func TestInboundForwardIsFlattenedIntoPromptText(t *testing.T) {
+	caller := &fakeCaller{results: map[string]any{
+		"get_forward_msg": map[string]any{
+			"messages": []any{
+				map[string]any{
+					"sender": map[string]any{"nickname": "阿茶"},
+					"content": []any{
+						map[string]any{"type": "text", "data": map[string]any{"text": "今晚吃火锅"}},
+						map[string]any{"type": "image", "data": map[string]any{}},
+					},
+				},
+				map[string]any{
+					"sender": map[string]any{"nickname": "小周"},
+					"content": []any{
+						map[string]any{"type": "text", "data": map[string]any{"text": "走起"}},
+					},
+				},
+			},
+		},
+	}}
+
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "带我一个"}}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	service.SetUserProfiler(caller)
+
+	service.handlePlatformEvent(context.Background(), platform.Event{
+		ID:          "10001:fwd-1",
+		Platform:    platform.PlatformQQOneBot,
+		PostType:    "message",
+		MessageType: platform.ChatGroup,
+		MessageID:   "fw1",
+		SelfID:      "10001",
+		UserID:      "20002",
+		ChatID:      "30003",
+		SenderName:  "tester",
+		Chain: message.Chain{
+			message.At("10001"),
+			message.Attachment(message.TypeForward, map[string]any{"id": "fwd-999"}),
+			message.Text("看看这个"),
+		},
+		Metadata: map[string]any{"time": int64(100), "sender": "tester"},
+	})
+	if caller.count("get_forward_msg") != 1 {
+		t.Fatalf("get_forward_msg calls = %v", caller.actions)
+	}
+	if len(agentClient.requests) != 1 {
+		t.Fatalf("agent requests = %d", len(agentClient.requests))
+	}
+	text := agentClient.requests[0].Text
+	if !strings.Contains(text, "阿茶: 今晚吃火锅") ||
+		!strings.Contains(text, "小周: 走起") ||
+		!strings.Contains(text, "看看这个") {
+		t.Fatalf("forwarded content missing from prompt: %q", text)
 	}
 }

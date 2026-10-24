@@ -305,6 +305,12 @@ type Config struct {
 	EmbeddingModel     string
 	EmbeddingCacheFile string
 
+	// ASR configures an OpenAI-compatible /audio/transcriptions endpoint
+	// for inbound voice messages (e.g. SiliconFlow SenseVoice — free).
+	ASRAPIURL string
+	ASRAPIKey string
+	ASRModel  string
+
 	HandoffReply string
 	ResumeReply  string
 	ClearReply   string
@@ -695,6 +701,10 @@ func Load() (Config, error) {
 	cfg.EmbeddingAPIKey = envOrAllowEmpty("EMBEDDING_API_KEY", "")
 	cfg.EmbeddingModel = envOr("EMBEDDING_MODEL", "text-embedding-3-small")
 	cfg.EmbeddingCacheFile = envOr("EMBEDDING_CACHE_FILE", "data/vec-cache.json")
+
+	cfg.ASRAPIURL = envOrAllowEmpty("ASR_API_URL", "")
+	cfg.ASRAPIKey = envOrAllowEmpty("ASR_API_KEY", "")
+	cfg.ASRModel = envOrAllowEmpty("ASR_MODEL", "")
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {

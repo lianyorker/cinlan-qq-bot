@@ -152,6 +152,8 @@ type Service struct {
 	affinity     *affinity.Store
 	memeDir      string
 	stickerDir   string
+	// transcriber turns inbound voice clips into text (opt-in ASR).
+	transcriber  voiceTranscriber
 	keywordTools []keywordTool
 	// basePrompt is the shared human-like behavior block loaded from
 	// cfg.BasePromptFile and appended to every persona prompt.
@@ -423,6 +425,12 @@ func (s *Service) SetMemeDir(dir string) {
 // (dir/<persona>/<tag>.<ext> plus dir/shared/ for common ones).
 func (s *Service) SetStickerDir(dir string) {
 	s.stickerDir = strings.TrimSpace(dir)
+}
+
+// SetTranscriber plugs in the ASR client so inbound voice messages get
+// transcribed into readable text instead of staying a [语音] marker.
+func (s *Service) SetTranscriber(t voiceTranscriber) {
+	s.transcriber = t
 }
 
 // MemeFile resolves a meme-pool query to a file path for the proactive

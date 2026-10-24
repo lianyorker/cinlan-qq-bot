@@ -31,6 +31,7 @@ const (
 	TypeRPS      Type = "rps"
 	TypeMFace    Type = "mface"
 	TypeLightApp Type = "lightapp"
+	TypeForward  Type = "forward"
 )
 
 // Component keeps the original platform fields so plugins can inspect rich
@@ -196,6 +197,16 @@ func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
 			appendMarker(&builder, "[MFace]")
 		case TypeLightApp:
 			appendMarker(&builder, "[LightApp]")
+		case TypeForward:
+			// Forwarded chat bundles get flattened into data.text by the
+			// inbound enrichment (get_forward_msg) — render it so the
+			// persona actually sees what was forwarded.
+			if flat := strings.TrimSpace(valueString(component.Data["text"])); flat != "" {
+				appendMarker(&builder, "[转发的聊天记录]")
+				builder.WriteString(flat)
+			} else {
+				appendMarker(&builder, "[转发聊天记录]")
+			}
 		default:
 			if component.Type != "" {
 				appendMarker(&builder, "["+string(component.Type)+"]")

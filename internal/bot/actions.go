@@ -2,6 +2,8 @@ package bot
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"math/rand"
 	"os"
 	"path/filepath"
@@ -10,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
 
@@ -189,7 +192,7 @@ func (s *Service) reactToMessage(
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
-	if _, err := s.userProfiler.Call(callCtx, "set_msg_emoji_like", map[string]any{
+	if _, err := s.callAction(callCtx, state, "set_msg_emoji_like", map[string]any{
 		"message_id": msgID,
 		"emoji_id":   emojiID,
 		"set":        true,
@@ -240,13 +243,13 @@ func (s *Service) sendPoke(
 	if state.chatType == platform.ChatGroup {
 		groupID, _ := strconv.ParseInt(state.chatID, 10, 64)
 		params := map[string]any{"user_id": userID, "group_id": groupID}
-		if _, err = s.userProfiler.Call(callCtx, "send_poke", params); err != nil {
-			_, err = s.userProfiler.Call(callCtx, "group_poke", params)
+		if _, err = s.callAction(callCtx, state, "send_poke", params); err != nil {
+			_, err = s.callAction(callCtx, state, "group_poke", params)
 		}
 	} else {
 		params := map[string]any{"user_id": userID}
-		if _, err = s.userProfiler.Call(callCtx, "send_poke", params); err != nil {
-			_, err = s.userProfiler.Call(callCtx, "friend_poke", params)
+		if _, err = s.callAction(callCtx, state, "send_poke", params); err != nil {
+			_, err = s.callAction(callCtx, state, "friend_poke", params)
 		}
 	}
 	if err != nil {
@@ -314,7 +317,7 @@ func (s *Service) sendThenRecall(
 	}
 	callCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
 	defer cancel()
-	raw, err := s.userProfiler.Call(callCtx, action, params)
+	raw, err := s.callAction(callCtx, state, action, params)
 	if err != nil {
 		s.logger.Info("oops send failed",
 			"chat_id", state.chatID, "error", err.Error())
@@ -329,7 +332,7 @@ func (s *Service) sendThenRecall(
 		return
 	case <-time.After(1200 * time.Millisecond):
 	}
-	if _, err := s.userProfiler.Call(callCtx, "delete_msg", map[string]any{
+	if _, err := s.callAction(callCtx, state, "delete_msg", map[string]any{
 		"message_id": msgID,
 	}); err != nil {
 		s.logger.Info("oops recall failed",
@@ -354,4 +357,234 @@ func (s *Service) selfPokeNotice(state *flowState) bool {
 		return false
 	}
 	return valueString(state.event.Metadata, "target_id") == state.selfID
+}
+
+// voiceTranscriber turns a local audio file into text; *asr.Client is the
+// production implementation, tests stub it.
+type voiceTranscriber interface {
+	Transcribe(ctx context.Context, path string) (string, error)
+}
+
+var errNoProfiler = errors.New("no platform call surface")
+
+// callFor is the optional multi-account Call surface — MultiAdapter routes
+// by selfID/account name so actions hit the account that saw the message.
+type callFor interface {
+	CallFor(ctx context.Context, accountID, action string, params map[string]any) (any, error)
+}
+
+// callAction runs a platform action on the account that received this
+// event when the profiler supports CallFor, else falls back to the
+// default account.
+func (s *Service) callAction(
+	ctx context.Context, state *flowState, action string, params map[string]any,
+) (any, error) {
+	if s.userProfiler == nil {
+		return nil, errNoProfiler
+	}
+	if caller, ok := s.userProfiler.(callFor); ok && state != nil && state.selfID != "" {
+		return caller.CallFor(ctx, state.selfID, action, params)
+	}
+	return s.userProfiler.Call(ctx, action, params)
+}
+
+// enrichInboundMedia makes non-text segments human-readable before the
+// chain reaches PlainText: voice clips get a transcript via ASR, merged
+// forwards get flattened into readable lines. Both are best-effort — a
+// failed fetch leaves the original [语音]/[转发聊天记录] marker.
+func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chain message.Chain) {
+	if s.userProfiler == nil || chain == nil {
+		return
+	}
+	for i, component := range chain {
+		switch component.Type {
+		case message.TypeRecord:
+			if strings.TrimSpace(valueString(component.Data, "text")) != "" {
+				continue // already carries a transcript
+			}
+			fileID := valueString(component.Data, "file")
+			if fileID == "" || s.transcriber == nil {
+				continue
+			}
+			transcript := s.transcribeRecord(ctx, state, fileID)
+			if transcript != "" {
+				chain[i].Data["text"] = transcript
+			}
+		case message.TypeForward:
+			if strings.TrimSpace(valueString(component.Data, "text")) != "" {
+				continue
+			}
+			id := valueString(component.Data, "id")
+			if id == "" {
+				continue
+			}
+			flat := s.flattenForward(ctx, state, id)
+			if flat != "" {
+				chain[i].Data["text"] = flat
+			}
+		}
+	}
+}
+
+// transcribeRecord pulls the voice file via get_record (NapCat converts to
+// mp3 on request) and hands it to the configured ASR endpoint.
+func (s *Service) transcribeRecord(ctx context.Context, state *flowState, fileID string) string {
+	callCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	raw, err := s.callAction(callCtx, state, "get_record", map[string]any{
+		"file":       fileID,
+		"out_format": "mp3",
+	})
+	if err != nil {
+		s.logger.Info("get_record failed",
+			"chat_id", state.chatID, "error", err.Error())
+		return ""
+	}
+	path := ""
+	if m := actionResultMap(raw); m != nil {
+		path = valueString(m, "file")
+		if path == "" {
+			path = valueString(m, "path")
+		}
+	}
+	if path == "" {
+		return ""
+	}
+	info, err := os.Stat(path)
+	if err != nil || info.Size() == 0 || info.Size() > 8<<20 {
+		return ""
+	}
+	text, err := s.transcriber.Transcribe(callCtx, path)
+	if err != nil {
+		s.logger.Info("voice transcribe failed",
+			"chat_id", state.chatID, "error", err.Error())
+		return ""
+	}
+	return strings.TrimSpace(text)
+}
+
+// flattenForward pulls a merged forward bundle and renders it as
+// "昵称: 内容" lines so the persona can actually read the pasted chat.
+// Capped at ~500 runes / 15 lines — huge forwards get clipped, not skipped.
+func (s *Service) flattenForward(ctx context.Context, state *flowState, id string) string {
+	callCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	raw, err := s.callAction(callCtx, state, "get_forward_msg", map[string]any{
+		"message_id": id,
+	})
+	if err != nil {
+		return ""
+	}
+	payload, err := json.Marshal(actionResultMap(raw))
+	if err != nil || len(payload) == 0 || string(payload) == "null" {
+		return ""
+	}
+	var body struct {
+		Messages []struct {
+			Sender struct {
+				Nickname string `json:"nickname"`
+			} `json:"sender"`
+			Content json.RawMessage `json:"content"`
+			Message json.RawMessage `json:"message"`
+		} `json:"messages"`
+		// Flattened-array variants some impls return instead.
+		Message json.RawMessage `json:"message"`
+		Content json.RawMessage `json:"content"`
+	}
+	if err := json.Unmarshal(payload, &body); err != nil {
+		return ""
+	}
+	var lines []string
+	addLine := func(nick string, segs json.RawMessage) {
+		text := flattenSegments(segs, state.selfID)
+		if text == "" {
+			return
+		}
+		if nick == "" {
+			nick = "?"
+		}
+		lines = append(lines, nick+": "+text)
+	}
+	switch {
+	case len(body.Messages) > 0:
+		for _, m := range body.Messages {
+			segs := m.Content
+			if len(segs) == 0 {
+				segs = m.Message
+			}
+			addLine(m.Sender.Nickname, segs)
+		}
+	case len(body.Message) > 0:
+		addLine("", body.Message)
+	case len(body.Content) > 0:
+		addLine("", body.Content)
+	}
+	if len(lines) == 0 {
+		return ""
+	}
+	flat := strings.Join(lines, "\n")
+	runes := []rune(flat)
+	if len(lines) > 15 || len(runes) > 500 {
+		lines = lines[:15]
+		flat = strings.Join(lines, "\n")
+		runes = []rune(flat)
+		if len(runes) > 500 {
+			flat = string(runes[:500])
+		}
+		flat += "\n…（后面还有）"
+	}
+	return flat
+}
+
+// flattenSegments renders one forwarded message's segment array into a
+// single readable line: text stays, rich parts degrade to markers.
+func flattenSegments(raw json.RawMessage, selfID string) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var segs []map[string]any
+	if err := json.Unmarshal(raw, &segs); err != nil {
+		var single map[string]any
+		if err := json.Unmarshal(raw, &single); err == nil && single != nil {
+			segs = []map[string]any{single}
+		} else {
+			var plain string
+			if err := json.Unmarshal(raw, &plain); err == nil {
+				return strings.TrimSpace(plain)
+			}
+			return ""
+		}
+	}
+	var b strings.Builder
+	for _, seg := range segs {
+		t, _ := seg["type"].(string)
+		data, _ := seg["data"].(map[string]any)
+		switch t {
+		case "text":
+			b.WriteString(valueString(data, "text"))
+		case "at":
+			b.WriteString("@" + valueString(data, "qq"))
+		case "image":
+			b.WriteString("[图片]")
+		case "face", "mface":
+			b.WriteString("[表情]")
+		case "record":
+			b.WriteString("[语音]")
+		case "video":
+			b.WriteString("[视频]")
+		case "file":
+			b.WriteString("[文件]")
+		case "forward":
+			b.WriteString("[套娃转发]")
+		case "json", "xml":
+			b.WriteString("[卡片]")
+		case "reply":
+			// quoting inside a forward — skip the marker noise
+		default:
+			if t != "" {
+				b.WriteString("[" + t + "]")
+			}
+		}
+	}
+	return strings.TrimSpace(b.String())
 }

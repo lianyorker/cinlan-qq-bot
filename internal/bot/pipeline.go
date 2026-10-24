@@ -249,6 +249,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		}
 	}
 	state.event.Chain = chain
+	s.enrichInboundMedia(ctx, state, chain)
 	state.text, state.eventMentioned = chain.PlainText(state.selfID)
 	if state.pokeEvent {
 		// A poke carries no text — hand the persona the same cue a bare

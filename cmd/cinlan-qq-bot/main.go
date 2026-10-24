@@ -15,6 +15,7 @@ import (
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/affinity"
 	"github.com/lianyorker/cinlan-qq-bot/internal/agent"
+	"github.com/lianyorker/cinlan-qq-bot/internal/asr"
 	"github.com/lianyorker/cinlan-qq-bot/internal/binding"
 	"github.com/lianyorker/cinlan-qq-bot/internal/bot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
@@ -328,6 +329,16 @@ func main() {
 	}
 	if profiler, ok := qqAdapter.(bot.UserProfiler); ok {
 		botService.SetUserProfiler(profiler)
+	}
+	// Inbound voice → text via an OpenAI-compatible transcriber
+	// (ASR_API_URL/ASR_API_KEY/ASR_MODEL; SiliconFlow SenseVoice is free).
+	if transcriber := asr.New(asr.Config{
+		APIURL:  cfg.ASRAPIURL,
+		APIKey:  cfg.ASRAPIKey,
+		Model:   cfg.ASRModel,
+		Timeout: 45 * time.Second,
+	}); transcriber != nil {
+		botService.SetTranscriber(transcriber)
 	}
 	peerSelfIDs := append([]string(nil), cfg.PeerBotIDs...)
 	if multi, ok := qqAdapter.(*onebotplatform.MultiAdapter); ok {
