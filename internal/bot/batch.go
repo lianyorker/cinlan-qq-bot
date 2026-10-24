@@ -38,7 +38,7 @@ func (s *Service) runPlatformWorker(
 		}()
 	}
 
-	if s.cfg.GroupBatchWindow <= 0 {
+	if s.cfg.GroupBatchWindow <= 0 && s.cfg.PrivateBatchWindow <= 0 {
 		for {
 			select {
 			case <-ctx.Done():
@@ -104,12 +104,14 @@ func (s *Service) runPlatformWorker(
 			}
 			current.version++
 			version := current.version
-			current.timer = time.AfterFunc(s.cfg.GroupBatchWindow, func() {
-				select {
-				case flushes <- platformBatchFlush{key: key, version: version}:
-				case <-ctx.Done():
-				}
-			})
+			current.timer = time.AfterFunc(
+				s.batchWindowFor(current.event),
+				func() {
+					select {
+					case flushes <- platformBatchFlush{key: key, version: version}:
+					case <-ctx.Done():
+					}
+				})
 		}
 	}
 }
@@ -127,8 +129,28 @@ func platformBatchKey(event platform.Event) string {
 	)
 }
 
+// batchWindowFor picks the merge window for the event's chat type.
+// Keys are already scoped by message type so a pending entry always
+// holds same-type events.
+func (s *Service) batchWindowFor(event platform.Event) time.Duration {
+	if event.IsGroupMessage() {
+		return s.cfg.GroupBatchWindow
+	}
+	return s.cfg.PrivateBatchWindow
+}
+
 func (s *Service) shouldBatchPlatformEvent(event platform.Event) bool {
-	if !event.IsGroupMessage() || !s.cfg.GroupAllowlist.Allows(event.ChatID) {
+	switch {
+	case event.IsGroupMessage():
+		if s.cfg.GroupBatchWindow <= 0 ||
+			!s.cfg.GroupAllowlist.Allows(event.ChatID) {
+			return false
+		}
+	case event.IsPrivateMessage():
+		if s.cfg.PrivateBatchWindow <= 0 {
+			return false
+		}
+	default:
 		return false
 	}
 	text, _ := event.Chain.PlainText(event.SelfID)

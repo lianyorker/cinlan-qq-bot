@@ -138,16 +138,17 @@ type Config struct {
 	IQChartInterval time.Duration
 	IQChartFontPath string
 
-	GroupAllowlist   Allowlist
-	PrivateAllowlist Allowlist
-	RequireMention   bool
-	QuoteReply       bool
-	QuoteGroupProb   float64
-	GroupAtSender    bool
-	MaxReplyRunes    int
-	MaxReplyChunks   int
-	GroupBatchWindow time.Duration
-	ReplyPartDelay   time.Duration
+	GroupAllowlist     Allowlist
+	PrivateAllowlist   Allowlist
+	RequireMention     bool
+	QuoteReply         bool
+	QuoteGroupProb     float64
+	GroupAtSender      bool
+	MaxReplyRunes      int
+	MaxReplyChunks     int
+	GroupBatchWindow   time.Duration
+	PrivateBatchWindow time.Duration
+	ReplyPartDelay     time.Duration
 
 	AgentMode          string
 	AgentAPIURL        string
@@ -388,6 +389,15 @@ func Load() (Config, error) {
 	cfg.GroupBatchWindow = parseDuration(
 		"QQ_GROUP_BATCH_WINDOW",
 		900*time.Millisecond,
+		false,
+		&errs,
+	)
+	// Rapid DM follow-ups ("还要有你的" after "拍个夕阳") arrive as
+	// separate events; a short merge window turns them into one run
+	// instead of two replies — and two image-gen quota burns.
+	cfg.PrivateBatchWindow = parseDuration(
+		"QQ_PRIVATE_BATCH_WINDOW",
+		1200*time.Millisecond,
 		false,
 		&errs,
 	)
