@@ -425,6 +425,65 @@ func TestInboundVoiceIsTranscribedIntoPromptText(t *testing.T) {
 	}
 }
 
+func TestInboundAtResolvesToDisplayName(t *testing.T) {
+	caller := &fakeCaller{results: map[string]any{
+		"get_group_member_info": map[string]any{"card": "阿茶", "nickname": "备胎名"},
+	}}
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "收到"}}
+	service := New(cfg, agentClient, &fakeSender{}, session.New(10, time.Hour), testLogger())
+	service.SetUserProfiler(caller)
+
+	service.handlePlatformEvent(context.Background(), platform.Event{
+		ID:          "10001:at-1",
+		Platform:    platform.PlatformQQOneBot,
+		PostType:    "message",
+		MessageType: platform.ChatGroup,
+		MessageID:   "at1",
+		SelfID:      "10001",
+		UserID:      "20002",
+		ChatID:      "30003",
+		SenderName:  "tester",
+		Chain: message.Chain{
+			message.At("40004"),
+			message.Text("你看看他"),
+			message.At("10001"),
+		},
+		Metadata: map[string]any{"time": int64(100), "sender": "tester"},
+	})
+	if caller.count("get_group_member_info") != 1 {
+		t.Fatalf("member-info calls = %v", caller.actions)
+	}
+	if len(agentClient.requests) != 1 {
+		t.Fatalf("agent requests = %d", len(agentClient.requests))
+	}
+	got := agentClient.requests[0].Text
+	if !strings.Contains(got, "@阿茶") || strings.Contains(got, "@40004") {
+		t.Fatalf("at name not resolved in prompt: %q", got)
+	}
+	// A second message from the same chat hits the cache, not the API.
+	service.handlePlatformEvent(context.Background(), platform.Event{
+		ID:          "10001:at-2",
+		Platform:    platform.PlatformQQOneBot,
+		PostType:    "message",
+		MessageType: platform.ChatGroup,
+		MessageID:   "at2",
+		SelfID:      "10001",
+		UserID:      "20002",
+		ChatID:      "30003",
+		SenderName:  "tester",
+		Chain: message.Chain{
+			message.At("40004"),
+			message.Text("再看他"),
+			message.At("10001"),
+		},
+		Metadata: map[string]any{"time": int64(101), "sender": "tester"},
+	})
+	if caller.count("get_group_member_info") != 1 {
+		t.Fatalf("at-name cache miss; calls = %v", caller.actions)
+	}
+}
+
 func TestInboundForwardIsFlattenedIntoPromptText(t *testing.T) {
 	caller := &fakeCaller{results: map[string]any{
 		"get_forward_msg": map[string]any{

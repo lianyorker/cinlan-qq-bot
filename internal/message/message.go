@@ -153,10 +153,18 @@ func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
 			builder.WriteString(valueString(component.Data["text"]))
 		case TypeAt:
 			target := valueString(component.Data["qq"])
-			if target == selfID {
+			if target == "all" {
+				appendMarker(&builder, "@全体成员")
+			} else if target == selfID {
 				mentioned = true
 			} else if target != "" {
-				appendMarker(&builder, "@"+target)
+				// data.name carries the resolved display name when the
+				// inbound enrichment looked it up — "@阿茶" not "@123456".
+				if name := strings.TrimSpace(valueString(component.Data["name"])); name != "" {
+					appendMarker(&builder, "@"+name)
+				} else {
+					appendMarker(&builder, "@"+target)
+				}
 			}
 		case TypeReply:
 			continue

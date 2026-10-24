@@ -396,6 +396,7 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 	if s.userProfiler == nil || chain == nil {
 		return
 	}
+	atResolved := 0
 	for i, component := range chain {
 		// Data can be nil for hand-built segments — map writes panic on
 		// nil, reads don't, so guard only before storing.
@@ -431,8 +432,74 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 				ensureData()
 				chain[i].Data["text"] = flat
 			}
+		case message.TypeAt:
+			// "@123456" reads as a number to her; a person sees the name.
+			// Resolve the display name lazily (cached) and stash it in
+			// data.name for PlainText to render.
+			if atResolved >= 3 {
+				continue // cap the lookups so mass-mentions stay cheap
+			}
+			qq := valueString(component.Data, "qq")
+			if qq == "" || qq == "all" || qq == state.selfID ||
+				strings.TrimSpace(valueString(component.Data, "name")) != "" {
+				continue
+			}
+			if name := s.atDisplayName(ctx, state, qq); name != "" {
+				ensureData()
+				chain[i].Data["name"] = name
+			}
+			atResolved++
 		}
 	}
+}
+
+// atDisplayName resolves an @-mentioned QQ id to the name a human would
+// read in the group member list (card first, then nickname). Results are
+// cached per chat for a day; lookups are one-shot per id so a slow API
+// only delays a message once.
+func (s *Service) atDisplayName(ctx context.Context, state *flowState, qq string) string {
+	if state == nil || s.userProfiler == nil {
+		return ""
+	}
+	key := state.chatID + "|" + qq
+	s.atNameMu.Lock()
+	entry, ok := s.atNameCache[key]
+	fresh := ok && time.Since(entry.fetchedAt) < atNameTTL
+	name := entry.name
+	s.atNameMu.Unlock()
+	if fresh {
+		return name
+	}
+	callCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	resolved := ""
+	if state.chatType == platform.ChatGroup && state.chatID != "" {
+		raw, err := s.callAction(callCtx, state, "get_group_member_info",
+			map[string]any{"group_id": state.chatID, "user_id": qq})
+		if err == nil {
+			if m := actionResultMap(raw); m != nil {
+				// Group card is the name people actually see in group.
+				resolved = strField(m, "card")
+				if resolved == "" {
+					resolved = strField(m, "nickname")
+				}
+			}
+		}
+	}
+	if resolved == "" {
+		raw, err := s.callAction(callCtx, state, "get_stranger_info",
+			map[string]any{"user_id": qq})
+		if err == nil {
+			if m := actionResultMap(raw); m != nil {
+				resolved = strField(m, "nickname")
+			}
+		}
+	}
+	resolved = strings.TrimSpace(resolved)
+	s.atNameMu.Lock()
+	s.atNameCache[key] = atNameEntry{name: resolved, fetchedAt: time.Now()}
+	s.atNameMu.Unlock()
+	return resolved
 }
 
 // transcribeRecord pulls the voice file via get_record (NapCat converts to

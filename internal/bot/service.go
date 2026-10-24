@@ -82,6 +82,14 @@ type UserProfiler interface {
 
 const memberCacheTTL = 10 * time.Minute
 
+// atNameTTL: display names change rarely; refresh after a day.
+const atNameTTL = 24 * time.Hour
+
+type atNameEntry struct {
+	name      string
+	fetchedAt time.Time
+}
+
 type memberCacheEntry struct {
 	member bool
 	at     time.Time
@@ -130,6 +138,10 @@ type Service struct {
 	userProfiler   UserProfiler
 	memberMu       sync.Mutex
 	memberCache    map[string]memberCacheEntry
+	// atNameCache remembers resolved @-mention display names (group card
+	// or nickname) so PlainText reads "@阿茶" instead of "@123456".
+	atNameMu       sync.Mutex
+	atNameCache    map[string]atNameEntry
 	warnStore      *moderation.Store
 	voiceProvider  voiceSynth
 	voiceBudget    voiceBudget
@@ -267,6 +279,7 @@ func NewWithRuntime(
 		maintenance:        make(chan flowState, maintenanceQueueSize),
 		maintenancePending: make(map[string]struct{}),
 		memberCache:        make(map[string]memberCacheEntry),
+		atNameCache:       make(map[string]atNameEntry),
 	}
 	if strings.TrimSpace(cfg.AgentSystemPrompt) != "" {
 		_ = service.personas.Register(persona.Profile{
