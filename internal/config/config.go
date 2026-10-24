@@ -261,19 +261,23 @@ type Config struct {
 
 	// Humanization layer — makes the bot behave like a person rather than
 	// a vending machine. All persona-agnostic; personas stay operator-owned.
-	TypingSim      bool          // human-like delay before sending
-	TypingBase     time.Duration // base delay before first reply part
-	TypingPerRune  time.Duration // extra delay per rune of the first part
-	TypingMax      time.Duration // cap for the typing delay
-	MoodEnabled    bool          // per-chat mood meter + prompt hint
-	SleepStart     int           // hour sleep window begins (-1 disables)
-	SleepEnd       int           // hour sleep window ends
-	Proactive      bool          // ambient opener engine
-	ProactiveTick  time.Duration // sweep interval
-	ProactiveIdle  time.Duration // required chat silence before eligible
-	ProactiveWait  time.Duration // cooldown between proactive sends
-	ProactiveProb  float64       // per-tick fire probability
-	ProactiveDaily int           // per-chat daily cap
+	TypingSim     bool          // human-like delay before sending
+	TypingBase    time.Duration // base delay before first reply part
+	TypingPerRune time.Duration // extra delay per rune of the first part
+	TypingMax     time.Duration // cap for the typing delay
+	// ReadDelay* simulates time spent reading the inbound message —
+	// gated by TypingSim too; 0 disables.
+	ReadDelayPerRune time.Duration
+	ReadDelayMax     time.Duration
+	MoodEnabled      bool          // per-chat mood meter + prompt hint
+	SleepStart       int           // hour sleep window begins (-1 disables)
+	SleepEnd         int           // hour sleep window ends
+	Proactive        bool          // ambient opener engine
+	ProactiveTick    time.Duration // sweep interval
+	ProactiveIdle    time.Duration // required chat silence before eligible
+	ProactiveWait    time.Duration // cooldown between proactive sends
+	ProactiveProb    float64       // per-tick fire probability
+	ProactiveDaily   int           // per-chat daily cap
 	// ProactiveGroups optionally limits which bound groups may receive
 	// proactive openers; empty means every bound group is eligible.
 	ProactiveGroups Allowlist
@@ -282,6 +286,9 @@ type Config struct {
 	ProactivePrivate Allowlist
 	// ProactivePrivateIdle is the stricter silence floor for DMs.
 	ProactivePrivateIdle time.Duration
+	// ProactiveStaleMax drops chats whose last activity is this old —
+	// pinging someone silent for weeks reads weird, not cute.
+	ProactiveStaleMax time.Duration
 
 	HandoffReply string
 	ResumeReply  string
@@ -628,6 +635,10 @@ func Load() (Config, error) {
 	cfg.TypingBase = parseDuration("QQ_TYPING_BASE", 1200*time.Millisecond, true, &errs)
 	cfg.TypingPerRune = parseDuration("QQ_TYPING_PER_RUNE", 55*time.Millisecond, true, &errs)
 	cfg.TypingMax = parseDuration("QQ_TYPING_MAX", 8*time.Second, true, &errs)
+	cfg.ReadDelayPerRune = parseDuration(
+		"QQ_READ_DELAY_PER_RUNE", 20*time.Millisecond, true, &errs)
+	cfg.ReadDelayMax = parseDuration(
+		"QQ_READ_DELAY_MAX", 4*time.Second, true, &errs)
 	cfg.MoodEnabled = parseBool("QQ_MOOD_ENABLED", true, &errs)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
@@ -651,6 +662,8 @@ func Load() (Config, error) {
 	cfg.ProactivePrivate = proactivePrivate
 	cfg.ProactivePrivateIdle = parseDuration(
 		"QQ_PROACTIVE_PRIVATE_IDLE", 2*time.Hour, true, &errs)
+	cfg.ProactiveStaleMax = parseDuration(
+		"QQ_PROACTIVE_STALE_MAX", 168*time.Hour, true, &errs)
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {

@@ -549,6 +549,7 @@ func main() {
 			Allow:        proactiveAllow,
 			PrivateAllow: proactivePrivateAllow,
 			PrivateIdle:  cfg.ProactivePrivateIdle,
+			StaleMax:     cfg.ProactiveStaleMax,
 		},
 		proactive.Deps{
 			Providers: providerRegistry,

@@ -1179,11 +1179,28 @@ func (s *Service) typingDelay(first string) time.Duration {
 	// ±35% jitter so the cadence isn't metronomic.
 	jitter := time.Duration(rand.Int63n(int64(delay/3) + 1))
 	delay += jitter - delay/6
+	// Sleepy typing is slower typing.
+	if s.cfg.Asleep(time.Now()) {
+		delay += delay / 2
+	}
 	if s.cfg.TypingMax > 0 && delay > s.cfg.TypingMax {
 		delay = s.cfg.TypingMax
 	}
 	if delay < 0 {
 		delay = 0
+	}
+	return delay
+}
+
+// readDelay simulates actually reading the inbound message before
+// thinking: one-liners barely register, a 500字小作文 takes a beat.
+func (s *Service) readDelay(text string) time.Duration {
+	if !s.cfg.TypingSim || s.cfg.ReadDelayPerRune <= 0 {
+		return 0
+	}
+	delay := time.Duration(utf8.RuneCountInString(text)) * s.cfg.ReadDelayPerRune
+	if s.cfg.ReadDelayMax > 0 && delay > s.cfg.ReadDelayMax {
+		delay = s.cfg.ReadDelayMax
 	}
 	return delay
 }

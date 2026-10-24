@@ -46,6 +46,9 @@ type Config struct {
 	// unprompted after 45 quiet minutes reads as needy; hours reads as
 	// thinking of them.
 	PrivateIdle time.Duration
+	// StaleMax drops chats whose last activity is older than this —
+	// pinging someone silent for weeks reads weird, not cute. 0 = no cap.
+	StaleMax time.Duration
 }
 
 type Deps struct {
@@ -245,6 +248,9 @@ func (e *Engine) eligible(chatType, chatID string) bool {
 		}
 		if now.Sub(last) < minIdle {
 			return false // still lively
+		}
+		if e.cfg.StaleMax > 0 && now.Sub(last) > e.cfg.StaleMax {
+			return false // long-dead chat — a cold ping reads weird
 		}
 	}
 	return true

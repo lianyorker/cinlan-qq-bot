@@ -689,6 +689,10 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if state.ignored || state.pluginHandled || state.sessionID == "" {
 		return nil
 	}
+	// She reads before she thinks — a long message takes a visible beat.
+	if !waitForReplyPart(ctx, s.readDelay(state.text)) {
+		return nil
+	}
 	request := domain.AgentRequest{
 		RequestID:  fmt.Sprintf("qq-%s-%d", state.messageID, eventTime(state.event)),
 		SessionID:  state.sessionID,
@@ -828,6 +832,10 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 	}
 	request.SystemPrompt += clockLine
+	if s.cfg.Asleep(now) {
+		// She's a person, not a service — 3am replies read sleepy, not perky.
+		request.SystemPrompt += "现在是深夜，你有点困了——回复可以更短更慵懒，真困了就直说想睡，别硬撑着精神。"
+	}
 	if state.chatType == platform.ChatGroup {
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
