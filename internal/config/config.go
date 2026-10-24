@@ -386,9 +386,11 @@ func Load() (Config, error) {
 	cfg.GroupAtSender = parseBool("QQ_GROUP_AT_SENDER", true, &errs)
 	cfg.MaxReplyRunes = parseInt("QQ_MAX_REPLY_RUNES", 1500, 1, &errs)
 	cfg.MaxReplyChunks = parseInt("QQ_MAX_REPLY_CHUNKS", 4, 1, &errs)
+	// 900ms fired mid-sentence — she replied before follow-ups landed.
+	// 1.8s waits out quick multi-sends without stalling group flow.
 	cfg.GroupBatchWindow = parseDuration(
 		"QQ_GROUP_BATCH_WINDOW",
-		900*time.Millisecond,
+		1800*time.Millisecond,
 		false,
 		&errs,
 	)
@@ -397,7 +399,7 @@ func Load() (Config, error) {
 	// instead of two replies — and two image-gen quota burns.
 	cfg.PrivateBatchWindow = parseDuration(
 		"QQ_PRIVATE_BATCH_WINDOW",
-		1200*time.Millisecond,
+		2500*time.Millisecond,
 		false,
 		&errs,
 	)
