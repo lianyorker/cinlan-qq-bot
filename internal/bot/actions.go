@@ -505,7 +505,7 @@ func (s *Service) flattenForward(ctx context.Context, state *flowState, id strin
 	}
 	var lines []string
 	addLine := func(nick string, segs json.RawMessage) {
-		text := flattenSegments(segs, state.selfID)
+		text := flattenSegments(segs)
 		if text == "" {
 			return
 		}
@@ -547,7 +547,7 @@ func (s *Service) flattenForward(ctx context.Context, state *flowState, id strin
 
 // flattenSegments renders one forwarded message's segment array into a
 // single readable line: text stays, rich parts degrade to markers.
-func flattenSegments(raw json.RawMessage, selfID string) string {
+func flattenSegments(raw json.RawMessage) string {
 	if len(raw) == 0 {
 		return ""
 	}
@@ -575,18 +575,50 @@ func flattenSegments(raw json.RawMessage, selfID string) string {
 			b.WriteString("@" + valueString(data, "qq"))
 		case "image":
 			b.WriteString("[图片]")
-		case "face", "mface":
-			b.WriteString("[表情]")
+		case "face":
+			if name := message.FaceNameForID(valueString(data, "id")); name != "" {
+				b.WriteString("[" + name + "]")
+			} else {
+				b.WriteString("[表情]")
+			}
+		case "mface":
+			if s := strings.TrimSpace(valueString(data, "summary")); s != "" {
+				b.WriteString("[" + strings.Trim(s, "[]") + "]")
+			} else {
+				b.WriteString("[表情]")
+			}
 		case "record":
 			b.WriteString("[语音]")
 		case "video":
 			b.WriteString("[视频]")
 		case "file":
 			b.WriteString("[文件]")
+		case "share":
+			if title := strings.TrimSpace(valueString(data, "title")); title != "" {
+				b.WriteString("[链接:" + title + "]")
+			} else {
+				b.WriteString("[链接]")
+			}
+		case "music":
+			if title := strings.TrimSpace(valueString(data, "title")); title != "" {
+				b.WriteString("[音乐:" + title + "]")
+			} else {
+				b.WriteString("[音乐]")
+			}
+		case "location":
+			if title := strings.TrimSpace(valueString(data, "title")); title != "" {
+				b.WriteString("[位置:" + title + "]")
+			} else {
+				b.WriteString("[位置]")
+			}
 		case "forward":
 			b.WriteString("[套娃转发]")
 		case "json", "xml":
-			b.WriteString("[卡片]")
+			if card := message.JSONCardSummary(valueString(data, "data")); card != "" {
+				b.WriteString("[卡片:" + card + "]")
+			} else {
+				b.WriteString("[卡片]")
+			}
 		case "reply":
 			// quoting inside a forward — skip the marker noise
 		default:

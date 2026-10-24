@@ -3,6 +3,7 @@ package message
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -172,9 +173,18 @@ func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
 		case TypeFile:
 			appendMarker(&builder, "[文件]")
 		case TypeFace:
-			appendMarker(&builder, "[表情]")
+			// A human knows which face was sent, not just that one was.
+			if name := FaceNameForID(valueString(component.Data["id"])); name != "" {
+				appendMarker(&builder, "[表情:"+name+"]")
+			} else {
+				appendMarker(&builder, "[表情]")
+			}
 		case TypeJson:
-			appendMarker(&builder, "[JSON]")
+			if card := JSONCardSummary(valueString(component.Data["data"])); card != "" {
+				appendMarker(&builder, "[JSON:"+card+"]")
+			} else {
+				appendMarker(&builder, "[JSON]")
+			}
 		case TypeXml:
 			appendMarker(&builder, "[XML]")
 		case TypeMarkdown:
@@ -182,21 +192,65 @@ func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
 		case TypeKeyboard:
 			appendMarker(&builder, "[Keyboard]")
 		case TypeShare:
-			appendMarker(&builder, "[Share]")
+			// Link shares carry title+url — the title is what a person
+			// would glance at before deciding to open it.
+			if t := strings.TrimSpace(valueString(component.Data["title"])); t != "" {
+				appendMarker(&builder, "[链接:"+t+"]")
+			} else if u := strings.TrimSpace(valueString(component.Data["url"])); u != "" {
+				appendMarker(&builder, "[链接:"+truncateRunes(u, 60)+"]")
+			} else {
+				appendMarker(&builder, "[Share]")
+			}
 		case TypeContact:
-			appendMarker(&builder, "[Contact]")
+			if id := strings.TrimSpace(valueString(component.Data["id"])); id != "" {
+				appendMarker(&builder, "[名片:"+id+"]")
+			} else {
+				appendMarker(&builder, "[Contact]")
+			}
 		case TypeLocation:
-			appendMarker(&builder, "[Location]")
+			parts := []string{}
+			if t := strings.TrimSpace(valueString(component.Data["title"])); t != "" {
+				parts = append(parts, t)
+			}
+			if c := strings.TrimSpace(valueString(component.Data["content"])); c != "" {
+				parts = append(parts, c)
+			}
+			if len(parts) > 0 {
+				appendMarker(&builder, "[位置:"+strings.Join(parts, " ")+"]")
+			} else {
+				appendMarker(&builder, "[Location]")
+			}
 		case TypeMusic:
-			appendMarker(&builder, "[Music]")
+			if t := strings.TrimSpace(valueString(component.Data["title"])); t != "" {
+				appendMarker(&builder, "[音乐:"+t+"]")
+			} else {
+				appendMarker(&builder, "[Music]")
+			}
 		case TypeDice:
-			appendMarker(&builder, "[Dice]")
+			if v := strings.TrimSpace(valueString(component.Data["value"])); v != "" {
+				appendMarker(&builder, "[骰子:"+v+"]")
+			} else {
+				appendMarker(&builder, "[Dice]")
+			}
 		case TypeRPS:
-			appendMarker(&builder, "[RPS]")
+			if v := rpsName(valueString(component.Data["value"])); v != "" {
+				appendMarker(&builder, "[猜拳:"+v+"]")
+			} else {
+				appendMarker(&builder, "[RPS]")
+			}
 		case TypeMFace:
-			appendMarker(&builder, "[MFace]")
+			// NapCat mface carries a readable summary like "[摸鱼]".
+			if s := strings.TrimSpace(valueString(component.Data["summary"])); s != "" {
+				appendMarker(&builder, "[表情:"+strings.Trim(s, "[]")+"]")
+			} else {
+				appendMarker(&builder, "[表情]")
+			}
 		case TypeLightApp:
-			appendMarker(&builder, "[LightApp]")
+			if p := strings.TrimSpace(valueString(component.Data["prompt"])); p != "" {
+				appendMarker(&builder, "[小程序:"+truncateRunes(p, 60)+"]")
+			} else {
+				appendMarker(&builder, "[LightApp]")
+			}
 		case TypeForward:
 			// Forwarded chat bundles get flattened into data.text by the
 			// inbound enrichment (get_forward_msg) — render it so the
@@ -223,6 +277,94 @@ func (c Chain) ReplyID() string {
 				return id
 			}
 		}
+	}
+	return ""
+}
+
+// faceIDToName maps QQ system face ids to readable names — the inverse of
+// the send-side faceNameToID table in bot. Kept in this package so both
+// direction stays consistent: she sees "[表情:憨笑]", and answering
+// [[FACE:憨笑]] posts id 28 back.
+var faceIDToName = map[int]string{
+	0: "惊讶", 1: "撇嘴", 2: "色", 3: "发呆", 4: "得意",
+	5: "流泪", 6: "害羞", 7: "闭嘴", 8: "睡", 9: "大哭",
+	10: "尴尬", 11: "发怒", 12: "调皮", 13: "呲牙", 14: "微笑",
+	15: "难过", 16: "酷", 18: "抓狂", 20: "吐", 21: "偷笑",
+	22: "白眼", 23: "傲慢", 24: "饥饿", 25: "困", 26: "惊恐",
+	27: "流汗", 28: "憨笑", 30: "奋斗", 31: "咒骂", 32: "疑问",
+	33: "嘘", 34: "晕", 35: "折磨", 36: "衰", 37: "骷髅",
+	38: "敲打", 39: "再见", 41: "发抖", 42: "爱情", 43: "跳跳",
+	44: "猪头", 45: "拥抱", 46: "蛋糕", 47: "闪电", 48: "炸弹",
+	49: "刀", 50: "足球", 51: "瓢虫", 52: "便便", 53: "咖啡",
+	54: "饭", 55: "药", 56: "玫瑰", 57: "凋谢", 58: "示爱",
+	59: "爱心", 60: "心碎", 62: "礼物", 63: "太阳", 64: "月亮",
+	66: "握手", 67: "胜利", 68: "抱拳", 69: "勾引", 70: "拳头",
+	71: "差劲", 72: "爱你", 76: "飞吻", 79: "怄火", 80: "转圈",
+	81: "磕头", 82: "回头", 83: "跳绳", 84: "挥手", 85: "激动",
+	86: "街舞", 87: "献吻", 96: "冷汗", 97: "擦汗", 98: "抠鼻",
+	99: "鼓掌", 100: "糗大了", 101: "坏笑", 104: "哈欠", 105: "鄙视",
+	106: "委屈", 107: "快哭了", 108: "阴险", 109: "亲亲", 110: "吓",
+	111: "可怜", 112: "菜刀", 113: "西瓜", 114: "啤酒", 115: "篮球",
+	116: "乒乓",
+}
+
+// FaceNameForID resolves a face segment's numeric id to its QQ face name.
+func FaceNameForID(raw string) string {
+	id, err := strconv.Atoi(strings.TrimSpace(raw))
+	if err != nil {
+		return ""
+	}
+	return faceIDToName[id]
+}
+
+// rpsName maps NapCat rps values (1=剪刀 2=石头 3=布) to readable names.
+func rpsName(raw string) string {
+	switch strings.TrimSpace(raw) {
+	case "1":
+		return "剪刀"
+	case "2":
+		return "石头"
+	case "3":
+		return "布"
+	}
+	return ""
+}
+
+// truncateRunes clips s to n runes with an ellipsis tail.
+func truncateRunes(s string, n int) string {
+	runes := []rune(s)
+	if len(runes) <= n {
+		return s
+	}
+	return string(runes[:n]) + "…"
+}
+
+// JSONCardSummary pulls a human-readable title out of a qq-app/json card:
+// NapCat cards expose a "prompt" preview line or meta.{news,music}.title.
+func JSONCardSummary(raw string) string {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return ""
+	}
+	var card map[string]any
+	if err := json.Unmarshal([]byte(raw), &card); err != nil {
+		return ""
+	}
+	if p := strings.TrimSpace(valueString(card["prompt"])); p != "" {
+		return truncateRunes(p, 60)
+	}
+	meta, _ := card["meta"].(map[string]any)
+	for _, key := range []string{"news", "detail_1", "detail_2", "music", "video", "miniapp"} {
+		m, _ := meta[key].(map[string]any)
+		if m == nil {
+			continue
+		}
+		if t := strings.TrimSpace(valueString(m["title"])); t != "" {
+			return truncateRunes(t, 60)
+		}
+	}
+	if t := strings.TrimSpace(valueString(card["desc"])); t != "" {
+		return truncateRunes(t, 60)
 	}
 	return ""
 }

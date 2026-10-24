@@ -99,3 +99,30 @@ func TestCloneDoesNotShareDataMap(t *testing.T) {
 		t.Fatal("Clone() shares component data")
 	}
 }
+
+func TestPlainTextRendersReadableSegments(t *testing.T) {
+	cases := []struct {
+		name string
+		data map[string]any
+		typ  Type
+		want string
+	}{
+		{"face id maps to name", map[string]any{"id": "28"}, TypeFace, "[表情:憨笑]"},
+		{"unknown face falls back", map[string]any{"id": "9999"}, TypeFace, "[表情]"},
+		{"share keeps title", map[string]any{"title": "B站视频", "url": "https://b23.tv/x"}, TypeShare, "[链接:B站视频]"},
+		{"share without title shows url", map[string]any{"url": "https://example.com/a"}, TypeShare, "[链接:https://example.com/a]"},
+		{"music keeps title", map[string]any{"title": "晴天"}, TypeMusic, "[音乐:晴天]"},
+		{"location joins title+content", map[string]any{"title": "星巴克", "content": "上海静安"}, TypeLocation, "[位置:星巴克 上海静安]"},
+		{"dice keeps value", map[string]any{"value": "6"}, TypeDice, "[骰子:6]"},
+		{"rps maps value", map[string]any{"value": "2"}, TypeRPS, "[猜拳:石头]"},
+		{"mface uses summary", map[string]any{"summary": "[摸鱼]"}, TypeMFace, "[表情:摸鱼]"},
+		{"json card uses prompt", map[string]any{"data": `{"prompt":"[QQ小程序]某卡片"}`}, TypeJson, "[JSON:[QQ小程序]某卡片]"},
+	}
+	for _, tc := range cases {
+		chain := Chain{{Type: tc.typ, Data: tc.data}}
+		text, _ := chain.PlainText("10001")
+		if text != tc.want {
+			t.Errorf("%s: got %q, want %q", tc.name, text, tc.want)
+		}
+	}
+}
