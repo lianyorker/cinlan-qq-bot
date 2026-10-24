@@ -61,6 +61,11 @@ func registerLocalExtensions(
 		); registerErr != nil {
 			logger.Error("failed to register poke tool", "error", registerErr)
 		}
+		if registerErr := service.ToolRegistry().Register(
+			interaction.EmojiLikeTool(caller),
+		); registerErr != nil {
+			logger.Error("failed to register emoji react tool", "error", registerErr)
+		}
 	}
 	if registerErr := service.ToolRegistry().Register(
 		interaction.QuietTool(store, time.Now),

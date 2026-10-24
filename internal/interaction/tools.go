@@ -92,6 +92,59 @@ func PokeTool(caller ActionCaller) tool.Definition {
 	}
 }
 
+// EmojiLikeTool lets the persona slap an emoji reaction on the inbound
+// message — the lowest-effort response real users give constantly: a
+// 👍 on a joke, a ❤️ on a photo, no words needed.
+func EmojiLikeTool(caller ActionCaller) tool.Definition {
+	return tool.Definition{
+		Name: "react_emoji",
+		Description: "给对方刚发的消息贴一个表情回应（消息角上的表情），不用打字也算回了。" +
+			"想表示看到/被逗笑/赞同但懒得回话时用。参数 emoji 填表情符号，如 👍😂❤️🤔",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"emoji": map[string]any{
+					"type":        "string",
+					"description": "要贴的表情符号，填一个 emoji",
+				},
+			},
+			"required": []string{"emoji"},
+		},
+		Permission: tool.PermissionEveryone,
+		Timeout:    10 * time.Second,
+		Handler: func(ctx context.Context, call tool.Call) (tool.Result, error) {
+			if caller == nil {
+				return tool.Result{Error: "表情回应不可用"}, nil
+			}
+			var args struct {
+				Emoji string `json:"emoji"`
+			}
+			_ = json.Unmarshal(call.Arguments, &args)
+			runes := []rune(strings.TrimSpace(args.Emoji))
+			if len(runes) == 0 {
+				return tool.Result{Error: "没给表情"}, nil
+			}
+			// NapCat set_msg_emoji_like takes the emoji's unicode
+			// codepoint as a decimal string.
+			emojiID := fmt.Sprintf("%d", runes[0])
+			messageID := strings.TrimSpace(call.Actor.MessageID)
+			if messageID == "" {
+				return tool.Result{Error: "没有可回应的消息"}, nil
+			}
+			params := map[string]any{
+				"message_id": messageID,
+				"emoji_id":   emojiID,
+				"set":        true,
+			}
+			_, err := caller.CallFor(ctx, call.Actor.SelfID, "set_msg_emoji_like", params)
+			if err != nil {
+				return tool.Result{Error: "没贴上：" + err.Error()}, nil
+			}
+			return tool.Result{Content: "贴了 " + string(runes[0])}, nil
+		},
+	}
+}
+
 // QuietTool lets the persona go silent for a while — the bot ignores the
 // chat until the timer expires, like someone going AFK. Fully reversible.
 func QuietTool(prefs *chatprefs.Store, now func() time.Time) tool.Definition {
