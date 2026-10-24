@@ -33,6 +33,7 @@ const (
 	TypeMFace    Type = "mface"
 	TypeLightApp Type = "lightapp"
 	TypeForward  Type = "forward"
+	TypeRedBag   Type = "redbag"
 )
 
 // Component keeps the original platform fields so plugins can inspect rich
@@ -177,9 +178,25 @@ func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
 				appendMarker(&builder, "[语音]")
 			}
 		case TypeVideo:
-			appendMarker(&builder, "[视频]")
+			// NapCat carries the source filename in data.name.
+			if n := strings.TrimSpace(valueString(component.Data["name"])); n != "" {
+				appendMarker(&builder, "[视频:"+n+"]")
+			} else {
+				appendMarker(&builder, "[视频]")
+			}
 		case TypeFile:
-			appendMarker(&builder, "[文件]")
+			if n := strings.TrimSpace(valueString(component.Data["name"])); n != "" {
+				appendMarker(&builder, "[文件:"+n+"]")
+			} else {
+				appendMarker(&builder, "[文件]")
+			}
+		case TypeRedBag:
+			// Red packets show a cover title like "恭喜发财".
+			if t := strings.TrimSpace(valueString(component.Data["title"])); t != "" {
+				appendMarker(&builder, "[红包:"+t+"]")
+			} else {
+				appendMarker(&builder, "[红包]")
+			}
 		case TypeFace:
 			// A human knows which face was sent, not just that one was.
 			if name := FaceNameForID(valueString(component.Data["id"])); name != "" {

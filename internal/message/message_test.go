@@ -117,6 +117,10 @@ func TestPlainTextRendersReadableSegments(t *testing.T) {
 		{"rps maps value", map[string]any{"value": "2"}, TypeRPS, "[猜拳:石头]"},
 		{"mface uses summary", map[string]any{"summary": "[摸鱼]"}, TypeMFace, "[表情:摸鱼]"},
 		{"json card uses prompt", map[string]any{"data": `{"prompt":"[QQ小程序]某卡片"}`}, TypeJson, "[JSON:[QQ小程序]某卡片]"},
+		{"file keeps filename", map[string]any{"name": "期末卷子.pdf"}, TypeFile, "[文件:期末卷子.pdf]"},
+		{"video keeps filename", map[string]any{"name": "meme.mp4"}, TypeVideo, "[视频:meme.mp4]"},
+		{"red bag keeps title", map[string]any{"title": "恭喜发财"}, TypeRedBag, "[红包:恭喜发财]"},
+		{"red bag falls back", map[string]any{}, TypeRedBag, "[红包]"},
 	}
 	for _, tc := range cases {
 		chain := Chain{{Type: tc.typ, Data: tc.data}}

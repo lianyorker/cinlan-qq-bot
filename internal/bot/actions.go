@@ -657,9 +657,23 @@ func flattenSegments(raw json.RawMessage) string {
 		case "record":
 			b.WriteString("[语音]")
 		case "video":
-			b.WriteString("[视频]")
+			if n := strings.TrimSpace(valueString(data, "name")); n != "" {
+				b.WriteString("[视频:" + n + "]")
+			} else {
+				b.WriteString("[视频]")
+			}
 		case "file":
-			b.WriteString("[文件]")
+			if n := strings.TrimSpace(valueString(data, "name")); n != "" {
+				b.WriteString("[文件:" + n + "]")
+			} else {
+				b.WriteString("[文件]")
+			}
+		case "redbag":
+			if t := strings.TrimSpace(valueString(data, "title")); t != "" {
+				b.WriteString("[红包:" + t + "]")
+			} else {
+				b.WriteString("[红包]")
+			}
 		case "share":
 			if title := strings.TrimSpace(valueString(data, "title")); title != "" {
 				b.WriteString("[链接:" + title + "]")
