@@ -42,24 +42,29 @@ type Sender struct {
 }
 
 type Event struct {
-	Time          int64           `json:"time"`
-	SelfID        StringID        `json:"self_id"`
-	PostType      string          `json:"post_type"`
-	MessageType   string          `json:"message_type"`
-	SubType       string          `json:"sub_type"`
-	NoticeType    string          `json:"notice_type"`
-	RequestType   string          `json:"request_type"`
-	MetaEventType string          `json:"meta_event_type"`
-	Flag          string          `json:"flag"`
-	Comment       string          `json:"comment"`
-	MessageID     StringID        `json:"message_id"`
-	UserID        StringID        `json:"user_id"`
-	GroupID       StringID        `json:"group_id"`
-	Message       json.RawMessage `json:"message"`
-	RawMessage    string          `json:"raw_message"`
-	Sender        Sender          `json:"sender"`
-	Status        json.RawMessage `json:"status"`
-	RawPayload    json.RawMessage `json:"-"`
+	Time          int64    `json:"time"`
+	SelfID        StringID `json:"self_id"`
+	PostType      string   `json:"post_type"`
+	MessageType   string   `json:"message_type"`
+	SubType       string   `json:"sub_type"`
+	NoticeType    string   `json:"notice_type"`
+	RequestType   string   `json:"request_type"`
+	MetaEventType string   `json:"meta_event_type"`
+	Flag          string   `json:"flag"`
+	Comment       string   `json:"comment"`
+	MessageID     StringID `json:"message_id"`
+	UserID        StringID `json:"user_id"`
+	GroupID       StringID `json:"group_id"`
+	// TargetID/OperatorID/HonorType ride notify notices: poke target,
+	// recall operator, and the honor badge type respectively.
+	TargetID   StringID        `json:"target_id"`
+	OperatorID StringID        `json:"operator_id"`
+	HonorType  string          `json:"honor_type"`
+	Message    json.RawMessage `json:"message"`
+	RawMessage string          `json:"raw_message"`
+	Sender     Sender          `json:"sender"`
+	Status     json.RawMessage `json:"status"`
+	RawPayload json.RawMessage `json:"-"`
 }
 
 type MessageSegment struct {

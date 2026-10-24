@@ -90,6 +90,9 @@ func registerLocalExtensions(
 	service.SetMemeDir(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "chat-images", "memes"),
 	)
+	service.SetStickerDir(
+		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "stickers"),
+	)
 	service.RegisterKeywordMeme(
 		regexp.MustCompile(`表情包|来张|偷个|发个表情|偷表情`),
 	)

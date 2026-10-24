@@ -558,14 +558,16 @@ func main() {
 			Send: func(sendCtx context.Context, out platform.Outbound) error {
 				return qqAdapter.Send(sendCtx, out)
 			},
-			Bindings:  bindings,
-			Personas:  botService.PersonaRegistry(),
-			Sessions:  sessionStore,
-			ChatPrefs: botService.ChatPrefs(),
-			Activity:  botService.LastActivity,
-			Touch:     botService.TouchActivity,
-			Platform:  platformName,
-			Logger:    logger,
+			Bindings:    bindings,
+			Personas:    botService.PersonaRegistry(),
+			Sessions:    sessionStore,
+			ChatPrefs:   botService.ChatPrefs(),
+			Activity:    botService.LastActivity,
+			Touch:       botService.TouchActivity,
+			Stickers:    botService.StickerPool,
+			ResolveMeme: botService.MemeFile,
+			Platform:    platformName,
+			Logger:      logger,
 		},
 	).Run(ctx)
 	// Memory-keeping: periodically merges bloated fact/impression

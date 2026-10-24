@@ -289,10 +289,14 @@ func planReplyParts(reply string) []string {
 }
 
 // inlineMarkerPattern finds [[MEME...]] / [[IMG:...]] / [[IMAGE:...]] /
-// [[PHOTO:...]] markers anywhere inside a line — including glued to the
-// end of a sentence — so they never reach chat as literal text.
+// [[PHOTO:...]] / [[SELFIE:...]] markers and the micro-action markers
+// ([[REACT:x]] [[POKE]] [[DICE]] [[RPS]] [[OOPS]]..[[/OOPS]]) anywhere
+// inside a line — including glued to the end of a sentence — so they
+// never reach chat as literal text.
 var inlineMarkerPattern = regexp.MustCompile(
-	`\[\[\s*(?:MEME|IMG|IMAGE|PHOTO)\s*(?:[:：][^\[\]]{1,40})?\s*\]\]`,
+	`\[\[\s*(?:MEME|IMG|IMAGE|PHOTO|SELFIE|REACT|EMOJI|LIKE|表情|POKE|DICE|RPS|骰子|猜拳)\s*(?:[:：][^\[\]]{1,40})?\s*\]\]` +
+		`|\[\[\s*OOPS\s*\]\][^\[\]]*\[\[\s*/\s*OOPS\s*\]\]` +
+		`|\[\[[^\[\]]{1,60}\]\]`, // unknown [[..]] — dropped at split
 )
 
 // splitMarkerLines splits a reply part into sub-parts so a marker mixed
@@ -307,9 +311,7 @@ func splitMarkerLines(part string) []string {
 			result = append(result, segment)
 		}
 		marker := part[span[0]:span[1]]
-		if _, ok := parseMemeMarker(marker); ok {
-			result = append(result, marker)
-		} else if _, ok := parseStoredImageMarker(marker); ok {
+		if isMarkerPart(marker) {
 			result = append(result, marker)
 		}
 		cursor = span[1]
@@ -318,6 +320,31 @@ func splitMarkerLines(part string) []string {
 		result = append(result, tail)
 	}
 	return result
+}
+
+// isMarkerPart reports whether a standalone part is a known marker that
+// stageRespond knows how to resolve (image sends, emoji reactions,
+// pokes, dice, recall-the-oops). Unknown [[..]] text stays dropped.
+func isMarkerPart(part string) bool {
+	if _, ok := parseMemeMarker(part); ok {
+		return true
+	}
+	if _, ok := parseStoredImageMarker(part); ok {
+		return true
+	}
+	if _, ok := parseSelfieMarker(part); ok {
+		return true
+	}
+	if _, ok := parseReactMarker(part); ok {
+		return true
+	}
+	if _, ok := parsePokeMarker(part); ok {
+		return true
+	}
+	if _, ok := parseOopsMarker(part); ok {
+		return true
+	}
+	return isDiceMarker(part) || isRPSMarker(part)
 }
 
 // splitOnBlankLines splits text at paragraph boundaries (blank lines) so a

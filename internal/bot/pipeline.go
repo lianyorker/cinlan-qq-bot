@@ -83,6 +83,9 @@ type flowState struct {
 	// user repeated the same message; non-zero tells the prompt builder to
 	// let the persona scold in character.
 	spamPenalty int
+	// pokeEvent marks an inbound 戳一戳 notice that we let flow through
+	// the pipeline like a tap on the shoulder (cooldown-gated).
+	pokeEvent bool
 }
 
 func (s *Service) newPipeline() *pipeline.Pipeline {
@@ -135,10 +138,21 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	if !event.Event.IsChatMessage() ||
 		state.userID == "" ||
 		state.userID == state.selfID {
-		s.observeGroupMemberNotice(ctx, state)
-		state.ignored = true
-		event.Stop("not_target_chat_message")
-		return nil
+		if s.selfPokeNotice(state) &&
+			s.pokeBudget.allowVoice(
+				"poke:"+state.chatType+":"+state.chatID+":"+state.userID,
+				3*time.Minute,
+			) {
+			// Someone poked her — let it through like a tap on the
+			// shoulder so she can react ("干嘛戳我") instead of being
+			// blind to it. Cooldown keeps poke-spam from pinging her.
+			state.pokeEvent = true
+		} else {
+			s.observeGroupMemberNotice(ctx, state)
+			state.ignored = true
+			event.Stop("not_target_chat_message")
+			return nil
+		}
 	}
 	if automatedSender(event.Event) {
 		state.ignored = true
@@ -236,7 +250,12 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	}
 	state.event.Chain = chain
 	state.text, state.eventMentioned = chain.PlainText(state.selfID)
-	if strings.TrimSpace(state.text) == "" {
+	if state.pokeEvent {
+		// A poke carries no text — hand the persona the same cue a bare
+		// @ gets so attention/replies treat it as being addressed.
+		state.text = "（对方戳了戳你）"
+		state.eventMentioned = true
+	} else if strings.TrimSpace(state.text) == "" {
 		if state.eventMentioned {
 			// Bare @ with no content — treat it as a poke so the
 			// persona can react naturally instead of dropping it.
@@ -1041,6 +1060,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if state.chatType == platform.ChatGroup {
 		request.SystemPrompt += "\n" + atPromptNote
 	}
+	// Micro-actions (emoji reaction / poke / dice / rps / oops-recall)
+	// need the raw platform Call surface; without it the markers would
+	// just die on the floor, so the note stays out entirely.
+	if s.userProfiler != nil {
+		request.SystemPrompt += "\n" + actionPromptNote
+	}
+	if note := s.stickerPromptNote(state.personaName); note != "" {
+		request.SystemPrompt += "\n" + note
+	}
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
@@ -1492,6 +1520,56 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					chains, message.Chain{message.Image(path)},
 				)
 				cleaned = append(cleaned, "[表情包]")
+				continue
+			}
+			if tag, ok := parseSelfieMarker(part); ok {
+				path := s.pickSticker(state.personaName, tag)
+				if path == "" {
+					skippedMarkers++
+					s.logger.Info(
+						"selfie sticker marker skipped",
+						"chat_type", state.chatType,
+						"chat_id", state.chatID,
+						"tag", tag,
+					)
+					continue
+				}
+				chains = append(
+					chains, message.Chain{message.Image(path)},
+				)
+				cleaned = append(cleaned, "[贴纸:"+tag+"]")
+				continue
+			}
+			// Micro-actions resolve to real QQ gestures, not bubbles:
+			// an emoji reaction on the inbound message, a poke, a dice
+			// or rps roll, an oops-send-then-recall.
+			if key, ok := parseReactMarker(part); ok {
+				s.reactToMessage(ctx, state, key)
+				continue
+			}
+			if target, ok := parsePokeMarker(part); ok {
+				s.sendPoke(ctx, state, target)
+				continue
+			}
+			if isDiceMarker(part) {
+				chains = append(chains, message.Chain{
+					message.Segment(message.TypeDice, nil),
+				})
+				cleaned = append(cleaned, "[骰子]")
+				continue
+			}
+			if isRPSMarker(part) {
+				chains = append(chains, message.Chain{
+					message.Segment(message.TypeRPS, nil),
+				})
+				cleaned = append(cleaned, "[猜拳]")
+				continue
+			}
+			if inner, ok := parseOopsMarker(part); ok {
+				if inner != "" {
+					s.sendThenRecall(ctx, state, inner)
+					cleaned = append(cleaned, "[撤回:"+truncateRunes(inner, 20)+"]")
+				}
 				continue
 			}
 			chain, plain, _ := parseFaceMarkers(part)
@@ -1965,30 +2043,96 @@ func eventTime(event platform.Event) int64 {
 // observeGroupMemberNotice silently logs group_increase / group_decrease
 // notices into the group's session history and warms the member's UserCard
 // so the persona knows who just joined or left without ever speaking first.
+// Also silently observes the small social notices a human just *notices*:
+// pokes at others, message recalls, and honor badges (龙王 etc).
 func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState) {
 	if s.sessions == nil ||
 		state.event.PostType != "notice" ||
-		state.chatID == "" ||
 		state.userID == "" ||
 		state.userID == state.selfID {
 		return
 	}
-	noticeType, _ := state.event.Metadata["notice_type"].(string)
-	if noticeType != "group_increase" && noticeType != "group_decrease" {
-		return
+	noticeType := valueString(state.event.Metadata, "notice_type")
+	sessionID := ""
+	if state.chatType == platform.ChatPrivate {
+		sessionID = state.platform + ":self:" + state.selfID + ":private:" + state.chatID
+	} else if state.chatID != "" {
+		sessionID = state.platform + ":self:" + state.selfID + ":group:" + state.chatID
 	}
-	state.chatType = platform.ChatGroup
-	s.refreshUserCard(ctx, state)
 	display := state.userID
 	if s.chatPrefs != nil {
 		if card, ok := s.chatPrefs.UserCard(state.userID); ok && card.Nick != "" {
 			display = card.Nick + "(" + state.userID + ")"
 		}
 	}
-	sessionID := state.platform + ":self:" + state.selfID + ":group:" + state.chatID
-	if noticeType == "group_increase" {
-		s.sessions.AddObservation(sessionID, "[群事件] 新成员 "+display+" 加入了本群")
-	} else {
-		s.sessions.AddObservation(sessionID, "[群事件] 成员 "+display+" 离开了本群")
+	switch noticeType {
+	case "group_increase", "group_decrease":
+		if state.chatID == "" || sessionID == "" {
+			return
+		}
+		state.chatType = platform.ChatGroup
+		s.refreshUserCard(ctx, state)
+		if noticeType == "group_increase" {
+			s.sessions.AddObservation(sessionID, "[群事件] 新成员 "+display+" 加入了本群")
+		} else {
+			s.sessions.AddObservation(sessionID, "[群事件] 成员 "+display+" 离开了本群")
+		}
+	case "notify":
+		if sessionID == "" {
+			return
+		}
+		switch state.event.SubType {
+		case "poke":
+			// A poke at the bot itself either flowed through (pokeEvent)
+			// or was already observed upstream; only log pokes aimed at
+			// other members here.
+			target := valueString(state.event.Metadata, "target_id")
+			if target == "" || target == state.selfID {
+				return
+			}
+			targetName := target
+			if s.chatPrefs != nil {
+				if card, ok := s.chatPrefs.UserCard(target); ok && card.Nick != "" {
+					targetName = card.Nick
+				}
+			}
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 戳了戳 "+targetName)
+		case "honor":
+			honor := valueString(state.event.Metadata, "honor_type")
+			label := map[string]string{
+				"talkative":     "龙王",
+				"performer":     "群聊之火",
+				"legend":        "群聊炽焰",
+				"strong_newbie": "冒尖小春笋",
+				"emotion":       "快乐之源",
+			}[honor]
+			if label == "" {
+				return
+			}
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 拿到了本群的「"+label+"」")
+		}
+	case "group_recall", "friend_recall":
+		if sessionID == "" {
+			return
+		}
+		operator := valueString(state.event.Metadata, "operator_id")
+		if operator == "" || operator == state.selfID {
+			return // our own recalls are already known
+		}
+		if operator != state.userID {
+			display = operator
+			if s.chatPrefs != nil {
+				if card, ok := s.chatPrefs.UserCard(operator); ok && card.Nick != "" {
+					display = card.Nick + "(" + operator + ")"
+				}
+			}
+		}
+		if noticeType == "friend_recall" {
+			s.sessions.AddObservation(sessionID, "[私聊事件] 对方撤回了一条消息")
+		} else {
+			s.sessions.AddObservation(sessionID, "[群事件] "+display+" 撤回了一条消息")
+		}
 	}
 }

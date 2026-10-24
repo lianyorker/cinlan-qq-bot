@@ -133,22 +133,26 @@ type Service struct {
 	warnStore      *moderation.Store
 	voiceProvider  voiceSynth
 	voiceBudget    voiceBudget
-	voiceQuota     *voiceQuota
-	sessions       *session.Store
-	logger         *slog.Logger
-	stats          counters
-	now            func() time.Time
-	providers      *provider.Registry
-	plugins        *plugin.Registry
-	messageGuard   plugin.BeforeHook
-	commands       *command.Registry
-	tools          *tool.Registry
-	personas       *persona.Registry
-	bindings       *binding.Registry
-	chatPrefs      *chatprefs.Store
-	affinity       *affinity.Store
-	memeDir        string
-	keywordTools   []keywordTool
+	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
+	// occasional human reaction instead of a hair-trigger.
+	pokeBudget   voiceBudget
+	voiceQuota   *voiceQuota
+	sessions     *session.Store
+	logger       *slog.Logger
+	stats        counters
+	now          func() time.Time
+	providers    *provider.Registry
+	plugins      *plugin.Registry
+	messageGuard plugin.BeforeHook
+	commands     *command.Registry
+	tools        *tool.Registry
+	personas     *persona.Registry
+	bindings     *binding.Registry
+	chatPrefs    *chatprefs.Store
+	affinity     *affinity.Store
+	memeDir      string
+	stickerDir   string
+	keywordTools []keywordTool
 	// basePrompt is the shared human-like behavior block loaded from
 	// cfg.BasePromptFile and appended to every persona prompt.
 	basePrompt string
@@ -413,6 +417,22 @@ func (s *Service) Affinity() *affinity.Store {
 // SetMemeDir enables the per-chat meme pool under dir.
 func (s *Service) SetMemeDir(dir string) {
 	s.memeDir = strings.TrimSpace(dir)
+}
+
+// SetStickerDir enables the persona sticker packs under dir
+// (dir/<persona>/<tag>.<ext> plus dir/shared/ for common ones).
+func (s *Service) SetStickerDir(dir string) {
+	s.stickerDir = strings.TrimSpace(dir)
+}
+
+// MemeFile resolves a meme-pool query to a file path for the proactive
+// engine; "" means nothing matched (or the pool is off).
+func (s *Service) MemeFile(chatType, chatID, query string) string {
+	path, err := s.pickMeme(chatType, chatID, query)
+	if err != nil {
+		return ""
+	}
+	return path
 }
 
 // RegisterKeywordMeme sends a random stored meme from the chat's pool when
@@ -809,14 +829,24 @@ func (s *Service) handleEvent(ctx context.Context, event onebot.Event) {
 		eventTime = event.Time
 	}
 	chatID := event.GroupID.String()
-	if event.MessageType == platform.ChatPrivate {
+	msgType := event.MessageType
+	if msgType == "" && event.PostType == "notice" {
+		if chatID != "" {
+			msgType = platform.ChatGroup
+		} else if event.UserID.String() != "" {
+			// Private notices (friend_recall, friend poke) carry no
+			// group_id — keep them in the private lane.
+			msgType = platform.ChatPrivate
+		}
+	}
+	if msgType == platform.ChatPrivate {
 		chatID = event.UserID.String()
 	}
 	s.handlePlatformEvent(ctx, platform.Event{
 		ID:          fmt.Sprintf("%s:%s", event.SelfID.String(), event.MessageID.String()),
 		Platform:    platform.PlatformQQOneBot,
 		PostType:    event.PostType,
-		MessageType: event.MessageType,
+		MessageType: msgType,
 		SubType:     event.SubType,
 		MessageID:   event.MessageID.String(),
 		SelfID:      event.SelfID.String(),
@@ -827,8 +857,12 @@ func (s *Service) handleEvent(ctx context.Context, event onebot.Event) {
 		Chain:       chain,
 		RawMessage:  event.RawMessage,
 		Metadata: map[string]any{
-			"time":   eventTime,
-			"sender": sender,
+			"time":        eventTime,
+			"sender":      sender,
+			"notice_type": event.NoticeType,
+			"target_id":   event.TargetID.String(),
+			"operator_id": event.OperatorID.String(),
+			"honor_type":  event.HonorType,
 		},
 	})
 }

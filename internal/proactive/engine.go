@@ -11,6 +11,8 @@ import (
 	"fmt"
 	"log/slog"
 	"math/rand"
+	"regexp"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -67,6 +69,12 @@ type Deps struct {
 	Touch func(chatType, chatID string)
 	// Platform names the session-key platform prefix (default qq-onebot).
 	Platform string
+	// Stickers lists the persona's own sticker pack (tag -> file path);
+	// enables [[SELFIE:tag]] in proactive messages.
+	Stickers func(personaName string) map[string]string
+	// ResolveMeme maps a [[MEME:query]] to a stored chat image path;
+	// "" means nothing matched.
+	ResolveMeme func(chatType, chatID, query string) string
 	// DefaultSelfID fills rules that carry no explicit self_id.
 	DefaultSelfID string
 	Now           func() time.Time
@@ -301,6 +309,18 @@ func (e *Engine) fire(
 			"一两句话、像随手发的，别@人、别叫名字、别总结、别提这是系统让你说的；" +
 			"实在没话说就只回 [[SKIP]] 一个字）"
 	}
+	var stickerTags []string
+	if e.deps.Stickers != nil {
+		for tag := range e.deps.Stickers(rule.Persona) {
+			stickerTags = append(stickerTags, tag)
+		}
+	}
+	if len(stickerTags) > 0 {
+		sort.Strings(stickerTags)
+		opener += "\n也可以不发字：单独一行写 [[SELFIE:情绪]] 发一张你自己的表情包（可用：" +
+			strings.Join(stickerTags, "、") +
+			"），或者 [[MEME:情绪]] 发一张以前偷存的群图。"
+	}
 	system := profile.SystemPrompt + opener
 	if e.deps.ChatPrefs != nil {
 		// Ground the opener in what she actually remembers — “想你了”
@@ -366,16 +386,13 @@ func (e *Engine) fire(
 	if replyText == "" || strings.HasPrefix(replyText, "[[SKIP]]") {
 		return
 	}
-	// Never let a proactive message @ someone or quote — ambient only.
-	if err := e.deps.Send(ctx, platform.Outbound{
-		ChatType: chatType,
-		ChatID:   chatID,
-		SelfID:   selfID,
-		Chain:    message.Chain{message.Text(replyText)},
-	}); err != nil {
-		e.deps.Logger.Warn("proactive send failed",
-			"chat_type", chatType, "chat_id", chatID,
-			"error", err.Error())
+	// Resolve inline image markers the same way stageRespond does —
+	// [[SELFIE:tag]] / [[MEME:query]] / [[IMG:key]] each become their own
+	// image send; everything else joins into one text bubble.
+	sent, logged := e.sendProactive(
+		ctx, chatType, chatID, selfID, rule.Persona, replyText,
+	)
+	if !sent {
 		return
 	}
 	if e.deps.Touch != nil {
@@ -383,11 +400,126 @@ func (e *Engine) fire(
 	}
 	// Drop it into session history so later replies see our own line.
 	if e.deps.Sessions != nil {
-		e.deps.Sessions.AddExchange(sessionID, "（主动开口）", replyText)
+		e.deps.Sessions.AddExchange(sessionID, "（主动开口）", logged)
 	}
 	e.deps.Logger.Info("proactive message sent",
 		"binding", rule.Name, "chat_type", chatType,
-		"chat_id", chatID, "text", replyText)
+		"chat_id", chatID, "text", logged)
+}
+
+// proactiveImageMarker matches a whole-line [[SELFIE:tag]] / [[MEME:q]] /
+// [[IMG:key]] marker in a proactive reply.
+var proactiveImageMarker = regexp.MustCompile(
+	`^\s*\[\[\s*(SELFIE|MEME|IMG|IMAGE|PHOTO)\s*(?:[:：]\s*([^\[\]]{1,40}))?\s*\]\]\s*$`,
+)
+
+// proactiveLeftoverMarker strips markers the proactive path can't honor
+// (voice, @, react, poke, dice, oops…) so they never leak as raw text.
+var proactiveLeftoverMarker = regexp.MustCompile(
+	`\[\[[^\[\]]{0,60}\]\]`,
+)
+
+// sendProactive splits the reply into ordered segments — text lines are
+// merged into one bubble; image markers resolve to file sends in place.
+// Returns whether anything was sent plus the history-safe log text.
+func (e *Engine) sendProactive(
+	ctx context.Context,
+	chatType, chatID, selfID, personaName, reply string,
+) (bool, string) {
+	type sendPart struct {
+		text string
+		file string
+		tag  string
+	}
+	var (
+		parts    []sendPart
+		b        strings.Builder
+		sent     bool
+		history  strings.Builder
+		flushTxt = func() {
+			if t := strings.TrimSpace(b.String()); t != "" {
+				parts = append(parts, sendPart{text: t})
+				b.Reset()
+			}
+		}
+	)
+	for _, line := range strings.Split(reply, "\n") {
+		if m := proactiveImageMarker.FindStringSubmatch(line); m != nil {
+			kind := strings.ToUpper(m[1])
+			key := strings.TrimSpace(m[2])
+			file := ""
+			switch kind {
+			case "SELFIE":
+				if e.deps.Stickers != nil {
+					pool := e.deps.Stickers(personaName)
+					if p, ok := pool[key]; ok {
+						file = p
+					} else {
+						for tag, p := range pool {
+							if strings.Contains(tag, key) || strings.Contains(key, tag) {
+								file = p
+								break
+							}
+						}
+						if file == "" && key == "" && len(pool) > 0 {
+							for _, p := range pool {
+								file = p
+								break
+							}
+						}
+					}
+				}
+			case "MEME":
+				if e.deps.ResolveMeme != nil {
+					file = e.deps.ResolveMeme(chatType, chatID, key)
+				}
+			default: // IMG/IMAGE/PHOTO remembered images
+				if e.deps.ChatPrefs != nil {
+					file = e.deps.ChatPrefs.ImageForPrompt(chatType, chatID, key)
+				}
+			}
+			if file != "" {
+				flushTxt()
+				parts = append(parts, sendPart{file: file, tag: kind + ":" + key})
+			}
+			continue
+		}
+		// Drop unsupported action markers; keep plain text.
+		line = proactiveLeftoverMarker.ReplaceAllString(line, "")
+		if strings.TrimSpace(line) != "" {
+			b.WriteString(line)
+			b.WriteByte('\n')
+		}
+	}
+	flushTxt()
+	for _, part := range parts {
+		var chain message.Chain
+		var log string
+		if part.file != "" {
+			chain = message.Chain{message.Image(part.file)}
+			log = "[" + part.tag + "]"
+		} else {
+			chain = message.Chain{message.Text(part.text)}
+			log = part.text
+		}
+		if err := e.deps.Send(ctx, platform.Outbound{
+			ChatType: chatType,
+			ChatID:   chatID,
+			SelfID:   selfID,
+			Chain:    chain,
+		}); err != nil {
+			e.deps.Logger.Warn("proactive send failed",
+				"chat_type", chatType, "chat_id", chatID,
+				"error", err.Error())
+			return sent, history.String()
+		}
+		sent = true
+		if history.Len() > 0 {
+			history.WriteByte('\n')
+		}
+		history.WriteString(log)
+	}
+	return sent, history.String()
 }
 
 func (e *Engine) profile(name string) (persona.Profile, bool) {

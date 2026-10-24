@@ -433,8 +433,15 @@ func convertEvent(event onebot.Event) (platform.Event, error) {
 	}
 	chatID := event.GroupID.String()
 	msgType := event.MessageType
-	if msgType == "" && event.PostType == "notice" && chatID != "" {
-		msgType = platform.ChatGroup
+	if msgType == "" && event.PostType == "notice" {
+		if chatID != "" {
+			msgType = platform.ChatGroup
+		} else if event.UserID.String() != "" {
+			// Private notices (friend_recall, friend poke) carry no
+			// group_id — keep them in the private lane so bindings and
+			// session keys resolve like a normal DM.
+			msgType = platform.ChatPrivate
+		}
 	}
 	if msgType == platform.ChatPrivate {
 		chatID = event.UserID.String()
@@ -459,6 +466,9 @@ func convertEvent(event onebot.Event) (platform.Event, error) {
 			"notice_type":     event.NoticeType,
 			"request_type":    event.RequestType,
 			"meta_event_type": event.MetaEventType,
+			"target_id":       event.TargetID.String(),
+			"operator_id":     event.OperatorID.String(),
+			"honor_type":      event.HonorType,
 			"raw_payload":     append([]byte(nil), event.RawPayload...),
 		},
 	}, nil
