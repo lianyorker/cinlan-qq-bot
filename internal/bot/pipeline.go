@@ -937,9 +937,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		learned := make([]string, 0)
 		recentSet := map[string]bool{}
 		learnedRunes := 0
-		for _, f := range s.chatPrefs.RecentFacts(
-			state.chatType, state.chatID, 10,
-		) {
+		// Fill the budget newest-first — when memory must shrink, the
+		// freshest lines stay; the oldest fade first, like real memory.
+		recent := s.chatPrefs.RecentFacts(state.chatType, state.chatID, 10)
+		for i := len(recent) - 1; i >= 0; i-- {
+			f := recent[i]
 			if learnedRunes+len([]rune(f.Text)) > learnedBudgetRunes {
 				continue
 			}
@@ -947,6 +949,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			learnedRunes += len([]rune(f.Text))
 			learned = append(learned, "· "+f.Text)
 		}
+		slices.Reverse(learned)
 		if len(learned) > 0 {
 			request.SystemPrompt += "\n\n你自己记住的关于这个聊天的信息（可能过时，记不清就用'好像''大概'的语气）：\n" +
 				strings.Join(learned, "\n")
