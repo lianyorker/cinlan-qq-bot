@@ -72,9 +72,9 @@ type Store struct {
 	sqlite      *sqliteBackend
 }
 
-// DefaultSemanticTTL keeps compressed session meaning for a month —
-// long enough that "we talked about this last week" still lands.
-const DefaultSemanticTTL = 30 * 24 * time.Hour
+// DefaultSemanticTTL keeps compressed session meaning for a year —
+// close to how long a person remembers "we talked about X".
+const DefaultSemanticTTL = 365 * 24 * time.Hour
 
 func New(maxHistory int, ttl time.Duration) *Store {
 	return newWithClock(maxHistory, ttl, time.Now)

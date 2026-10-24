@@ -548,7 +548,7 @@ func Load() (Config, error) {
 	// Semantic memory outlives raw turns: SESSION_TTL controls history,
 	// this controls how long compressed summary/memory still count.
 	cfg.SessionSemanticTTL = parseDuration(
-		"SESSION_SEMANTIC_TTL", 30*24*time.Hour, true, &errs)
+		"SESSION_SEMANTIC_TTL", 365*24*time.Hour, true, &errs)
 	if cfg.SessionSemanticTTL < cfg.SessionTTL {
 		cfg.SessionSemanticTTL = cfg.SessionTTL
 	}
