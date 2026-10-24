@@ -144,3 +144,37 @@ notice 事件经 `observeGroupMemberNotice` 转成 `[群事件]`/`[私聊事件]
 - **语音入站**：`ASR_API_URL`+`ASR_API_KEY` 未配则 `[语音]` 占位；配了才有转写文字。
 - **对方撤回的内容**：只知道"撤回了一条消息"，QQ 不提供原文（NapCat 也拿不到历史缓存的）。
 - **精华/禁言权限**：bot 账号非管理员时收不到 group_ban/essence 等部分 notice——不是代码问题。
+
+## 拟人化能力四维盘点
+
+### 消息回复
+- **引用回复**：`QQ_QUOTE_REPLY`（默认开）+ `QQ_QUOTE_GROUP_PROB`（群 40%）+ `QQ_GROUP_AT_SENDER` 兜底 @——群聊只在上下文歧义时带引用，私聊永不带，和真人习惯一致
+- **打字节奏**：readDelay（按入站字数）+ replyPartDelay（按出站字数）模拟读完才回
+- **消息合并**：batch.go 双窗口 + 悬挂标点续等，连发合并成一个 run
+- **拆分回复**：splitReply 按 `MaxReplyRunes`/`MaxReplyChunks` 截断，句末优先回退
+
+### 安全防御（按 pipeline 顺序）
+`wake(解析/富化)` → `security` → `command` → `moderation` → `session` → `attention` → `rate_limit` → `plugin` → `agent` → `decorate` → `plugin_after` → `respond`
+- 转发展开/语音转写文本在 wake 完成，**全部过 security** —— 嵌套转发里藏 prompt 注入也会被拦
+- 注入命中：静默 ignore + 记安全事件，不回固定拒信（不暴露 bot 身份）
+- 未 @ 她但 @ 了别人的攻击消息：直接静默，不替人挡枪
+- 反混淆：`\xNN`/`\uNNNN` 自动解码；hex 正则字符集交集探测拦截
+- 敏感文件：`.env`/`_deploy_bot_key`/`id_rsa`/`chat-bindings.json`/`sessions.db`/`mcp-servers.json` 读取匹配请求直接拦
+- 出站熔断：`sk-`/`AIza`/`Bearer`/`PRIVATE KEY`/env 键名命中即熔断不发
+- 上下文投毒：`AddObservation` 在 security 通过之后才写 session，拦掉的恶意 payload 不留痕
+- attention unsafe 分类硬拦，不看 confidence
+
+### 提示词拟人化（每次回复注入的"活"上下文）
+- 当前时间+星期（`当前时间：2026-10-25 01:30 周日`）；深夜 `Asleep` 注入"你很困，回复短一点迷糊一点"
+- 距上次活动间隔（prevActivityAt → "上次聊是 N 小时前"）
+- 说话人身份：群员/管理员/群主 roleLabel、UserCard 资料行（昵称/性别/地区/头衔）
+- 关系层：affinity 亲密度提示、persona 印象（chat-local 优先）、learned facts ≤420 字、recalled 旧记忆 ≤300 字（带"N 小时前记的"锚点）
+- 状态层：mood 分提示、peer bot 声明、语音/唱歌开关、贴纸池 note、管理员备忘
+- 边界规则：群聊不复述他人内容/链接、同一话题结论保持一致（改口明说"我刚说错了"）、被叫 AI 当场否认
+
+### 操控能力（tool/MCP 现装配）
+- **已有**：generate_image（mediaLimiter 限流+失败文案兜底）、fileCatalog 文件投递、cron 定时任务、poke、channelaction（管理动作封装）、remember 记忆工具、MCP 服务器（amap 地图、my-coffee 下单）+ 47 个 skill 文档包
+- **没有**：浏览器自动化、手机操控、本地软件/桌面操控——QQ 协议栈外，接进来等于给聊天窗口开系统权限，攻击面太大，**不做**
+
+### 剩余真盲区（平台/成本限制，见上一节）
+红包收发（钱包实名）、视频内容理解（抽帧+VLM 成本）、链接/文件正文抓取（隐私+成本）、撤回原文（QQ 不给）、非管理员群管理 notice（平台权限）
