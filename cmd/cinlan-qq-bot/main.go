@@ -825,16 +825,24 @@ func main() {
 }
 
 func openSessionStore(cfg config.Config) (*session.Store, error) {
+	var store *session.Store
+	var err error
 	if cfg.SessionStorePath == "" {
-		return session.New(cfg.MaxHistory, cfg.SessionTTL), nil
+		store = session.New(cfg.MaxHistory, cfg.SessionTTL)
+	} else {
+		store, err = session.OpenEncryptedSQLite(
+			cfg.MaxHistory,
+			cfg.SessionTTL,
+			cfg.SessionStorePath,
+			cfg.SessionKey,
+			cfg.SessionLegacyPath,
+		)
 	}
-	return session.OpenEncryptedSQLite(
-		cfg.MaxHistory,
-		cfg.SessionTTL,
-		cfg.SessionStorePath,
-		cfg.SessionKey,
-		cfg.SessionLegacyPath,
-	)
+	if err != nil {
+		return nil, err
+	}
+	store.SetSemanticTTL(cfg.SessionSemanticTTL)
+	return store, nil
 }
 
 func validateBindingResources(

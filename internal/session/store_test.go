@@ -234,3 +234,40 @@ func TestApplyCompressionSnapshotPreservesAppendedMessages(t *testing.T) {
 		t.Fatal("stale snapshot was applied")
 	}
 }
+
+func TestExpiredSessionKeepsCompressedMemory(t *testing.T) {
+	now := time.Now()
+	store := newWithClock(10, time.Hour, func() time.Time { return now })
+	store.SetSemanticTTL(7 * 24 * time.Hour)
+	store.AddExchange("k", "你好", "你好呀")
+	store.ApplyCompression("k", "上周聊了咖啡", "她记得阿茶爱喝美式", 0)
+	// Raw TTL passes — history expires, compressed meaning survives.
+	now = now.Add(2 * time.Hour)
+	snap := store.SnapshotState("k")
+	if len(snap.History) != 0 {
+		t.Fatalf("expired history should drop, got %d", len(snap.History))
+	}
+	if snap.Summary != "上周聊了咖啡" || snap.Memory != "她记得阿茶爱喝美式" {
+		t.Fatalf("semantics lost early: %#v", snap)
+	}
+	// Activity timestamp still answers "how long ago was that".
+	if got := store.LastActivity("k"); now.Sub(got) < 2*time.Hour {
+		t.Fatalf("LastActivity lost the real age: %v", now.Sub(got))
+	}
+	// Past the semantic window the whole entry is gone.
+	now = now.Add(8 * 24 * time.Hour)
+	snap = store.SnapshotState("k")
+	if snap.Summary != "" || snap.Memory != "" {
+		t.Fatalf("semantic TTL should erase: %#v", snap)
+	}
+}
+
+func TestEntryWithoutSemanticsStillExpiresAtTTL(t *testing.T) {
+	now := time.Now()
+	store := newWithClock(10, time.Hour, func() time.Time { return now })
+	store.AddExchange("k", "hi", "yo")
+	now = now.Add(2 * time.Hour)
+	if _, ok := store.Snapshot("k"); ok {
+		t.Fatal("entry without summary/memory must still expire at ttl")
+	}
+}

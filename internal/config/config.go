@@ -227,6 +227,7 @@ type Config struct {
 	SessionKey           string
 	SessionCompressAt    int
 	SessionRetain        int
+	SessionSemanticTTL   time.Duration
 	SessionLearning      bool
 	CronStorePath        string
 	KnowledgeDir         string
@@ -544,6 +545,13 @@ func Load() (Config, error) {
 	cfg.SessionKey = strings.TrimSpace(os.Getenv("SESSION_ENCRYPTION_KEY"))
 	cfg.SessionCompressAt = parseInt("SESSION_COMPRESSION_THRESHOLD", 16, 4, &errs)
 	cfg.SessionRetain = parseInt("SESSION_COMPRESSION_RETAIN", 6, 2, &errs)
+	// Semantic memory outlives raw turns: SESSION_TTL controls history,
+	// this controls how long compressed summary/memory still count.
+	cfg.SessionSemanticTTL = parseDuration(
+		"SESSION_SEMANTIC_TTL", 30*24*time.Hour, true, &errs)
+	if cfg.SessionSemanticTTL < cfg.SessionTTL {
+		cfg.SessionSemanticTTL = cfg.SessionTTL
+	}
 	cfg.SessionLearning = parseBool("SESSION_LEARNING_ENABLED", true, &errs)
 	cfg.CronStorePath = envOrAllowEmpty("CRON_STORE_PATH", "data/cron.json")
 	cfg.KnowledgeDir = strings.TrimSpace(os.Getenv("KNOWLEDGE_DIR"))

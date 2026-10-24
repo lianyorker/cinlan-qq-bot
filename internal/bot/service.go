@@ -239,6 +239,7 @@ func NewWithRuntime(
 			ttl = 24 * time.Hour
 		}
 		sessions = session.New(maxHistory, ttl)
+		sessions.SetSemanticTTL(cfg.SessionSemanticTTL)
 	}
 	service := &Service{
 		cfg:                cfg,
@@ -330,10 +331,16 @@ func (s *Service) TouchActivity(chatType, chatID string) {
 }
 
 // LastActivity returns when the chat last saw traffic, zero if unknown.
+// Falls back to the session entry's UpdatedAt so the "距上次" line still
+// works after restarts and across the semantic-memory window.
 func (s *Service) LastActivity(chatType, chatID string) time.Time {
 	s.activityMu.RLock()
-	defer s.activityMu.RUnlock()
-	return s.lastActivity[chatType+":"+chatID]
+	at := s.lastActivity[chatType+":"+chatID]
+	s.activityMu.RUnlock()
+	if !at.IsZero() || s.sessions == nil {
+		return at
+	}
+	return s.sessions.LastActivity(chatType + ":" + chatID)
 }
 
 func (s *Service) SetChatPrefs(store *chatprefs.Store) {

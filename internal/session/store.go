@@ -62,11 +62,19 @@ type Store struct {
 	entries    map[string]entry
 	maxHistory int
 	ttl        time.Duration
-	now        func() time.Time
-	path       string
-	persistErr error
-	sqlite     *sqliteBackend
+	// semanticTTL is how long the compressed meaning (Summary+Memory)
+	// outlives the raw turns — people forget words, not what they talked
+	// about. Zero means DefaultSemanticTTL.
+	semanticTTL time.Duration
+	now         func() time.Time
+	path        string
+	persistErr  error
+	sqlite      *sqliteBackend
 }
+
+// DefaultSemanticTTL keeps compressed session meaning for a month —
+// long enough that "we talked about this last week" still lands.
+const DefaultSemanticTTL = 30 * 24 * time.Hour
 
 func New(maxHistory int, ttl time.Duration) *Store {
 	return newWithClock(maxHistory, ttl, time.Now)
@@ -93,6 +101,28 @@ func openLegacy(maxHistory int, ttl time.Duration, path string) (*Store, error) 
 		return nil, err
 	}
 	return store, nil
+}
+
+// SetSemanticTTL overrides how long Summary/Memory survive after the
+// raw history expires; <=0 restores the default. Must not be shorter
+// than ttl — semantic memory never dies before the turns it compresses.
+func (s *Store) SetSemanticTTL(ttl time.Duration) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if ttl <= 0 {
+		ttl = DefaultSemanticTTL
+	}
+	if ttl < s.ttl {
+		ttl = s.ttl
+	}
+	s.semanticTTL = ttl
+}
+
+func (s *Store) semanticLife() time.Duration {
+	if s.semanticTTL <= 0 {
+		return DefaultSemanticTTL
+	}
+	return s.semanticTTL
 }
 
 func (s *Store) Path() string {
@@ -317,9 +347,12 @@ func (s *Store) CleanupExpired() int {
 	defer s.mu.Unlock()
 
 	now := s.now()
+	semantic := s.semanticLife()
 	removed := 0
 	for key, current := range s.entries {
-		if now.Sub(current.UpdatedAt) >= s.ttl {
+		age := now.Sub(current.UpdatedAt)
+		if age >= s.ttl &&
+			(age >= semantic || !hasSemantics(current)) {
 			delete(s.entries, key)
 			removed++
 		}
@@ -328,6 +361,25 @@ func (s *Store) CleanupExpired() int {
 		s.persistLocked()
 	}
 	return removed
+}
+
+// hasSemantics reports whether the entry still carries compressed
+// meaning worth keeping past the raw-history TTL.
+func hasSemantics(e entry) bool {
+	return strings.TrimSpace(e.Summary) != "" ||
+		strings.TrimSpace(e.Memory) != ""
+}
+
+// LastActivity returns when the chat entry last saw a write, surviving
+// service restarts and the in-memory activity map's blind spots.
+func (s *Store) LastActivity(key string) time.Time {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.entries[key]
+	if !ok {
+		return time.Time{}
+	}
+	return current.UpdatedAt
 }
 
 func (s *Store) List() []Info {
@@ -425,11 +477,21 @@ func (s *Store) getLocked(key string) (entry, bool) {
 	if !ok {
 		return entry{}, false
 	}
-	if s.now().Sub(current.UpdatedAt) >= s.ttl {
-		delete(s.entries, key)
-		return entry{}, false
+	age := s.now().Sub(current.UpdatedAt)
+	if age < s.ttl {
+		return current, true
 	}
-	return current, true
+	// Raw turns expired. Compressed meaning lives on to semanticTTL —
+	// the bot rejoins a month-old chat remembering the gist, not the
+	// words. Handoff is a live operator flag and does not survive.
+	if age < s.semanticLife() && hasSemantics(current) {
+		current.History = nil
+		current.Handoff = false
+		s.entries[key] = current
+		return current, true
+	}
+	delete(s.entries, key)
+	return entry{}, false
 }
 
 func (s *Store) load() error {
