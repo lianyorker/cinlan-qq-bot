@@ -100,6 +100,20 @@ OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_
 - 可选的真实图片生成、网页截图和业务查询 Tool；具体能力由本地 Binding 配置决定。
 - Markdown/TXT 本地知识库、加密 SQLite 会话、自动压缩和 Cron 通知任务。
 - Bearer 保护的 `/api/v1/*` 管理 API。
+- 拟人化亲历层：会话内的心情计（`QQ_MOOD_ENABLED`）随 @她的消息起伏，
+  而她自己的一举一动——被戳、撤广告、禁言、贴表情、听懂语音、偷查名片、
+  整理记忆——会经 `feelEvent`/`feelAmbient` 触发人格化内心独白（`[心情]`），
+  记入会话历史并注入「你刚刚的真实感受」，使情绪始终依附于亲历事件。
+- 群管理链：Binding 级 `moderation` 配置（patterns 硬匹配 + `llm_check` 模型
+  判官）按阶梯执行撤回/警告/禁言/移出；管理员、群主与白名单豁免。
+  前提是 bot 账号拥有群管理员权限。
+- 群事件静默感知：进退群、戳一戳、撤回、群文件、管理员变动、群名片、
+  精华消息等 notice 写入 `[群事件]` 观察，不回复但被问起能对得上。
+- 真人群聊小动作：`[[REACT]]` 表情回应、`[[POKE]]` 戳一戳、`[[DICE]]`/
+  `[[RPS]]`、`[[OOPS]]` 手滑撤回、`[[SELFIE]]` 人格贴纸、`[[MEME]]` 表情包。
+- 语音往返：OpenAI-compatible `/audio/transcriptions` 入站转写（`ASR_*`），
+  Edge/OpenAI/火山 TTS 出站语音回复（`VOICE_*`）。
+- 记忆维护引擎（`QQ_REFLECT_*`）：定期合并事实、折叠印象、写当日日记。
 
 ## 快速启动
 
@@ -307,6 +321,21 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `CRON_STORE_PATH` | `data/cron.json` | Cron 持久化路径 |
 | `HTTP_LISTEN_ADDR` | `127.0.0.1:18080` | 健康检查和 Admin API |
 | `ADMIN_API_TOKEN` | empty | Admin API Bearer token |
+| `QQ_MOOD_ENABLED` | `true` | 每会话心情计：@她的消息与亲历事件驱动，极差时自闭 30 分钟 |
+| `QQ_REFLECT` | `true` | 定期记忆维护（事实合并、印象折叠、日记） |
+| `QQ_REFLECT_TICK` | `30m` | 记忆维护扫描间隔 |
+| `QQ_REFLECT_FACTS_AT` / `QQ_REFLECT_IMPS_AT` | `20` / `40` | 事实/印象超过该数才触发合并 |
+| `QQ_REFLECT_JOURNAL_AGE` | `24h` | 仅最近活跃的绑定会话写日记 |
+| `PEER_BOT_IDS` | empty | 同一群里其他 bot 账号，只观察不回复、不计入心情/疲劳 |
+| `ASR_API_URL` / `ASR_API_KEY` / `ASR_MODEL` | empty | 入站语音转写 endpoint；空值禁用 |
+| `VOICE_MODE` | `edge` | 语音回复合成后端：`edge` / `openai` / `volc` / `command` |
+| `VOICE_API_URL` / `VOICE_API_KEY` / `VOICE_MODEL` | empty | OpenAI-compatible TTS endpoint |
+| `VOICE_NAME` / `VOICE_STYLE` | `zh-CN-XiaoyiNeural` / empty | Edge TTS 声线与风格 |
+| `VOICE_COOLDOWN` / `VOICE_DAILY_LIMIT` | `45s` / `50` | 语音回复会话冷却与每日上限 |
+| `VOICE_MAX_RUNES` | `200` | 单段语音合成最大字数 |
+| `FRIEND_WELCOME_TEXT` / `GROUP_WELCOME_TEXT` | empty | 新好友/新群首次问候文案 |
+| `GROUP_WELCOME_GROUPS` / `GROUP_WELCOME_IMAGE` | empty | 群欢迎生效群号与配图 |
+| `WELCOME_FILE` | `data/welcome.json` | JSON 欢迎语配置，优先于 env（非空才生效） |
 
 完整默认值见 [.env.example](.env.example)，native 协议和启动细节见 [docs/原生运行时.md](docs/原生运行时.md)。
 群聊与私聊可在 Chat Binding 中选择 `disabled`、`mention_only`、`always` 或 `ai_decide`；
@@ -368,18 +397,19 @@ bin/cinlan-qq-hook.dll
 在公开工作树通过敏感信息检查后，一次生成五个压缩包：
 
 ```powershell
-.\scripts\package-release.ps1 -Version 0.2.0
+.\scripts\package-release.ps1 -Version 0.3.0
 ```
 
 输出：
 
 ```text
-dist/cinlan-qq-bot-0.2.0-windows-amd64.zip
-dist/cinlan-qq-bot-0.2.0-linux-amd64.zip
-dist/cinlan-qq-bot-0.2.0-linux-arm64.zip
-dist/cinlan-qq-bot-0.2.0-darwin-amd64.zip
-dist/cinlan-qq-bot-0.2.0-darwin-arm64.zip
-dist/SHA256SUMS-0.2.0.txt
+dist/cinlan-qq-bot-0.3.0-windows-amd64.zip
+dist/cinlan-qq-bot-0.3.0-windows-arm64.zip
+dist/cinlan-qq-bot-0.3.0-linux-amd64.zip
+dist/cinlan-qq-bot-0.3.0-linux-arm64.zip
+dist/cinlan-qq-bot-0.3.0-darwin-amd64.zip
+dist/cinlan-qq-bot-0.3.0-darwin-arm64.zip
+dist/SHA256SUMS-0.3.0.txt
 ```
 
 Windows 包包含 Go runtime、QQNT loader、hook 和 `runtime/qqnt`。Linux 和 macOS 包
