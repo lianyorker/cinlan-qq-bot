@@ -88,8 +88,8 @@ LOG_LEVEL=info
 
 ```ini
 QQ_GROUP_ALLOWLIST=1087767311,973636133,1023570334,984772612,1126402476
-QQ_PRIVATE_ALLOWLIST=1483498231
-BOT_ADMIN_USER_IDS=1483498231         # 操作员私聊
+QQ_PRIVATE_ALLOWLIST=<管理员QQ>        # 真实号码只写生产 .env，不入库
+BOT_ADMIN_USER_IDS=<管理员QQ>         # 操作员私聊
 QQ_REQUIRE_MENTION=true               # 群里必须@才进管线（ai_decide 另有判定）
 QQ_QUOTE_REPLY=true                   # 回复带引用
 QQ_GROUP_AT_SENDER=true               # 回复@发言者
@@ -158,7 +158,7 @@ VOICE_DAILY_LIMIT=50
 FRIEND_FILE_PATH=/opt/codepany/cinlan-qq-bot/bundle/data/zkmall.sql
 WELCOME_FILE=data/welcome.json      # 好友/进群欢迎语（非空值才覆盖 env；FRIEND_WELCOME_TEXT 已清空走文件）
 BASE_PROMPT_FILE=data/prompts/base-human.md   # 公共真人准则，所有人格共用
-PEER_BOT_IDS=3457321354,3271460996  # 同伴 bot：只观察不回复、不计刷屏/疲劳、进群不欢迎
+PEER_BOT_IDS=<同伴bot的QQ列表>       # 同伴 bot：只观察不回复、不计刷屏/疲劳、进群不欢迎
 QQ_ERROR_SILENT=true                # 报错不往群里发，只记日志
 CHAT_PREFS_FILE=data/chat-prefs.json
 CRON_STORE_PATH=data/cron.json        # 默认值，schedule_message 落盘
@@ -211,7 +211,7 @@ journalctl -u cinlan-qq-bot -f        # 结构化 JSON 日志
 
 | 绑定 | 范围 | 人格 | 工具白名单 | 知识库 |
 |---|---|---|---|---|
-| admin-private | 私聊 1483498231 | 贴心女友 | 生图+定时+戳+装死+remember+channel_action | cinlan+zkmall |
+| admin-private | 私聊 <管理员QQ> | 贴心女友 | 生图+定时+戳+装死+remember+channel_action | cinlan+zkmall |
 | cinlan-tsundere | 群 973636133/1023570334/1087767311 | 邻家女孩 | 生图+智商曲线+channel_action | cinlan |
 | zkmall-community | 群 984772612/287214287 | 哈基咪·ZK | 生图 | zkmall |
 | friend-private-zk / friend-private-cinlan | 私聊 * | 哈基咪·ZK / 邻家女孩 | 生图 | - |

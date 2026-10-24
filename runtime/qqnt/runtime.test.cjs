@@ -111,7 +111,7 @@ test('friend callback is independent, incoming-only, deduplicated and approves o
 test('convertElements keeps text whose QQNT at target is numeric zero', () => {
   const previousSelf = { ...__test.state.self };
   __test.state.self = {
-    uin: '2740954283',
+    uin: '10001',
     uid: 'self-uid',
     nick: '七七',
   };
@@ -136,7 +136,7 @@ test('convertElements keeps text whose QQNT at target is numeric zero', () => {
         },
       },
     ]), [
-      { type: 'at', data: { qq: '2740954283', name: '@七七' } },
+      { type: 'at', data: { qq: '10001', name: '@七七' } },
       {
         type: 'text',
         data: { text: '定时任务好像是redis 我有必要集成MQ吗' },

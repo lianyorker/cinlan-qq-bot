@@ -110,6 +110,10 @@ type Config struct {
 
 	FriendWelcomeText string
 	FriendFilePath    string
+	// BotPublicUIN is the bot account's public QQ number, only used inside
+	// user-facing reply texts (e.g. "add me QQ ..."); kept out of source
+	// so real account IDs never live in the repo.
+	BotPublicUIN string
 	// FriendFileGroups limits the friend-welcome file to members of
 	// these groups (comma-separated group ids); empty = send to anyone.
 	FriendFileGroups   []string
@@ -126,13 +130,13 @@ type Config struct {
 	// PeerBotIDs are bot accounts run by other deployments in the same
 	// groups. Their messages are observed but never answered, so two
 	// personas never argue with each other in public.
-	PeerBotIDs []string
-	AdminUserIDs       []string
-	ChatPrefsFile      string
-	AffinityFile       string
-	IQChartAPIBase     string
-	IQChartInterval    time.Duration
-	IQChartFontPath    string
+	PeerBotIDs      []string
+	AdminUserIDs    []string
+	ChatPrefsFile   string
+	AffinityFile    string
+	IQChartAPIBase  string
+	IQChartInterval time.Duration
+	IQChartFontPath string
 
 	GroupAllowlist   Allowlist
 	PrivateAllowlist Allowlist
@@ -337,6 +341,7 @@ func Load() (Config, error) {
 		OneBotAutoAccept:   parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
 		FriendWelcomeText:  envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
 		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
+		BotPublicUIN:       envOrAllowEmpty("BOT_PUBLIC_UIN", ""),
 		FriendFileGroups:   parseList(os.Getenv("FRIEND_FILE_GROUPS")),
 		GroupWelcomeImage:  envOrAllowEmpty("GROUP_WELCOME_IMAGE", ""),
 		GroupWelcomeText:   envOrAllowEmpty("GROUP_WELCOME_TEXT", ""),

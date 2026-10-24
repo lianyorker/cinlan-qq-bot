@@ -89,10 +89,17 @@ func registerLocalExtensions(
 		regexp.MustCompile(`表情包|来张|偷个|发个表情|偷表情`),
 	)
 
+	fileNotice := "要 zkmall 的 .sql 数据库文件直接加我好友，通过后自动发你文件。"
+	if uin := strings.TrimSpace(cfg.BotPublicUIN); uin != "" {
+		fileNotice = fmt.Sprintf(
+			"要 zkmall 的 .sql 数据库文件直接加我好友（QQ %s），通过后自动发你文件。",
+			uin,
+		)
+	}
 	service.RegisterKeywordFile(
 		regexp.MustCompile(`(?i)sql\s*文件|\.sql|数据库脚本`),
 		cfg.FriendFilePath,
-		"要 zkmall 的 .sql 数据库文件直接加我好友（QQ 2740954283），通过后自动发你文件。",
+		fileNotice,
 		cfg.FriendFileGroups,
 	)
 
