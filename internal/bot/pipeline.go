@@ -349,6 +349,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.promptText = groupPromptText(state.event.SenderName, state.userID, state.text)
 	}
 	state.rateLimitID = state.platform + ":self:" + state.selfID + ":actor:" + state.userID
+	if state.pokeEvent {
+		// A poke is a tap on the shoulder — mildly pleasant, and she
+		// should remember it happened TO her, not just that it happened.
+		s.feelEvent(state, 3, "被人戳了戳")
+	}
 	// Ambient context: when no messageGuard is attached, log observation now;
 	// otherwise stageSecurity logs it only after verifying the text is not a
 	// prompt-injection / shell / path-probe payload (prevents context poisoning).
@@ -2039,6 +2044,27 @@ func eventTime(event platform.Event) int64 {
 		}
 	}
 	return 0
+}
+
+// feelEvent records something that happened TO her — bumps the chat mood
+// and writes a first-person feeling into session history, so a later
+// "刚才怎么了" gets the experienced version, not the spectator's.
+func (s *Service) feelEvent(state *flowState, delta int, note string) {
+	if state == nil || state.sessionID == "" {
+		return
+	}
+	if s.chatPrefs != nil && delta != 0 {
+		if _, err := s.chatPrefs.BumpMood(
+			state.chatType, state.chatID, delta, s.now(),
+		); err != nil {
+			s.logger.Warn("mood update failed", "error", err.Error())
+		}
+	}
+	if s.sessions != nil && strings.TrimSpace(note) != "" {
+		s.sessions.AddObservation(
+			state.sessionID, "[心情] "+strings.TrimSpace(note),
+		)
+	}
 }
 
 // observeGroupMemberNotice silently logs group_increase / group_decrease

@@ -5,10 +5,15 @@ import (
 	"errors"
 	"io"
 	"log/slog"
+	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
+	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 )
 
 func testNoticeLogger() *slog.Logger {
@@ -71,6 +76,44 @@ func TestPersonaModerationNoticeFallsBackOnError(t *testing.T) {
 	if got != "模板警告" {
 		t.Fatalf("agent error must fall back, got %q", got)
 	}
+}
+
+func TestFeelEventWritesMoodAndObservation(t *testing.T) {
+	prefs, err := chatprefs.Load(filepath.Join(t.TempDir(), "prefs.json"))
+	if err != nil {
+		t.Fatalf("chatprefs.Load: %v", err)
+	}
+	sessions := session.New(10, time.Hour)
+	svc := &Service{
+		chatPrefs: prefs,
+		sessions:  sessions,
+		logger:    testNoticeLogger(),
+		now:       time.Now,
+	}
+	state := &flowState{
+		sessionID: "qq:self:1:group:2",
+		chatType:  "group",
+		chatID:    "2",
+	}
+	svc.feelEvent(state, -5, "刚撤了条广告，有点无语")
+	if score := prefs.MoodScore("group", "2", time.Now()); score != -5 {
+		t.Fatalf("mood = %d, want -5", score)
+	}
+	found := false
+	for _, m := range sessions.SnapshotState(state.sessionID).History {
+		if strings.Contains(m.Content, "[心情] 刚撤了条广告") {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("session history missing [心情] observation")
+	}
+}
+
+func TestFeelEventSkipsEmptySession(t *testing.T) {
+	svc := &Service{logger: testNoticeLogger()}
+	// no sessionID — must not panic or touch stores
+	svc.feelEvent(&flowState{}, -5, "test")
 }
 
 func TestPersonaModerationNoticeUsesVoice(t *testing.T) {

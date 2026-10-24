@@ -99,6 +99,8 @@ func (s *Service) stageModeration(
 				"message_id", state.messageID,
 				"error", err.Error(),
 			)
+		} else {
+			s.feelEvent(state, -5, "刚撤了条广告，有点无语")
 		}
 	}
 
@@ -150,6 +152,11 @@ func (s *Service) stageModeration(
 			)
 		} else {
 			s.warnStore.Reset(key)
+			if action == binding.ModerationActionKick {
+				s.feelEvent(state, -6, "刚把人移出群了，闹心")
+			} else {
+				s.feelEvent(state, -6, "刚禁言了个人，群里清净了点但有点烦")
+			}
 			notice = fmt.Sprintf(
 				"多次发布广告内容，已%s，警告记录已清零。",
 				label,
