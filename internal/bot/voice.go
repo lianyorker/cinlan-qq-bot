@@ -416,14 +416,25 @@ func (s *Service) sendVoiceClips(
 		chain := message.Chain{
 			message.Record("file://" + filepath.ToSlash(absPath)),
 		}
-		if err := s.voiceProvider.Synthesize(
+		err := s.voiceProvider.Synthesize(
 			ctx, text, path, voiceName, rate,
-		); err != nil {
+		)
+		if err != nil && voiceName != "" {
+			// A broken or expired custom voice shouldn't silence the
+			// feature — retry once with the provider default voice.
+			s.logger.Warn(
+				"voice synthesis failed, retrying default voice",
+				"chat", chatID,
+				"voice", voiceName, "error", err.Error(),
+			)
+			err = s.voiceProvider.Synthesize(ctx, text, path, "", rate)
+		}
+		if err != nil {
 			s.logger.Warn(
 				"voice synthesis failed, falling back to text",
 				"chat", chatID, "error", err.Error(),
 			)
-			chain = message.Chain{message.Text("（语音合成失败）" + text)}
+			chain = message.Chain{message.Text(text)}
 		}
 		if index > 0 && !waitForReplyPart(
 			ctx, s.replyPartDelay(text),

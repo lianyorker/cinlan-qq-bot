@@ -49,6 +49,10 @@ type volcanoParams struct {
 	Text        string             `json:"text"`
 	Speaker     string             `json:"speaker"`
 	AudioParams volcanoAudioParams `json:"audio_params"`
+	// Additions is a JSON string of extra params; we always enable
+	// auto language recognition so non-Chinese clips (ja/ko/fr/…)
+	// synthesize instead of silently returning empty audio.
+	Additions string `json:"additions,omitempty"`
 }
 
 type volcanoAudioParams struct {
@@ -104,6 +108,7 @@ func (p *volcanoProvider) Synthesize(
 				SpeechRate: speechRate,
 				Emotion:    p.emotion,
 			},
+			Additions: `{"enable_auto_language_recognition":true}`,
 		},
 	})
 	if err != nil {

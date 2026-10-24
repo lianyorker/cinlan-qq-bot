@@ -35,7 +35,10 @@ type Profile struct {
 	CustomErrorMessage string            `json:"custom_error_message,omitempty"`
 	RoutingScope       *RoutingScope     `json:"routing_scope,omitempty"`
 	AffinityPrompts    map[string]string `json:"affinity_prompts,omitempty"`
-	Default            bool              `json:"default,omitempty"`
+	// DefaultImage is the persona's fixed reference photo path — used for
+	// image-edit fallback when the chat has no remembered image notes.
+	DefaultImage string `json:"default_image,omitempty"`
+	Default      bool   `json:"default,omitempty"`
 }
 
 type Registry struct {

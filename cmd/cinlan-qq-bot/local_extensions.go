@@ -46,7 +46,7 @@ func registerLocalExtensions(
 	}
 	service.SetChatPrefs(store)
 	if imageGenerator != nil {
-		imageGenerator.SetReferenceResolver(store.LatestImage)
+		imageGenerator.SetReferenceResolver(service.ReferenceImageFor)
 	}
 	if scheduler != nil {
 		if registerErr := service.ToolRegistry().Register(

@@ -62,7 +62,7 @@ type ImageGenerator struct {
 	enhance        bool
 	client         *http.Client
 	downloadClient *http.Client
-	referenceFor   func(chatType, chatID string) string
+	referenceFor   func(ctx context.Context, actor tool.Actor) string
 	now            func() time.Time
 }
 
@@ -149,7 +149,7 @@ func (g *ImageGenerator) OutputDir() string {
 // edit request whose model-supplied URL is dead can fall back to the local
 // remembered photo instead of failing outright.
 func (g *ImageGenerator) SetReferenceResolver(
-	resolve func(chatType, chatID string) string,
+	resolve func(ctx context.Context, actor tool.Actor) string,
 ) {
 	if g == nil {
 		return
@@ -224,7 +224,7 @@ func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Res
 			data, err = g.generateOpenAIEdit(ctx, arguments.Prompt, normalizedSize, refURL)
 			if err != nil && g.referenceFor != nil {
 				if local := g.referenceFor(
-					call.Actor.ChatType, call.Actor.ChatID,
+					ctx, call.Actor,
 				); local != "" && local != refURL {
 					data, err = g.generateOpenAIEdit(
 						ctx, arguments.Prompt, normalizedSize, local,
