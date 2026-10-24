@@ -148,6 +148,7 @@ type Service struct {
 	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
 	// occasional human reaction instead of a hair-trigger.
 	pokeBudget   voiceBudget
+	feelBudget   voiceBudget
 	voiceQuota   *voiceQuota
 	sessions     *session.Store
 	logger       *slog.Logger

@@ -95,7 +95,7 @@ func TestFeelEventWritesMoodAndObservation(t *testing.T) {
 		chatType:  "group",
 		chatID:    "2",
 	}
-	svc.feelEvent(state, -5, "刚撤了条广告，有点无语")
+	svc.feelEvent(context.Background(), state, -5, "刚撤了条广告，有点无语")
 	if score := prefs.MoodScore("group", "2", time.Now()); score != -5 {
 		t.Fatalf("mood = %d, want -5", score)
 	}
@@ -113,7 +113,7 @@ func TestFeelEventWritesMoodAndObservation(t *testing.T) {
 func TestFeelEventSkipsEmptySession(t *testing.T) {
 	svc := &Service{logger: testNoticeLogger()}
 	// no sessionID — must not panic or touch stores
-	svc.feelEvent(&flowState{}, -5, "test")
+	svc.feelEvent(context.Background(), &flowState{}, -5, "test")
 }
 
 func TestPersonaModerationNoticeUsesVoice(t *testing.T) {

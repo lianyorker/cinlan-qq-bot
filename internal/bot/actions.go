@@ -200,6 +200,12 @@ func (s *Service) reactToMessage(
 		s.logger.Info("emoji reaction failed",
 			"chat_id", state.chatID, "emoji_id", emojiID,
 			"error", err.Error())
+	} else {
+		s.feelAmbient(
+			ctx, state, "react", 2,
+			"给 "+state.event.SenderName+" 的消息贴了个表情回应",
+			10*time.Minute,
+		)
 	}
 }
 
@@ -256,6 +262,12 @@ func (s *Service) sendPoke(
 		s.logger.Info("poke failed",
 			"chat_id", state.chatID, "target", target,
 			"error", err.Error())
+	} else {
+		s.feelAmbient(
+			ctx, state, "poke:send", 2,
+			"主动戳了戳 "+state.event.SenderName,
+			15*time.Minute,
+		)
 	}
 }
 
@@ -338,6 +350,12 @@ func (s *Service) sendThenRecall(
 		s.logger.Info("oops recall failed",
 			"chat_id", state.chatID, "message_id", msgID,
 			"error", err.Error())
+	} else {
+		s.feelAmbient(
+			ctx, state, "oops", -3,
+			"发错了消息又赶紧自己撤回了",
+			10*time.Minute,
+		)
 	}
 }
 
@@ -418,6 +436,11 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 			if transcript != "" {
 				ensureData()
 				chain[i].Data["text"] = transcript
+				s.feelAmbient(
+					ctx, state, "asr", 2,
+					"听懂了 "+state.event.SenderName+" 发的语音",
+					10*time.Minute,
+				)
 			}
 		case message.TypeForward:
 			if strings.TrimSpace(valueString(component.Data, "text")) != "" {
@@ -431,6 +454,11 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 			if flat != "" {
 				ensureData()
 				chain[i].Data["text"] = flat
+				s.feelAmbient(
+					ctx, state, "forward", 1,
+					"翻看了 "+state.event.SenderName+" 转来的一串聊天记录",
+					10*time.Minute,
+				)
 			}
 		case message.TypeAt:
 			// "@123456" reads as a number to her; a person sees the name.

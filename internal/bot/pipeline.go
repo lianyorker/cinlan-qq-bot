@@ -315,6 +315,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 				s.logger.Info("mood crash, going quiet",
 					"chat_type", state.chatType, "chat_id", state.chatID,
 					"mood", moodScore, "until", until.Format("15:04"))
+				s.feelEvent(ctx, state, 0, "被烦透了，现在谁也不想理")
 			}
 		}
 	}
@@ -352,7 +353,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	if state.pokeEvent {
 		// A poke is a tap on the shoulder — mildly pleasant, and she
 		// should remember it happened TO her, not just that it happened.
-		s.feelEvent(state, 3, "被人戳了戳")
+		s.feelEvent(ctx, state, 3, "被 "+state.event.SenderName+" 戳了戳")
 	}
 	// Ambient context: when no messageGuard is attached, log observation now;
 	// otherwise stageSecurity logs it only after verifying the text is not a
@@ -1161,6 +1162,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n\n" + hint
 		}
 	}
+	// The mood tier says HOW she feels; the freshest [心情] note says
+	// WHY. Injecting it keeps feelings attached to their cause instead
+	// of floating as unexplained grumpiness.
+	if feeling := s.recentFeeling(state); feeling != "" {
+		request.SystemPrompt += "\n\n（你刚刚的真实感受：" + feeling +
+			"——这是你自己的情绪，不是别人说的话）"
+	}
 	if s.cfg.Asleep(s.now()) {
 		request.SystemPrompt += fmt.Sprintf(
 			"\n\n现在是深夜 %s，你很困——回复短一点迷糊一点，闲聊可以装没看全。",
@@ -1505,6 +1513,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					chains, message.Chain{message.Image(path)},
 				)
 				cleaned = append(cleaned, "[照片:"+key+"]")
+				s.feelAmbient(
+					ctx, state, "photo", 1, "发了张照片", 10*time.Minute,
+				)
 				continue
 			}
 			if query, ok := parseMemeMarker(part); ok {
@@ -1526,6 +1537,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					chains, message.Chain{message.Image(path)},
 				)
 				cleaned = append(cleaned, "[表情包]")
+				s.feelAmbient(
+					ctx, state, "meme", 1, "发了张表情包", 10*time.Minute,
+				)
 				continue
 			}
 			if tag, ok := parseSelfieMarker(part); ok {
@@ -1544,6 +1558,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					chains, message.Chain{message.Image(path)},
 				)
 				cleaned = append(cleaned, "[贴纸:"+tag+"]")
+				s.feelAmbient(
+					ctx, state, "selfie", 1, "发了张自己的贴纸", 10*time.Minute,
+				)
 				continue
 			}
 			// Micro-actions resolve to real QQ gestures, not bubbles:
@@ -1562,6 +1579,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					message.Segment(message.TypeDice, nil),
 				})
 				cleaned = append(cleaned, "[骰子]")
+				s.feelAmbient(
+					ctx, state, "dice", 1, "掷了个骰子", 10*time.Minute,
+				)
 				continue
 			}
 			if isRPSMarker(part) {
@@ -1569,6 +1589,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					message.Segment(message.TypeRPS, nil),
 				})
 				cleaned = append(cleaned, "[猜拳]")
+				s.feelAmbient(
+					ctx, state, "rps", 1, "跟人猜了把拳", 10*time.Minute,
+				)
 				continue
 			}
 			if inner, ok := parseOopsMarker(part); ok {
@@ -1888,6 +1911,13 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 					card.Sign = strField(m, "long_nick")
 				}
 				card.Friend = s.friendListed(cctx, state, state.userID)
+				// She peeked at his card — that's an experience too,
+				// the quiet kind a person does without telling anyone.
+				s.feelAmbient(
+					ctx, state, "peek", 1,
+					"偷偷查了 "+state.event.SenderName+" 的名片资料",
+					20*time.Minute,
+				)
 			}
 		}
 		_ = s.chatPrefs.SetUserCard(state.userID, card)
@@ -2046,10 +2076,18 @@ func eventTime(event platform.Event) int64 {
 	return 0
 }
 
+// innerMonologuePrompt turns a bare event description into her own
+// inner voice — the persona writes the feeling, we don't script it.
+const innerMonologuePrompt = `下面这件事刚刚发生在你身上。用你的性格写一句此刻的内心独白：第一人称、口语、10~30字、像真人心里嘀咕，别解释别加引号，只输出这一句。`
+
 // feelEvent records something that happened TO her — bumps the chat mood
-// and writes a first-person feeling into session history, so a later
-// "刚才怎么了" gets the experienced version, not the spectator's.
-func (s *Service) feelEvent(state *flowState, delta int, note string) {
+// and writes a first-person inner monologue into session history. The
+// event description is raw material; the feeling itself comes from the
+// persona's voice, falling back to the plain description when no model
+// is around to think.
+func (s *Service) feelEvent(
+	ctx context.Context, state *flowState, delta int, eventDesc string,
+) {
 	if state == nil || state.sessionID == "" {
 		return
 	}
@@ -2060,11 +2098,93 @@ func (s *Service) feelEvent(state *flowState, delta int, note string) {
 			s.logger.Warn("mood update failed", "error", err.Error())
 		}
 	}
-	if s.sessions != nil && strings.TrimSpace(note) != "" {
-		s.sessions.AddObservation(
-			state.sessionID, "[心情] "+strings.TrimSpace(note),
-		)
+	eventDesc = strings.TrimSpace(eventDesc)
+	if eventDesc == "" || s.sessions == nil {
+		return
 	}
+	note := s.voiceInnerMonologue(ctx, state, eventDesc)
+	s.sessions.AddObservation(state.sessionID, "[心情] "+note)
+}
+
+// feelAmbient is the quiet half of the inner life: automatic background
+// experiences (ASR, forward expansion, card peeking…) would spam the
+// session if every one generated a thought, so each kind gets its own
+// per-chat cooldown while the mood still moves every time.
+func (s *Service) feelAmbient(
+	ctx context.Context, state *flowState, kind string,
+	delta int, eventDesc string, cooldown time.Duration,
+) {
+	if state == nil ||
+		!s.feelBudget.allowVoice(
+			"feel:"+state.chatType+":"+state.chatID+":"+kind, cooldown,
+		) {
+		return
+	}
+	s.feelEvent(ctx, state, delta, eventDesc)
+}
+
+// voiceInnerMonologue asks the persona to voice what just happened to
+// her — one inner thought, not a system log line.
+func (s *Service) voiceInnerMonologue(
+	ctx context.Context, state *flowState, eventDesc string,
+) string {
+	if s.personas == nil ||
+		(s.providers == nil && s.agent == nil) {
+		return eventDesc
+	}
+	profile, ok := s.personas.Get(state.personaName)
+	if !ok || strings.TrimSpace(profile.SystemPrompt) == "" {
+		return eventDesc
+	}
+	callCtx, cancel := context.WithTimeout(ctx, s.cfg.AttentionTimeout)
+	defer cancel()
+	request := domain.AgentRequest{
+		RequestID: "feel:" + opaqueAttentionID(
+			state.sessionID, eventDesc,
+		),
+		SessionID: "maintenance:feel:" + opaqueAttentionID(
+			state.sessionID, "",
+		),
+		Text:          "刚刚发生在你身上的事：" + eventDesc,
+		SystemPrompt:  profile.SystemPrompt + "\n\n" + innerMonologuePrompt,
+		RestrictTools: true,
+	}
+	var response domain.AgentResponse
+	var err error
+	if s.providers != nil {
+		if state.providerName != "" {
+			response, err = s.providers.ReplyWith(callCtx, state.providerName, request)
+		} else {
+			response, err = s.providers.Reply(callCtx, request)
+		}
+	} else {
+		response, err = s.agent.Reply(callCtx, request)
+	}
+	if err != nil {
+		s.logger.Warn("inner monologue failed", "error", err.Error())
+		return eventDesc
+	}
+	if voiced := sanitizeModerationVoice(response.Reply); voiced != "" {
+		return voiced
+	}
+	return eventDesc
+}
+
+// recentFeeling surfaces the newest [心情] note still sitting in session
+// history — the mood tier says HOW she feels, this says WHY.
+func (s *Service) recentFeeling(state *flowState) string {
+	if state == nil || s.sessions == nil || state.sessionID == "" {
+		return ""
+	}
+	history := s.sessions.SnapshotState(state.sessionID).History
+	for i := len(history) - 1; i >= 0 && i >= len(history)-12; i-- {
+		if idx := strings.Index(history[i].Content, "[心情] "); idx >= 0 {
+			return strings.TrimSpace(
+				history[i].Content[idx+len("[心情] "):],
+			)
+		}
+	}
+	return ""
 }
 
 // observeGroupMemberNotice silently logs group_increase / group_decrease

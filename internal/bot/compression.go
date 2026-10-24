@@ -106,6 +106,10 @@ memory 不得保存价格、库存、有货状态、账号状态、源码路径�
 		"summary_runes", utf8.RuneCountInString(result.Summary),
 		"memory_runes", utf8.RuneCountInString(result.Memory),
 	)
+	s.feelEvent(
+		ctx, state, -2,
+		"把最近的聊天整理了一遍，记下了重要的",
+	)
 	return s.sessions.PersistenceError()
 }
 

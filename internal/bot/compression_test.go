@@ -59,19 +59,25 @@ func TestSessionCompressionAndLearningStayInGroupScope(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("compress-2", "second", true))
 
 	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
-	if len(snapshot.History) != 2 ||
+	if len(snapshot.History) != 3 ||
 		snapshot.Summary != "已讨论两个问题" ||
 		snapshot.Memory != "偏好简洁回答" {
 		t.Fatalf("compressed snapshot = %#v", snapshot)
 	}
-	if len(agentClient.requests) != 3 {
-		t.Fatalf("agent requests = %d, want 3", len(agentClient.requests))
+	last := snapshot.History[len(snapshot.History)-1]
+	if !strings.Contains(last.Content, "[心情] ") {
+		t.Fatalf("missing post-compression feeling note: %#v", last)
 	}
-	compression := agentClient.requests[2]
-	if !compression.RestrictTools ||
-		len(compression.AllowedTools) != 0 ||
-		compression.SessionID !=
-			"qq-onebot:self:10001:group:30003:maintenance:compression" {
+	var compression domain.AgentRequest
+	found := false
+	for _, req := range agentClient.requests {
+		if strings.HasSuffix(req.SessionID, ":maintenance:compression") {
+			compression = req
+			found = true
+		}
+	}
+	if !found || !compression.RestrictTools ||
+		len(compression.AllowedTools) != 0 {
 		t.Fatalf("compression request scope = %#v", compression)
 	}
 }
