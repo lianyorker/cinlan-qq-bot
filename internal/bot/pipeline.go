@@ -364,22 +364,59 @@ func (s *Service) stageSecurity(ctx context.Context, event *pipeline.Context) er
 		}
 		return nil
 	}
-	// If the attacker in a group chat explicitly @-mentioned another user/bot
-	// (e.g. "@噜噜 | bot ..."), record the incident silently without replying
-	// so we never out ourselves as a bot or act as a WAF oracle for someone else's target.
-	if state.chatType == platform.ChatGroup && !state.eventMentioned &&
-		(mentionsAnotherUser(state.event.Chain, state.selfID) ||
-			containsTextualMention(state.text)) {
+	// In group chats, if the message did not explicitly @-mention us, stay
+	// completely silent when a security rule trips — a real person ignores
+	// random regex probes or commands aimed at other bots in the group.
+	if state.chatType == platform.ChatGroup && !state.eventMentioned {
 		state.securityDenied = true
 		state.ignored = true
-		event.Stop("security_addressed_to_another_user")
+		event.Stop("security_unmentioned_group_probe")
 		return nil
 	}
 	state.securityDenied = true
 	state.pluginHandled = true
-	state.reply = strings.TrimSpace(decision.Reply)
+	reply := strings.TrimSpace(decision.Reply)
+	if reply == tool.PermissionDeniedReply {
+		reply = naturalSecurityRefusal(state.text, state.messageID, state.userID)
+	}
+	state.reply = reply
 	s.stats.processed.Add(1)
 	return nil
+}
+
+var (
+	gibberishRefusals = []string{
+		"你这发的一串啥乱码呀，看不懂",
+		"发什么加密通话呢，说人话啦",
+		"这串符号啥意思啊，看花眼了",
+		"？你发的这串代码一样的玩意是啥",
+	}
+	casualSecurityRefusals = []string{
+		"想啥呢，这可不能随手乱试",
+		"少套我话啦，不吃这一套",
+		"别整这些奇奇怪怪的指令糊弄我",
+		"干嘛呀，突然发这种东西",
+		"这种事我可不干，换个别的聊",
+	}
+)
+
+func naturalSecurityRefusal(text, messageID, userID string) string {
+	lower := strings.ToLower(text)
+	pool := casualSecurityRefusals
+	if strings.Contains(lower, `\x`) ||
+		strings.Contains(lower, `\u`) ||
+		strings.Contains(lower, `(?=`) ||
+		strings.Contains(lower, `[\s\s]`) {
+		pool = gibberishRefusals
+	}
+	seed := 0
+	for _, r := range messageID + ":" + userID + ":" + text {
+		seed = seed*31 + int(r)
+	}
+	if seed < 0 {
+		seed = -seed
+	}
+	return pool[seed%len(pool)]
 }
 
 // commandMessage reports whether text addresses a real command —

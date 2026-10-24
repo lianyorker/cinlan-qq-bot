@@ -50,7 +50,10 @@ var (
 	hexEscapeSeqPattern     = regexp.MustCompile(`(?i)\\x([0-9a-f]{2})`)
 	unicodeEscapeSeqPattern = regexp.MustCompile(`(?i)\\u([0-9a-f]{4})`)
 	sensitiveFilePattern    = regexp.MustCompile(
-		`(?i)(?:^|[\s"'` + "`" + `/\\:])(?:\.env(?:\.[a-z0-9_-]+)?|_deploy_bot_key|id_rsa|id_ed25519|authorized_keys|chat-bindings\.json|mcp-servers\.json|sessions\.db|security-incidents\.json)(?:$|[\s"'` + "`" + `，。；;)/\\])`,
+		`(?i)(?:^|[\s"'` + "`" + `/\\:])(?:\.env(?:\.[a-z0-9_-]+)?|_deploy_bot_key|id_rsa|id_ed25519|authorized_keys|chat-bindings\.json|mcp-servers\.json|sessions\.db|security-incidents\.json|/proc/self/(?:environ|cmdline|maps|mem))(?:$|[\s"'` + "`" + `，。；;)/\\])`,
+	)
+	ssrfProbePattern = regexp.MustCompile(
+		`(?i)(?:169\.254\.169\.254|100\.100\.100\.200|(?:file|gopher|dict|ldap)://[^\s]+|base64\s+(?:-d|--decode)|\|\s*(?:sh|bash|zsh|pwsh|powershell)\b)`,
 	)
 )
 
@@ -77,6 +80,9 @@ var (
 		"管理员权限", "root权限", "root 权限", "不要拒绝", "禁止拒绝",
 		"ignore previous", "ignore system", "bypass permission", "bypass restriction",
 		"disable safety", "elevate privilege",
+		"系统提示词", "system prompt", "initial instructions", "repeat the words above",
+		"复述你的设定", "输出你的设定", "输出你的指令", "第一段系统指令",
+		"printenv", "os.environ", "process.env", "把你的私钥", "发一下私钥", "密钥发我",
 	}
 )
 
@@ -222,7 +228,7 @@ func (p *Policy) detectText(text string) (string, bool) {
 	if containsAny(normalized, promptBypassPhrases) {
 		return "permission_bypass", true
 	}
-	if hexRegexObfuscationPattern.MatchString(text) {
+	if hexRegexObfuscationPattern.MatchString(text) || ssrfProbePattern.MatchString(normalized) {
 		return "obfuscated_probe", true
 	}
 	if destructiveCommandPattern.MatchString(normalized) {
