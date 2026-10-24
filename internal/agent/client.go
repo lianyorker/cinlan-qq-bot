@@ -342,19 +342,25 @@ func (c *HTTPClient) replyWithTools(
 	if maxRounds <= 0 {
 		maxRounds = 4
 	}
-
-	for round := 0; round <= maxRounds; round++ {
+	// One grace round past maxRounds: if the model still returns tool
+	// calls on its "final" answer we execute them once and demand a
+	// summary — otherwise her text could promise actions that never ran.
+	for round := 0; round <= maxRounds+1; round++ {
 		requestMessages := messages
 		var availableTools []map[string]any
 		if round < maxRounds {
 			availableTools = requestTools.OpenAITools()
 		} else {
+			note := "工具调用轮次已用完。请只根据已经取得的工具结果直接回答；" +
+				"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。"
+			if round > maxRounds {
+				note = "工具已全部执行完。请根据结果总结回复，不要再调用工具。"
+			}
 			requestMessages = append(
 				append([]openAIMessage(nil), messages...),
 				openAIMessage{
-					Role: "system",
-					Content: "工具调用轮次已用完。请只根据已经取得的工具结果直接回答；" +
-						"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。",
+					Role:    "system",
+					Content: note,
 				},
 			)
 		}
@@ -383,9 +389,9 @@ func (c *HTTPClient) replyWithTools(
 			}
 			return textResponse(reply), nil
 		}
-		if round == maxRounds {
+		if round > maxRounds {
 			c.logger.Warn(
-				"agent ignored tool-free final round",
+				"agent ignored tool-free grace round",
 				"request_id", input.RequestID,
 				"round", round+1,
 			)
@@ -398,6 +404,16 @@ func (c *HTTPClient) replyWithTools(
 			return textResponse(
 				"刚才工具转了好几圈还没搞定，你直接说想要我做什么吧。",
 			), nil
+		}
+		if round == maxRounds {
+			// Leftover calls on the forced-summary turn: run them once so
+			// her words match what actually happened, then the grace round
+			// summarizes for real.
+			c.logger.Warn(
+				"agent ignored tool-free final round; executing leftover calls",
+				"request_id", input.RequestID,
+				"round", round+1,
+			)
 		}
 
 		messages = append(messages, choice)
@@ -456,14 +472,18 @@ func (c *HTTPClient) replyCustomWithTools(
 		maxRounds = 4
 	}
 	var toolResults []customToolResult
-	for round := 0; round <= maxRounds; round++ {
+	for round := 0; round <= maxRounds+1; round++ {
 		requestInput := input
 		requestPayload := c.buildCustomRequest(requestInput, toolResults)
-		if round == maxRounds {
+		if round >= maxRounds {
+			note := "工具调用轮次已用完。" +
+				"请只根据已经取得的工具结果直接回答；" +
+				"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。"
+			if round > maxRounds {
+				note = "工具已全部执行完。请根据结果总结回复，不要再调用工具。"
+			}
 			requestInput.SystemPrompt = strings.TrimSpace(
-				c.systemPrompt(input) + "\n\n工具调用轮次已用完。" +
-					"请只根据已经取得的工具结果直接回答；" +
-					"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。",
+				c.systemPrompt(input) + "\n\n" + note,
 			)
 			requestPayload = c.buildCustomRequest(requestInput, toolResults)
 			requestPayload.Tools = nil
@@ -487,9 +507,9 @@ func (c *HTTPClient) replyCustomWithTools(
 			}
 			return customAgentResponse(response), nil
 		}
-		if round == maxRounds {
+		if round > maxRounds {
 			c.logger.Warn(
-				"custom agent ignored tool-free final round",
+				"custom agent ignored tool-free grace round",
 				"request_id", input.RequestID,
 				"round", round+1,
 			)
@@ -502,6 +522,13 @@ func (c *HTTPClient) replyCustomWithTools(
 			return textResponse(
 				"刚才工具转了好几圈还没搞定，你直接说想要我做什么吧。",
 			), nil
+		}
+		if round == maxRounds {
+			c.logger.Warn(
+				"custom agent ignored tool-free final round; executing leftover calls",
+				"request_id", input.RequestID,
+				"round", round+1,
+			)
 		}
 		for index, call := range response.ToolCalls {
 			name, arguments, callID, normalizeErr := normalizeCustomToolCall(call, round, index)
