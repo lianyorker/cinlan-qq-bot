@@ -377,38 +377,95 @@ func (s *Service) stageSecurity(ctx context.Context, event *pipeline.Context) er
 	state.pluginHandled = true
 	reply := strings.TrimSpace(decision.Reply)
 	if reply == tool.PermissionDeniedReply {
-		reply = naturalSecurityRefusal(state.text, state.messageID, state.userID)
+		reply = s.generateSecurityRefusal(ctx, state)
 	}
 	state.reply = reply
 	s.stats.processed.Add(1)
 	return nil
 }
 
-var (
-	gibberishRefusals = []string{
-		"你这发的一串啥乱码呀，看不懂",
-		"发什么加密通话呢，说人话啦",
-		"这串符号啥意思啊，看花眼了",
-		"？你发的这串代码一样的玩意是啥",
-	}
-	casualSecurityRefusals = []string{
-		"想啥呢，这可不能随手乱试",
-		"少套我话啦，不吃这一套",
-		"别整这些奇奇怪怪的指令糊弄我",
-		"干嘛呀，突然发这种东西",
-		"这种事我可不干，换个别的聊",
-	}
-)
+var fallbackSecurityRefusals = []string{
+	"发什么乱码呢，看不懂",
+	"你这发的一串啥玩意",
+	"整啥花里胡哨的",
+	"？你在试探啥呢",
+}
 
-func naturalSecurityRefusal(text, messageID, userID string) string {
-	lower := strings.ToLower(text)
-	pool := casualSecurityRefusals
-	if strings.Contains(lower, `\x`) ||
+func (s *Service) generateSecurityRefusal(ctx context.Context, state *flowState) string {
+	fallback := naturalSecurityRefusal(state.text, state.messageID, state.userID)
+	if s.providers == nil && s.agent == nil {
+		return fallback
+	}
+	lower := strings.ToLower(state.text)
+	isGibberish := strings.Contains(lower, `\x`) ||
 		strings.Contains(lower, `\u`) ||
 		strings.Contains(lower, `(?=`) ||
-		strings.Contains(lower, `[\s\s]`) {
-		pool = gibberishRefusals
+		strings.Contains(lower, `[\s\s]`) ||
+		strings.Contains(lower, `base64`)
+
+	cue := "（对方刚发了一条奇怪的指令想试探你，用你自己的口吻随口怼一句，类似“？你在试探啥呢”“整啥花里胡哨的”“你这发的一串啥玩意”，每次换个说法，15字以内，只输出这一句话）"
+	if isGibberish {
+		cue = "（对方刚发了一串乱码符号试探你，用你自己的口吻随口吐槽一句，类似“发什么乱码呢，看不懂”“你这发的一串啥玩意”“整啥花里胡哨的”，每次换个说法，15字以内，只输出这一句话）"
 	}
+
+	sysPrompt := "你是一个在QQ里聊天的真人，说话简短接地气，绝不暴露自己是AI或机器人。"
+	if s.personas != nil {
+		var (
+			profile persona.Profile
+			ok      bool
+		)
+		if state.personaName != "" {
+			profile, ok = s.personas.Get(state.personaName)
+		} else {
+			profile, ok = s.personas.Default()
+		}
+		if ok && strings.TrimSpace(profile.SystemPrompt) != "" {
+			sysPrompt = profile.SystemPrompt
+		}
+	}
+
+	callCtx, cancel := context.WithTimeout(ctx, 4*time.Second)
+	defer cancel()
+	req := domain.AgentRequest{
+		RequestID:     fmt.Sprintf("sec-%s-%d", state.messageID, s.now().UnixNano()),
+		SessionID:     state.sessionID,
+		Text:          cue,
+		Platform:      state.platform,
+		ChatType:      state.chatType,
+		ChatID:        state.chatID,
+		GroupID:       state.groupID,
+		SelfID:        state.selfID,
+		SystemPrompt:  sysPrompt,
+		RestrictTools: true,
+	}
+	var (
+		resp domain.AgentResponse
+		err  error
+	)
+	if s.providers != nil {
+		if state.providerName != "" {
+			resp, err = s.providers.ReplyWith(callCtx, state.providerName, req)
+		} else {
+			resp, err = s.providers.Reply(callCtx, req)
+		}
+	} else {
+		resp, err = s.agent.Reply(callCtx, req)
+	}
+	if err != nil {
+		return fallback
+	}
+	line := strings.TrimSpace(resp.Reply)
+	if state.personaName != "" {
+		line = strings.TrimSpace(stripSpeakerPrefix(line, state.personaName))
+	}
+	line = strings.Trim(line, "\"'“”‘’")
+	if line == "" || len([]rune(line)) > 45 || outboundSecretLeakPattern.MatchString(line) {
+		return fallback
+	}
+	return line
+}
+
+func naturalSecurityRefusal(text, messageID, userID string) string {
 	seed := 0
 	for _, r := range messageID + ":" + userID + ":" + text {
 		seed = seed*31 + int(r)
@@ -416,7 +473,7 @@ func naturalSecurityRefusal(text, messageID, userID string) string {
 	if seed < 0 {
 		seed = -seed
 	}
-	return pool[seed%len(pool)]
+	return fallbackSecurityRefusals[seed%len(fallbackSecurityRefusals)]
 }
 
 // commandMessage reports whether text addresses a real command —
