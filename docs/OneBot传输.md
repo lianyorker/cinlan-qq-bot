@@ -113,3 +113,34 @@ Groq `whisper-large-v3` 或自建 whisper.cpp 服务同样兼容。
 两类 action（`get_record`、`get_forward_msg`，以及表情回应、戳一戳、
 发后撤回、`get_stranger_info` 等查询）在多账号部署中都会按收到事件的
 `self_id` 路由到对应账号，不再打到默认账号。
+
+## 群事件感知与平台盲区
+
+### 静默感知（不回复、只写入 session 供上下文）
+notice 事件经 `observeGroupMemberNotice` 转成 `[群事件]`/`[私聊事件]` 行写入群聊 session 历史，
+模型不会主动开口但知道群里发生了什么。当前覆盖：
+
+| notice_type | sub_type | 渲染 |
+|---|---|---|
+| group_increase | - | `[群事件] 新成员 昵称(QQ号) 加入了本群`（顺带预热 UserCard） |
+| group_decrease | - | `[群事件] 成员 昵称(QQ号) 离开了本群` |
+| notify | poke | 戳他人 → `[群事件] A 戳了戳 B`；戳自己 → `pokeBudget` 冷却后放行全管线（"对方戳了戳你"） |
+| notify | honor | `[群事件] A 拿到了本群的「龙王/群聊之火/…」` |
+| group_recall / friend_recall | - | `[群事件] A 撤回了一条消息` / `[私聊事件] 对方撤回了一条消息` |
+| group_upload | - | `[群事件] A 上传了群文件「filename」` |
+| group_admin | set/unset | `[群事件] A 被设置成了管理员` / `被取消了管理员` |
+| group_card | - | `[群事件] A 把群名片改成了「new」`（含旧名片） |
+| group_ban | - | `[群事件] A 被禁言了 N分钟` / `被解除禁言了` |
+| essence | add | `[群事件] A 的一条消息被设为了精华` |
+
+`group_upload`/`group_card`/`group_ban` 的字段不在 adapter 预提取里，
+`noticeString`/`noticeInt` 直接从 `metadata.raw_payload` 现挖 JSON，低频事件零改动 adapter。
+
+### 平台盲区（做不到或不值得做）
+- **抢/发红包**：QQ 钱包需实名+绑定，bot 拿不到领取接口权限；只能看到 `[红包:封面文案]`。也做不了"没抢到"的戏份。
+- **视频内容**：inbound 只知道文件名（`[视频:xxx.mp4]`），不理解画面——走 ffmpeg 抽帧+VLM 成本过高，暂不做。
+- **链接内容**：`[链接:标题]` 只有卡片标题，不去抓网页正文（隐私+成本；用户贴链接问内容时按人设糊弄过去）。
+- **群文件内容**：`[文件:x.pdf]` 只有文件名，不下不读。
+- **语音入站**：`ASR_API_URL`+`ASR_API_KEY` 未配则 `[语音]` 占位；配了才有转写文字。
+- **对方撤回的内容**：只知道"撤回了一条消息"，QQ 不提供原文（NapCat 也拿不到历史缓存的）。
+- **精华/禁言权限**：bot 账号非管理员时收不到 group_ban/essence 等部分 notice——不是代码问题。

@@ -2135,5 +2135,105 @@ func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState
 		} else {
 			s.sessions.AddObservation(sessionID, "[群事件] "+display+" 撤回了一条消息")
 		}
+	case "group_upload":
+		// Someone dropped a file into the group library — a person
+		// glances at the filename and files it away.
+		if sessionID == "" {
+			return
+		}
+		name := strings.TrimSpace(noticeString(state.event.Metadata, "file", "name"))
+		if name == "" {
+			name = "一个文件"
+		}
+		s.sessions.AddObservation(sessionID,
+			"[群事件] "+display+" 上传了群文件「"+name+"」")
+	case "group_admin":
+		if sessionID == "" {
+			return
+		}
+		if state.event.SubType == "set" {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 被设置成了管理员")
+		} else {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 被取消了管理员")
+		}
+	case "group_card":
+		// Card change shows both old and new in the notice payload.
+		if sessionID == "" {
+			return
+		}
+		cardNew := strings.TrimSpace(noticeString(state.event.Metadata, "card_new"))
+		cardOld := strings.TrimSpace(noticeString(state.event.Metadata, "card_old"))
+		if cardNew == "" && cardOld == "" {
+			return
+		}
+		if cardNew == "" {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 清掉了群名片（原来是「"+cardOld+"」）")
+		} else {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 把群名片改成了「"+cardNew+"」")
+		}
+	case "group_ban":
+		if sessionID == "" {
+			return
+		}
+		targetName := display
+		duration := noticeInt(state.event.Metadata, "duration")
+		if duration <= 0 {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+targetName+" 被解除禁言了")
+		} else {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+targetName+" 被禁言了 "+fmt.Sprintf("%d分钟", duration/60))
+		}
+	case "essence":
+		// Message pinned to 精华 — worth knowing who earned it.
+		if sessionID == "" {
+			return
+		}
+		if state.event.SubType == "add" {
+			s.sessions.AddObservation(sessionID,
+				"[群事件] "+display+" 的一条消息被设为了精华")
+		}
 	}
+}
+
+// noticeString digs a field out of the raw notice payload — the adapter
+// only pre-extracts a few notice fields, the rest live on raw_payload.
+func noticeString(metadata map[string]any, keys ...string) string {
+	raw, _ := metadata["raw_payload"].([]byte)
+	if len(raw) == 0 {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return ""
+	}
+	cursor := payload
+	for i, key := range keys {
+		if i == len(keys)-1 {
+			return valueString(cursor, key)
+		}
+		next, ok := cursor[key].(map[string]any)
+		if !ok {
+			return ""
+		}
+		cursor = next
+	}
+	return ""
+}
+
+// noticeInt reads a numeric field from the raw notice payload.
+func noticeInt(metadata map[string]any, key string) int {
+	raw, _ := metadata["raw_payload"].([]byte)
+	if len(raw) == 0 {
+		return 0
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		return 0
+	}
+	return intField(payload, key)
 }
