@@ -530,17 +530,25 @@ func main() {
 	if cfg.ProactiveGroups.Size() > 0 || cfg.ProactiveGroups.Wildcard() {
 		proactiveAllow = cfg.ProactiveGroups.Allows
 	}
+	// Private proactive is opt-in only: QQ_PROACTIVE_PRIVATE must name
+	// the user QQ(s) she may message first — unset keeps DMs silent.
+	var proactivePrivateAllow func(string) bool
+	if cfg.ProactivePrivate.Size() > 0 || cfg.ProactivePrivate.Wildcard() {
+		proactivePrivateAllow = cfg.ProactivePrivate.Allows
+	}
 	go proactive.New(
 		proactive.Config{
-			Enabled:    cfg.Proactive,
-			Tick:       cfg.ProactiveTick,
-			MinIdle:    cfg.ProactiveIdle,
-			Cooldown:   cfg.ProactiveWait,
-			Chance:     cfg.ProactiveProb,
-			DailyLimit: cfg.ProactiveDaily,
-			SleepStart: cfg.SleepStart,
-			SleepEnd:   cfg.SleepEnd,
-			Allow:      proactiveAllow,
+			Enabled:      cfg.Proactive,
+			Tick:         cfg.ProactiveTick,
+			MinIdle:      cfg.ProactiveIdle,
+			Cooldown:     cfg.ProactiveWait,
+			Chance:       cfg.ProactiveProb,
+			DailyLimit:   cfg.ProactiveDaily,
+			SleepStart:   cfg.SleepStart,
+			SleepEnd:     cfg.SleepEnd,
+			Allow:        proactiveAllow,
+			PrivateAllow: proactivePrivateAllow,
+			PrivateIdle:  cfg.ProactivePrivateIdle,
 		},
 		proactive.Deps{
 			Providers: providerRegistry,

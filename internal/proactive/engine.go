@@ -1,8 +1,9 @@
-// Package proactive is the ambient opener engine: when a bound group has
+// Package proactive is the ambient opener engine: when a bound chat has
 // been quiet long enough, the persona may decide to say something on its
 // own. This is what makes the bot feel like a member, not a vending
 // machine — gated by idle time, per-chat cooldown, a daily cap and the
-// operator sleep window so it never turns into spam.
+// operator sleep window so it never turns into spam. Private chats are
+// opt-in only: no proactive DM reaches a user the operator didn't list.
 package proactive
 
 import (
@@ -38,6 +39,13 @@ type Config struct {
 	// Allow, when set, is the hard gate on which bound group chats may
 	// receive proactive messages; nil means every bound group is eligible.
 	Allow func(chatID string) bool
+	// PrivateAllow gates proactive DMs. Unlike groups, private chats are
+	// strictly opt-in: nil means no bound private chat ever fires.
+	PrivateAllow func(chatID string) bool
+	// PrivateIdle is a stricter silence floor for DMs — messaging someone
+	// unprompted after 45 quiet minutes reads as needy; hours reads as
+	// thinking of them.
+	PrivateIdle time.Duration
 }
 
 type Deps struct {
@@ -68,8 +76,8 @@ type Engine struct {
 	deps Deps
 	mu   sync.Mutex
 	sent map[string]time.Time // chatKey -> last proactive send
-	day  string              // yyyy-mm-dd of counters
-	hits map[string]int      // chatKey -> proactive sends today
+	day  string               // yyyy-mm-dd of counters
+	hits map[string]int       // chatKey -> proactive sends today
 }
 
 func New(cfg Config, deps Deps) *Engine {
@@ -87,6 +95,9 @@ func New(cfg Config, deps Deps) *Engine {
 	}
 	if cfg.DailyLimit <= 0 {
 		cfg.DailyLimit = 5
+	}
+	if cfg.PrivateIdle <= 0 {
+		cfg.PrivateIdle = 2 * time.Hour
 	}
 	if deps.Now == nil {
 		deps.Now = time.Now
@@ -141,7 +152,11 @@ func (e *Engine) sweep(ctx context.Context) {
 		return
 	}
 	for _, rule := range e.deps.Bindings.List() {
-		if rule.ChatType != platform.ChatGroup || len(rule.ChatIDs) == 0 {
+		chatType := rule.ChatType
+		if chatType != platform.ChatGroup && chatType != platform.ChatPrivate {
+			continue
+		}
+		if len(rule.ChatIDs) == 0 {
 			continue
 		}
 		mode := ""
@@ -152,29 +167,34 @@ func (e *Engine) sweep(ctx context.Context) {
 			continue
 		}
 		for _, chatID := range rule.ChatIDs {
-			// Operator allowlist — bound-but-unlisted chats never fire.
-			if e.cfg.Allow != nil && !e.cfg.Allow(chatID) {
+			// Operator allowlists — groups default-open unless Allow is
+			// set; private chats are opt-in only via PrivateAllow.
+			if chatType == platform.ChatGroup {
+				if e.cfg.Allow != nil && !e.cfg.Allow(chatID) {
+					continue
+				}
+			} else if e.cfg.PrivateAllow == nil || !e.cfg.PrivateAllow(chatID) {
 				continue
 			}
-			if !e.eligible(chatID) {
+			if !e.eligible(chatType, chatID) {
 				continue
 			}
 			// Mood gates the urge to talk: sulking chats stay silent,
 			// cheerful chats get chatty.
+			moodScore := 0
 			if e.deps.ChatPrefs != nil {
-				moodScore := e.deps.ChatPrefs.MoodScore(
-					platform.ChatGroup, chatID, e.deps.Now())
+				moodScore = e.deps.ChatPrefs.MoodScore(
+					chatType, chatID, e.deps.Now())
 				if moodScore <= -30 {
 					continue
 				}
 			}
 			chance := e.cfg.Chance
-			if e.deps.ChatPrefs != nil &&
-				e.deps.ChatPrefs.MoodScore(platform.ChatGroup, chatID, e.deps.Now()) >= 30 {
+			if moodScore >= 30 {
 				chance = min(chance*1.5, 0.5)
 			}
 			if e.deps.Rand.Float64() < chance {
-				e.fire(ctx, rule, chatID)
+				e.fire(ctx, rule, chatType, chatID)
 			}
 		}
 	}
@@ -191,44 +211,54 @@ func (e *Engine) asleep() bool {
 	return hour >= e.cfg.SleepStart || hour < e.cfg.SleepEnd
 }
 
-func (e *Engine) eligible(chatID string) bool {
+func (e *Engine) eligible(chatType, chatID string) bool {
 	now := e.deps.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
+	key := chatType + ":" + chatID
 	if e.day != now.Format("2006-01-02") {
 		e.day = now.Format("2006-01-02")
 		e.hits = map[string]int{}
 	}
-	if e.hits[chatID] >= e.cfg.DailyLimit {
+	if e.hits[key] >= e.cfg.DailyLimit {
 		return false
 	}
-	if last, ok := e.sent[chatID]; ok && now.Sub(last) < e.cfg.Cooldown {
+	if last, ok := e.sent[key]; ok && now.Sub(last) < e.cfg.Cooldown {
 		return false
 	}
 	if e.deps.ChatPrefs != nil {
-		if !e.deps.ChatPrefs.NotifyEnabled(platform.ChatGroup, chatID) {
+		if !e.deps.ChatPrefs.NotifyEnabled(chatType, chatID) {
 			return false
 		}
-		if e.deps.ChatPrefs.Muted(platform.ChatGroup, chatID, now) {
+		if e.deps.ChatPrefs.Muted(chatType, chatID, now) {
 			return false
 		}
 	}
 	if e.deps.Activity != nil {
-		last := e.deps.Activity(platform.ChatGroup, chatID)
+		last := e.deps.Activity(chatType, chatID)
 		if last.IsZero() {
 			return false // never saw the chat this boot — don't blind-fire
 		}
-		if now.Sub(last) < e.cfg.MinIdle {
+		minIdle := e.cfg.MinIdle
+		if chatType == platform.ChatPrivate && e.cfg.PrivateIdle > minIdle {
+			minIdle = e.cfg.PrivateIdle
+		}
+		if now.Sub(last) < minIdle {
 			return false // still lively
 		}
 	}
 	return true
 }
 
-func (e *Engine) fire(ctx context.Context, rule binding.Rule, chatID string) {
+func (e *Engine) fire(
+	ctx context.Context,
+	rule binding.Rule,
+	chatType, chatID string,
+) {
 	e.mu.Lock()
-	e.sent[chatID] = e.deps.Now()
-	e.hits[chatID]++
+	key := chatType + ":" + chatID
+	e.sent[key] = e.deps.Now()
+	e.hits[key]++
 	e.mu.Unlock()
 
 	if e.deps.Providers == nil && e.deps.Agent == nil || e.deps.Send == nil {
@@ -242,39 +272,71 @@ func (e *Engine) fire(ctx context.Context, rule binding.Rule, chatID string) {
 	if selfID == "" {
 		selfID = e.deps.DefaultSelfID
 	}
-	sessionID := e.deps.Platform + ":self:" + selfID + ":group:" + chatID
+	sessionID := e.deps.Platform + ":self:" + selfID +
+		":" + chatType + ":" + chatID
 	var history []domain.ChatMessage
 	if e.deps.Sessions != nil {
 		history, _ = e.deps.Sessions.Snapshot(sessionID)
 	}
 	idle := e.cfg.MinIdle
 	if e.deps.Activity != nil {
-		if last := e.deps.Activity(platform.ChatGroup, chatID); !last.IsZero() {
+		if last := e.deps.Activity(chatType, chatID); !last.IsZero() {
 			idle = e.deps.Now().Sub(last).Round(time.Minute)
 		}
 	}
-	system := profile.SystemPrompt +
-		"\n\n（主动开口模式：群里已经安静了 " + idle.String() + "，你现在想插一句就说，" +
-		"一两句话、像随手发的，别@人、别叫名字、别总结、别提这是系统让你说的；" +
-		"实在没话说就只回 [[SKIP]] 一个字）"
+	var opener string
+	if chatType == platform.ChatPrivate {
+		opener = "\n\n（主动开口模式：他已经安静了 " + idle.String() +
+			"。想他就随手发一句——可以接着你们之前聊的事，可以问他现在怎么样，" +
+			"一两句话就够，别提这是系统让你说的；实在没话说就只回 [[SKIP]] 一个字）"
+	} else {
+		opener = "\n\n（主动开口模式：群里已经安静了 " + idle.String() +
+			"，你现在想插一句就说，" +
+			"一两句话、像随手发的，别@人、别叫名字、别总结、别提这是系统让你说的；" +
+			"实在没话说就只回 [[SKIP]] 一个字）"
+	}
+	system := profile.SystemPrompt + opener
 	if e.deps.ChatPrefs != nil {
+		// Ground the opener in what she actually remembers — “想你了”
+		// lands, generic filler doesn't.
+		if facts := e.deps.ChatPrefs.RecentFacts(chatType, chatID, 8); len(facts) > 0 {
+			lines := make([]string, 0, len(facts))
+			for _, f := range facts {
+				lines = append(lines, "· "+f.Text)
+			}
+			system += "\n你记得的事（想提就提，别逐条罗列）：\n" +
+				strings.Join(lines, "\n")
+		}
+		if chatType == platform.ChatPrivate {
+			if imp := e.deps.ChatPrefs.Impression(
+				chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
+				system += "\n你对他的感觉：" + imp.Text
+			}
+		}
 		if hint := mood.Hint(e.deps.ChatPrefs.MoodScore(
-			platform.ChatGroup, chatID, e.deps.Now())); hint != "" {
+			chatType, chatID, e.deps.Now())); hint != "" {
 			system += "\n" + hint
 		}
 	}
+	text := "（群里没人说话，你想说点什么就说）"
+	if chatType == platform.ChatPrivate {
+		text = "（他这会儿没说话，你想说点什么就发给他）"
+	}
 	req := domain.AgentRequest{
-		RequestID:  fmt.Sprintf("proactive-%s-%d", chatID, e.deps.Now().Unix()),
-		SessionID:  sessionID,
-		Text:       "（没人说话，你想说点什么就说）",
-		Platform:   e.deps.Platform,
-		ChatType:   platform.ChatGroup,
-		ChatID:     chatID,
-		GroupID:    chatID,
-		SelfID:     selfID,
-		SenderName: "",
-		History:    history,
+		RequestID: fmt.Sprintf("proactive-%s-%s-%d",
+			chatType, chatID, e.deps.Now().Unix()),
+		SessionID:    sessionID,
+		Text:         text,
+		Platform:     e.deps.Platform,
+		ChatType:     chatType,
+		ChatID:       chatID,
+		SelfID:       selfID,
+		SenderName:   "",
+		History:      history,
 		SystemPrompt: system,
+	}
+	if chatType == platform.ChatGroup {
+		req.GroupID = chatID
 	}
 	var (
 		resp domain.AgentResponse
@@ -294,30 +356,32 @@ func (e *Engine) fire(ctx context.Context, rule binding.Rule, chatID string) {
 			"chat_id", chatID, "error", err.Error())
 		return
 	}
-	text := strings.TrimSpace(resp.Reply)
-	if text == "" || strings.HasPrefix(text, "[[SKIP]]") {
+	replyText := strings.TrimSpace(resp.Reply)
+	if replyText == "" || strings.HasPrefix(replyText, "[[SKIP]]") {
 		return
 	}
 	// Never let a proactive message @ someone or quote — ambient only.
 	if err := e.deps.Send(ctx, platform.Outbound{
-		ChatType: platform.ChatGroup,
+		ChatType: chatType,
 		ChatID:   chatID,
 		SelfID:   selfID,
-		Chain:    message.Chain{message.Text(text)},
+		Chain:    message.Chain{message.Text(replyText)},
 	}); err != nil {
 		e.deps.Logger.Warn("proactive send failed",
-			"chat_id", chatID, "error", err.Error())
+			"chat_type", chatType, "chat_id", chatID,
+			"error", err.Error())
 		return
 	}
 	if e.deps.Touch != nil {
-		e.deps.Touch(platform.ChatGroup, chatID)
+		e.deps.Touch(chatType, chatID)
 	}
 	// Drop it into session history so later replies see our own line.
 	if e.deps.Sessions != nil {
-		e.deps.Sessions.AddExchange(sessionID, "（主动开口）", text)
+		e.deps.Sessions.AddExchange(sessionID, "（主动开口）", replyText)
 	}
 	e.deps.Logger.Info("proactive message sent",
-		"binding", rule.Name, "chat_id", chatID, "text", text)
+		"binding", rule.Name, "chat_type", chatType,
+		"chat_id", chatID, "text", replyText)
 }
 
 func (e *Engine) profile(name string) (persona.Profile, bool) {

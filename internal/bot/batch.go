@@ -104,8 +104,13 @@ func (s *Service) runPlatformWorker(
 			}
 			current.version++
 			version := current.version
+			window := s.batchWindowFor(current.event)
+			if tailText, _ := current.event.Chain.PlainText(
+				current.event.SelfID); tailLooksIncomplete(tailText) {
+				window += 2 * time.Second
+			}
 			current.timer = time.AfterFunc(
-				s.batchWindowFor(current.event),
+				window,
 				func() {
 					select {
 					case flushes <- platformBatchFlush{key: key, version: version}:
@@ -196,4 +201,33 @@ func cloneMetadata(source map[string]any) map[string]any {
 		result[key] = value
 	}
 	return result
+}
+
+// tailLooksIncomplete guesses that the merged message still has a
+// follow-up coming — hanging punctuation and dangling connectives are
+// how people split one thought across several sends.
+func tailLooksIncomplete(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return false
+	}
+	for _, mark := range []string{
+		"，", ",", "、", "：", ":", "（", "(", "【", "[", "—",
+		"…", "...", "~", "～",
+	} {
+		if strings.HasSuffix(trimmed, mark) {
+			return true
+		}
+	}
+	for _, word := range []string{
+		"然后", "就是", "不过", "但是", "可是", "还有", "话说",
+		"对了", "或者", "而且", "因为", "所以", "如果", "比如",
+		"另外", "顺便", "接着", "话说", "再说", "等下", "等等",
+		"记得", "貌似", "好像", "要不", "待会",
+	} {
+		if strings.HasSuffix(trimmed, word) {
+			return true
+		}
+	}
+	return false
 }

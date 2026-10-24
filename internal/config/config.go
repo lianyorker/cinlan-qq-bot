@@ -277,6 +277,11 @@ type Config struct {
 	// ProactiveGroups optionally limits which bound groups may receive
 	// proactive openers; empty means every bound group is eligible.
 	ProactiveGroups Allowlist
+	// ProactivePrivate lists which bound private chats may receive
+	// proactive DMs — unlike groups, unset means none (strictly opt-in).
+	ProactivePrivate Allowlist
+	// ProactivePrivateIdle is the stricter silence floor for DMs.
+	ProactivePrivateIdle time.Duration
 
 	HandoffReply string
 	ResumeReply  string
@@ -386,20 +391,18 @@ func Load() (Config, error) {
 	cfg.GroupAtSender = parseBool("QQ_GROUP_AT_SENDER", true, &errs)
 	cfg.MaxReplyRunes = parseInt("QQ_MAX_REPLY_RUNES", 1500, 1, &errs)
 	cfg.MaxReplyChunks = parseInt("QQ_MAX_REPLY_CHUNKS", 4, 1, &errs)
-	// 900ms fired mid-sentence — she replied before follow-ups landed.
-	// 1.8s waits out quick multi-sends without stalling group flow.
+	// Base merge window — batch.go stretches it when the tail of the
+	// merged text still looks unfinished, so complete thoughts don't
+	// sit waiting while half-sentences get room to land.
 	cfg.GroupBatchWindow = parseDuration(
 		"QQ_GROUP_BATCH_WINDOW",
-		1800*time.Millisecond,
+		1500*time.Millisecond,
 		false,
 		&errs,
 	)
-	// Rapid DM follow-ups ("还要有你的" after "拍个夕阳") arrive as
-	// separate events; a short merge window turns them into one run
-	// instead of two replies — and two image-gen quota burns.
 	cfg.PrivateBatchWindow = parseDuration(
 		"QQ_PRIVATE_BATCH_WINDOW",
-		2500*time.Millisecond,
+		1500*time.Millisecond,
 		false,
 		&errs,
 	)
@@ -639,6 +642,15 @@ func Load() (Config, error) {
 		errs = append(errs, fmt.Errorf("QQ_PROACTIVE_GROUPS: %w", err))
 	}
 	cfg.ProactiveGroups = proactiveGroups
+	// Private proactive DMs are strictly opt-in: list the user QQ(s)
+	// she may message first; unset means no DM ever fires on its own.
+	proactivePrivate, err := ParseOptionalAllowlist(os.Getenv("QQ_PROACTIVE_PRIVATE"))
+	if err != nil {
+		errs = append(errs, fmt.Errorf("QQ_PROACTIVE_PRIVATE: %w", err))
+	}
+	cfg.ProactivePrivate = proactivePrivate
+	cfg.ProactivePrivateIdle = parseDuration(
+		"QQ_PROACTIVE_PRIVATE_IDLE", 2*time.Hour, true, &errs)
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {
