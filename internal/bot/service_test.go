@@ -449,7 +449,10 @@ func TestRateWindowLimitsAndRecovers(t *testing.T) {
 }
 
 func TestSplitReplyTruncatesAtConfiguredLimit(t *testing.T) {
-	chunks := splitReply("1234567890ABC", 5, 2)
+	chunks, truncated := splitReply("1234567890ABC", 5, 2)
+	if !truncated {
+		t.Fatal("overflow should report truncated")
+	}
 	if len(chunks) != 2 {
 		t.Fatalf("len(chunks) = %d, want 2", len(chunks))
 	}
@@ -458,8 +461,33 @@ func TestSplitReplyTruncatesAtConfiguredLimit(t *testing.T) {
 			t.Fatalf("chunk %q exceeds rune limit", chunk)
 		}
 	}
-	if chunks[1] != "6[截断]" {
+	// No "[截断]" banner — the sender follows with a human closer
+	// instead of pasting a robot marker.
+	if chunks[1] != "67890" {
 		t.Fatalf("last chunk = %q", chunks[1])
+	}
+}
+
+func TestSplitReplyBacktrimsToSentenceEnd(t *testing.T) {
+	chunks, truncated := splitReply(
+		"第一句完整。第二句还没说完", 8, 1,
+	)
+	if !truncated {
+		t.Fatal("overflow should report truncated")
+	}
+	// The last chunk walks back to the sentence boundary rather than
+	// cutting mid-thought — the closer bubble carries the vibe.
+	if chunks[len(chunks)-1] != "第一句完整。" {
+		t.Fatalf("last chunk = %q", chunks[len(chunks)-1])
+	}
+}
+
+func TestTruncationCloserVoices(t *testing.T) {
+	if got := truncationCloser(platform.ChatPrivate); got != "太长了，先说到这，想继续再问" {
+		t.Fatalf("private closer = %q", got)
+	}
+	if got := truncationCloser(platform.ChatGroup); got != "群里讲不完了，想细聊私我" {
+		t.Fatalf("group closer = %q", got)
 	}
 }
 

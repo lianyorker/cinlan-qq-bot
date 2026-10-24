@@ -417,16 +417,22 @@ func stripSpeakerPrefix(text, name string) string {
 	return text
 }
 
-func expandReplyParts(parts []string, maxRunes, maxChunks int) []string {
+func expandReplyParts(parts []string, maxRunes, maxChunks int) ([]string, bool) {
 	result := make([]string, 0, min(len(parts), maxChunks))
+	truncated := false
 	for _, part := range parts {
 		remaining := maxChunks - len(result)
 		if remaining <= 0 {
+			truncated = true
 			break
 		}
-		result = append(result, splitReply(part, maxRunes, remaining)...)
+		chunks, cut := splitReply(part, maxRunes, remaining)
+		if cut {
+			truncated = true
+		}
+		result = append(result, chunks...)
 	}
-	return result
+	return result, truncated
 }
 
 func isTextReplyChain(chain message.Chain) bool {

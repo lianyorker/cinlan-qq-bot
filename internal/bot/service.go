@@ -931,6 +931,12 @@ func (s *Service) sendReply(
 	ctx context.Context,
 	selfID, chatType, chatID, userID, senderName, messageID, text string,
 ) bool {
+	parts, truncated := splitReply(
+		text, s.cfg.MaxReplyRunes, s.cfg.MaxReplyChunks,
+	)
+	if truncated {
+		parts = append(parts, truncationCloser(chatType))
+	}
 	return s.sendTextParts(
 		ctx,
 		selfID,
@@ -939,7 +945,7 @@ func (s *Service) sendReply(
 		userID,
 		senderName,
 		messageID,
-		splitReply(text, s.cfg.MaxReplyRunes, s.cfg.MaxReplyChunks),
+		parts,
 	)
 }
 
@@ -1345,10 +1351,10 @@ func (s *Service) allowAttentionDecision(key string) bool {
 	return true
 }
 
-func splitReply(text string, maxRunes, maxChunks int) []string {
+func splitReply(text string, maxRunes, maxChunks int) ([]string, bool) {
 	text = strings.TrimSpace(text)
 	if text == "" || maxRunes <= 0 || maxChunks <= 0 {
-		return nil
+		return nil, false
 	}
 
 	remaining := []rune(text)
@@ -1359,23 +1365,34 @@ func splitReply(text string, maxRunes, maxChunks int) []string {
 		remaining = remaining[size:]
 	}
 
-	if len(remaining) > 0 {
-		suffix := []rune("\n[内容过长，已截断]")
-		if len(suffix) > maxRunes {
-			suffix = []rune("[截断]")
-		}
-		last := []rune(chunks[len(chunks)-1])
-		keep := maxRunes - len(suffix)
-		if keep < 0 {
-			keep = 0
-			suffix = suffix[:min(len(suffix), maxRunes)]
-		}
-		if len(last) > keep {
-			last = last[:keep]
-		}
-		chunks[len(chunks)-1] = string(append(last, suffix...))
+	if len(remaining) == 0 {
+		return chunks, false
 	}
-	return chunks
+	// Overflow: a human who ran out of typing room doesn't paste a
+	// "[truncated]" banner — they stop at a sentence break and let the
+	// follow-up bubble say the rest. Walk the last chunk back to its
+	// nearest terminator; keep it only when the trim isn't drastic.
+	last := []rune(chunks[len(chunks)-1])
+	best := -1
+	for i, r := range last {
+		switch r {
+		case '。', '！', '？', '!', '?', '；', ';', '\n':
+			best = i
+		}
+	}
+	if best >= len(last)/2 {
+		chunks[len(chunks)-1] = strings.TrimSpace(string(last[:best+1]))
+	}
+	return chunks, true
+}
+
+// truncationCloser is the follow-up bubble when a reply got capped —
+// group and private keep separate voices.
+func truncationCloser(chatType string) string {
+	if chatType == platform.ChatPrivate {
+		return "太长了，先说到这，想继续再问"
+	}
+	return "群里讲不完了，想细聊私我"
 }
 
 func workerIndex(event onebot.Event, count int) int {

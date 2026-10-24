@@ -1274,11 +1274,17 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				parts = []string{single}
 			}
 		} else {
-			parts = expandReplyParts(
+			var truncated bool
+			parts, truncated = expandReplyParts(
 				planReplyParts(state.reply),
 				s.cfg.MaxReplyRunes,
 				s.cfg.MaxReplyChunks,
 			)
+			// She doesn't paste "[truncated]" — a person who ran out of
+			// room just says the group can't hold the rest.
+			if truncated {
+				parts = append(parts, truncationCloser(state.chatType))
+			}
 		}
 		if state.personaName != "" {
 			filtered := parts[:0]
