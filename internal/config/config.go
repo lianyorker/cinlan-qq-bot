@@ -423,7 +423,9 @@ func Load() (Config, error) {
 
 	cfg.AgentTimeout = parseDuration("AGENT_TIMEOUT", 30*time.Second, true, &errs)
 	cfg.AgentMaxRetries = parseInt("AGENT_MAX_RETRIES", 3, 0, &errs)
-	cfg.AgentMaxToolRounds = parseInt("AGENT_MAX_TOOL_ROUNDS", 4, 1, &errs)
+	// Multi-step tool flows (MCP ordering, file work) need ~5-6 rounds;
+	// 4 starves them and surfaces the rounds-exhausted fallback.
+	cfg.AgentMaxToolRounds = parseInt("AGENT_MAX_TOOL_ROUNDS", 6, 1, &errs)
 	cfg.AgentRetryBase = parseDuration("AGENT_RETRY_BASE", 500*time.Millisecond, true, &errs)
 	cfg.AgentRetryMax = parseDuration("AGENT_RETRY_MAX", 5*time.Second, true, &errs)
 

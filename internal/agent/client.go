@@ -389,8 +389,14 @@ func (c *HTTPClient) replyWithTools(
 				"request_id", input.RequestID,
 				"round", round+1,
 			)
+			// Whatever the model wrote next to its leftover calls stays in
+			// voice — anything beats a canned line that breaks character.
+			if reply := strings.TrimSpace(
+				openAIContentText(choice.Content)); reply != "" {
+				return textResponse(reply), nil
+			}
 			return textResponse(
-				"我已经查了一轮，但现有范围还不够明确。告诉我具体模块或类名，我继续定位。",
+				"刚才工具转了好几圈还没搞定，你直接说想要我做什么吧。",
 			), nil
 		}
 
@@ -487,8 +493,14 @@ func (c *HTTPClient) replyCustomWithTools(
 				"request_id", input.RequestID,
 				"round", round+1,
 			)
+			if reply := strings.TrimSpace(response.Reply); reply != "" {
+				return textResponse(reply), nil
+			}
+			if !response.Components.Empty() {
+				return customAgentResponse(response), nil
+			}
 			return textResponse(
-				"我已经查了一轮，但现有范围还不够明确。告诉我具体模块或类名，我继续定位。",
+				"刚才工具转了好几圈还没搞定，你直接说想要我做什么吧。",
 			), nil
 		}
 		for index, call := range response.ToolCalls {
