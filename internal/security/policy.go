@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"log/slog"
 	"regexp"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -40,6 +41,17 @@ var (
 	)
 	traversalPattern  = regexp.MustCompile(`(?:^|[\s"'` + "`" + `])\.\.[\\/]`)
 	percentEnvPattern = regexp.MustCompile(`%[A-Za-z_][A-Za-z0-9_]*%`)
+	// hexRegexObfuscationPattern catches regex character-class hex intersection
+	// tricks like ^(?=[\x5F\x21\x3A\x2E][\x79\x65\x41\x6D]...) used to disguise
+	// ".env" or secret filenames from literal keyword filters.
+	hexRegexObfuscationPattern = regexp.MustCompile(
+		`(?i)(?:\[(?:\\x[0-9a-f]{2}|\\u[0-9a-f]{4}|\\[0-7]{3})+[^\]]*\]){2,}`,
+	)
+	hexEscapeSeqPattern     = regexp.MustCompile(`(?i)\\x([0-9a-f]{2})`)
+	unicodeEscapeSeqPattern = regexp.MustCompile(`(?i)\\u([0-9a-f]{4})`)
+	sensitiveFilePattern    = regexp.MustCompile(
+		`(?i)(?:^|[\s"'` + "`" + `/\\:])(?:\.env(?:\.[a-z0-9_-]+)?|_deploy_bot_key|id_rsa|id_ed25519|authorized_keys|chat-bindings\.json|mcp-servers\.json|sessions\.db|security-incidents\.json)(?:$|[\s"'` + "`" + `，。；;)/\\])`,
+	)
 )
 
 var (
@@ -182,7 +194,7 @@ func (p *Policy) inspectToolValue(toolName, key string, value any) (string, bool
 			if strings.TrimSpace(current) == "" {
 				return "", false
 			}
-			if hasPathIndirection(current) {
+			if hasPathIndirection(current) || sensitiveFilePattern.MatchString(" "+canonicalText(current)+" ") {
 				return "tool_external_path", true
 			}
 			if _, err := p.boundary.Resolve(current); err != nil {
@@ -191,6 +203,7 @@ func (p *Policy) inspectToolValue(toolName, key string, value any) (string, bool
 		}
 		if p.containsExternalPath(current) ||
 			traversalPattern.MatchString(canonicalText(current)) ||
+			sensitiveFilePattern.MatchString(" "+canonicalText(current)+" ") ||
 			hasPathIndirection(current) {
 			return "tool_external_path", true
 		}
@@ -209,6 +222,9 @@ func (p *Policy) detectText(text string) (string, bool) {
 	if containsAny(normalized, promptBypassPhrases) {
 		return "permission_bypass", true
 	}
+	if hexRegexObfuscationPattern.MatchString(text) {
+		return "obfuscated_probe", true
+	}
 	if destructiveCommandPattern.MatchString(normalized) {
 		return "destructive_command", true
 	}
@@ -219,7 +235,12 @@ func (p *Policy) detectText(text string) (string, bool) {
 		(containsAny(normalized, shellWords) && containsAny(normalized, executionWords)) {
 		return "shell_execution", true
 	}
-	hasPathOperation := containsAny(normalized, pathOperationWords)
+	hasPathOperation := containsAny(normalized, pathOperationWords) ||
+		strings.Contains(normalized, "正则") ||
+		strings.Contains(normalized, "匹配")
+	if hasPathOperation && sensitiveFilePattern.MatchString(" "+normalized+" ") {
+		return "sensitive_file_access", true
+	}
 	if hasPathOperation &&
 		(traversalPattern.MatchString(normalized) ||
 			strings.Contains(normalized, `%userprofile%`) ||
@@ -331,6 +352,23 @@ func fingerprint(scope, value string) string {
 
 func canonicalText(value string) string {
 	value = strings.ToLower(strings.TrimSpace(value))
+	if strings.Contains(value, `\x`) || strings.Contains(value, `\u`) {
+		decoded := hexEscapeSeqPattern.ReplaceAllStringFunc(value, func(m string) string {
+			if b, err := strconv.ParseUint(m[2:], 16, 8); err == nil && b >= 0x20 && b < 0x7f {
+				return string(rune(b))
+			}
+			return m
+		})
+		decoded = unicodeEscapeSeqPattern.ReplaceAllStringFunc(decoded, func(m string) string {
+			if r, err := strconv.ParseUint(m[2:], 16, 16); err == nil && r >= 0x20 {
+				return string(rune(r))
+			}
+			return m
+		})
+		if decoded != value {
+			value = value + " " + decoded
+		}
+	}
 	value = strings.NewReplacer(
 		"：", ":",
 		"／", "/",

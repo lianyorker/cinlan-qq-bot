@@ -34,6 +34,12 @@ var outboundLinkPattern = regexp.MustCompile(
 		`(?:/[a-z0-9._~:/?#@!$&'()*+,;=%-]*)?`,
 )
 
+var outboundSecretLeakPattern = regexp.MustCompile(
+	`(?i)(?:sk-[a-z0-9_-]{20,}|AIza[0-9A-Za-z_-]{30,}|Bearer\s+[A-Za-z0-9._-]{20,}|` +
+		`-----BEGIN [A-Z ]*PRIVATE KEY-----|` +
+		`(?:AGENT_API_KEY|ONEBOT_ACCESS_TOKEN|SESSION_STORE_KEY|LK_MCP_AUTH|EMBEDDING_API_KEY)\s*=)`,
+)
+
 type flowState struct {
 	event          platform.Event
 	platform       string
@@ -323,12 +329,10 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.promptText = groupPromptText(state.event.SenderName, state.userID, state.text)
 	}
 	state.rateLimitID = state.platform + ":self:" + state.selfID + ":actor:" + state.userID
-	// Ambient context: log the inbound into session history even when it
-	// gets ignored later — group chatter she doesn't reply to is still
-	// stuff she heard, and AddExchange dedupes the line on an answer.
-	// Commands are operator ops, not ambient chatter — skip them so a
-	// denied "/status" doesn't linger as fake conversational context.
-	if !s.commandMessage(state.text) {
+	// Ambient context: when no messageGuard is attached, log observation now;
+	// otherwise stageSecurity logs it only after verifying the text is not a
+	// prompt-injection / shell / path-probe payload (prevents context poisoning).
+	if s.messageGuard == nil && !s.commandMessage(state.text) {
 		s.sessions.AddObservation(state.sessionID, state.promptText)
 	}
 	event.Values["tools"] = s.tools
@@ -355,6 +359,20 @@ func (s *Service) stageSecurity(ctx context.Context, event *pipeline.Context) er
 		return err
 	}
 	if !decision.Handled && decision.Reply == "" {
+		if !s.commandMessage(state.text) {
+			s.sessions.AddObservation(state.sessionID, state.promptText)
+		}
+		return nil
+	}
+	// If the attacker in a group chat explicitly @-mentioned another user/bot
+	// (e.g. "@噜噜 | bot ..."), record the incident silently without replying
+	// so we never out ourselves as a bot or act as a WAF oracle for someone else's target.
+	if state.chatType == platform.ChatGroup && !state.eventMentioned &&
+		(mentionsAnotherUser(state.event.Chain, state.selfID) ||
+			containsTextualMention(state.text)) {
+		state.securityDenied = true
+		state.ignored = true
+		event.Stop("security_addressed_to_another_user")
 		return nil
 	}
 	state.securityDenied = true
@@ -1315,6 +1333,17 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			}
 			parts = filtered
 			if len(parts) == 0 {
+				return nil
+			}
+		}
+		for _, part := range parts {
+			if outboundSecretLeakPattern.MatchString(part) {
+				s.logger.Warn(
+					"outbound secret leak blocked",
+					"platform", state.platform,
+					"chat_type", state.chatType,
+					"chat_id", state.chatID,
+				)
 				return nil
 			}
 		}
