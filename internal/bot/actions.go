@@ -397,6 +397,13 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 		return
 	}
 	for i, component := range chain {
+		// Data can be nil for hand-built segments — map writes panic on
+		// nil, reads don't, so guard only before storing.
+		ensureData := func() {
+			if chain[i].Data == nil {
+				chain[i].Data = map[string]any{}
+			}
+		}
 		switch component.Type {
 		case message.TypeRecord:
 			if strings.TrimSpace(valueString(component.Data, "text")) != "" {
@@ -408,6 +415,7 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 			}
 			transcript := s.transcribeRecord(ctx, state, fileID)
 			if transcript != "" {
+				ensureData()
 				chain[i].Data["text"] = transcript
 			}
 		case message.TypeForward:
@@ -420,6 +428,7 @@ func (s *Service) enrichInboundMedia(ctx context.Context, state *flowState, chai
 			}
 			flat := s.flattenForward(ctx, state, id)
 			if flat != "" {
+				ensureData()
 				chain[i].Data["text"] = flat
 			}
 		}

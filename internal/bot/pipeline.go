@@ -1862,7 +1862,7 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 	if needProfile {
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		raw, err := s.userProfiler.Call(cctx, "get_stranger_info",
+		raw, err := s.callAction(cctx, state, "get_stranger_info",
 			map[string]any{"user_id": state.userID})
 		card = chatprefs.UserCard{FetchedAt: now}
 		if err == nil {
@@ -1882,7 +1882,7 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 				if card.Sign == "" {
 					card.Sign = strField(m, "long_nick")
 				}
-				card.Friend = s.friendListed(cctx, state.userID)
+				card.Friend = s.friendListed(cctx, state, state.userID)
 			}
 		}
 		_ = s.chatPrefs.SetUserCard(state.userID, card)
@@ -1893,7 +1893,7 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 		}
 		cctx, cancel := context.WithTimeout(ctx, 3*time.Second)
 		defer cancel()
-		raw, err := s.userProfiler.Call(cctx, "get_group_member_info",
+		raw, err := s.callAction(cctx, state, "get_group_member_info",
 			map[string]any{
 				"group_id": state.chatID,
 				"user_id":  state.userID,
@@ -1912,8 +1912,8 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 
 // friendListed checks the friend list once during a card refresh — a
 // human knows who's already a friend, and so should she.
-func (s *Service) friendListed(ctx context.Context, userID string) bool {
-	raw, err := s.userProfiler.Call(ctx, "get_friend_list", map[string]any{})
+func (s *Service) friendListed(ctx context.Context, state *flowState, userID string) bool {
+	raw, err := s.callAction(ctx, state, "get_friend_list", map[string]any{})
 	if err != nil {
 		return false
 	}

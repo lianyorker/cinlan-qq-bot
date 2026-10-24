@@ -84,3 +84,32 @@ SUPPORT_QQ_TOKEN=<shared-token>
 
 文件中的 `access_token_env` 只保存环境变量名。出站消息、Cron 和 Admin action
 按 account name 或 `self_id` 路由；`GET /api/v1/accounts` 返回各账号连接状态。
+
+## 语音转写与合并转发
+
+入站语音段经过 `get_record`（`out_format=mp3`，由 NapCat 服务端转码，
+不需要本地解 silk）取回本地文件后，交给 OpenAI 兼容的
+`/audio/transcriptions` 端点转写，模型收到的就是文字而不是 `[语音]` 标记。
+整个链路是 best-effort：取文件失败、文件为空或超过 8 MB、转写超时报错，
+都只记日志并保留原标记，不阻塞正常回复。
+
+```dotenv
+ASR_API_URL=https://api.siliconflow.cn/v1
+ASR_API_KEY=sk-...
+ASR_MODEL=FunAudioLLM/SenseVoiceSmall
+```
+
+`ASR_API_URL` 为空则客户端不创建、特性整体关闭；URL 已含
+`/audio/transcriptions` 时原样使用，否则自动补路径。鉴权走
+`Authorization: Bearer`（密钥可不配）。推荐 SiliconFlow 的
+`FunAudioLLM/SenseVoiceSmall`：免费额度、中文识别好、国内直连；
+Groq `whisper-large-v3` 或自建 whisper.cpp 服务同样兼容。
+
+入站合并转发段（`type=forward`）走 `get_forward_msg`，结果摊平成
+`昵称: 内容` 的文本行交给模型；非文本内容降级为 `[图片]`、`[语音]`、
+`[套娃转发]` 等占位标记，上限 15 行 / 500 字，超长自动截断追加
+`…（后面还有）`。
+
+两类 action（`get_record`、`get_forward_msg`，以及表情回应、戳一戳、
+发后撤回、`get_stranger_info` 等查询）在多账号部署中都会按收到事件的
+`self_id` 路由到对应账号，不再打到默认账号。
