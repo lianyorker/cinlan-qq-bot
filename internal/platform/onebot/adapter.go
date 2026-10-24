@@ -31,10 +31,14 @@ type Adapter struct {
 	// community-specific file (e.g. zkmall SQL) from leaking to anyone
 	// who merely adds the bot.
 	FriendFileGroups []string
-	// GroupWelcomeImage / GroupWelcomeGroups deliver an at-mention plus a
-	// welcome image when a member joins a listed group.
+	// GroupWelcomeImage / GroupWelcomeText / GroupWelcomeGroups deliver an
+	// at-mention plus a welcome message when a member joins a listed group.
 	GroupWelcomeImage  string
+	GroupWelcomeText   string
 	GroupWelcomeGroups map[string]bool
+	// WelcomeSkipUserIDs never gets friend/group welcomes — peer bot
+	// accounts and our own self IDs shouldn't be greeted like members.
+	WelcomeSkipUserIDs map[string]bool
 }
 
 func NewAdapter(client *onebot.Client, logger *slog.Logger) *Adapter {
@@ -83,6 +87,9 @@ func (a *Adapter) Run(ctx context.Context) error {
 				continue
 			}
 			if event.PostType == "notice" && event.NoticeType == "friend_add" {
+				if a.welcomeSkipped(event.UserID.String()) {
+					continue
+				}
 				a.logger.Info("friend_add notice", "user_id", event.UserID.String())
 				a.deliverFriendWelcome(ctx, event.UserID.String())
 				continue
@@ -90,7 +97,9 @@ func (a *Adapter) Run(ctx context.Context) error {
 			if event.PostType == "notice" && event.NoticeType == "group_increase" {
 				groupID := event.GroupID.String()
 				userID := event.UserID.String()
-				if a.GroupWelcomeGroups[groupID] {
+				if a.GroupWelcomeGroups[groupID] &&
+					userID != event.SelfID.String() &&
+					!a.welcomeSkipped(userID) {
 					a.logger.Info("group_increase notice",
 						"group_id", groupID, "user_id", userID)
 					a.deliverGroupWelcome(ctx, groupID, userID)
@@ -296,16 +305,31 @@ func (w *friendWelcomeSent) mark(userID string) bool {
 
 var groupWelcomeRecent friendWelcomeSent
 
-// deliverGroupWelcome sends an at-mention and the configured welcome image to
-// a group that just gained a member. Deduped per member like friend welcomes.
+// welcomeSkipped reports whether this account should never receive a
+// welcome — its own bot IDs and configured peer accounts.
+func (a *Adapter) welcomeSkipped(userID string) bool {
+	return a.WelcomeSkipUserIDs[strings.TrimSpace(userID)]
+}
+
+// deliverGroupWelcome sends an at-mention plus the configured welcome text
+// and image to a group that just gained a member. The newest group
+// announcement is read first so the welcome can point at it. Deduped per
+// member like friend welcomes.
 func (a *Adapter) deliverGroupWelcome(ctx context.Context, groupID, userID string) {
+	text := strings.TrimSpace(a.GroupWelcomeText)
 	path := strings.TrimSpace(a.GroupWelcomeImage)
-	if path == "" || !groupWelcomeRecent.mark(groupID+":"+userID) {
+	if (text == "" && path == "") || !groupWelcomeRecent.mark(groupID+":"+userID) {
 		return
 	}
-	chain := message.Chain{
-		message.At(userID),
-		message.Image(path),
+	chain := message.Chain{message.At(userID)}
+	if text != "" {
+		if notice := a.groupNotice(ctx, groupID); notice != "" {
+			text += "\n群公告：" + notice
+		}
+		chain = append(chain, message.Text(text))
+	}
+	if path != "" {
+		chain = append(chain, message.Image(path))
 	}
 	if err := a.client.SendGroupMessage(ctx, groupID, chain); err != nil {
 		a.logger.Warn("failed to send group welcome",
@@ -314,6 +338,59 @@ func (a *Adapter) deliverGroupWelcome(ctx context.Context, groupID, userID strin
 	}
 	a.logger.Info("group welcome sent",
 		"group_id", groupID, "user_id", userID)
+}
+
+// groupNotice returns the newest group announcement text (truncated), so a
+// welcome can reference the real rules instead of a canned line. Any
+// failure degrades to "" — the welcome still goes out.
+func (a *Adapter) groupNotice(ctx context.Context, groupID string) string {
+	if a.client == nil {
+		return ""
+	}
+	data, err := a.client.CallAction(ctx, "get_group_notice", map[string]any{
+		"group_id": groupID,
+	})
+	if err != nil {
+		a.logger.Warn("failed to read group notice",
+			"group_id", groupID, "error", err.Error())
+		return ""
+	}
+	type noticeItem struct {
+		Message struct {
+			Text string `json:"text"`
+		} `json:"message"`
+		Text string `json:"text"`
+	}
+	var notices []noticeItem
+	if err := json.Unmarshal(data, &notices); err != nil {
+		// Some implementations wrap the list: {feed:[...]} or {list:[...]}.
+		var wrapped struct {
+			Feed []noticeItem `json:"feed"`
+			List []noticeItem `json:"list"`
+			Data []noticeItem `json:"data"`
+		}
+		if err2 := json.Unmarshal(data, &wrapped); err2 != nil {
+			return ""
+		}
+		notices = append(notices, wrapped.Feed...)
+		notices = append(notices, wrapped.List...)
+		notices = append(notices, wrapped.Data...)
+	}
+	for index := len(notices) - 1; index >= 0; index-- {
+		text := strings.TrimSpace(notices[index].Message.Text)
+		if text == "" {
+			text = strings.TrimSpace(notices[index].Text)
+		}
+		if text == "" {
+			continue
+		}
+		runes := []rune(text)
+		if len(runes) > 120 {
+			text = string(runes[:120]) + "…"
+		}
+		return text
+	}
+	return ""
 }
 
 func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {

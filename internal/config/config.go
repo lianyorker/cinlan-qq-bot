@@ -1,6 +1,7 @@
 package config
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -113,7 +114,19 @@ type Config struct {
 	// these groups (comma-separated group ids); empty = send to anyone.
 	FriendFileGroups   []string
 	GroupWelcomeImage  string
+	GroupWelcomeText   string
 	GroupWelcomeGroups []string
+	// WelcomeFile is an optional JSON config (friend_text / group_text)
+	// that overrides the env welcome texts so operators can edit them
+	// without touching the service environment.
+	WelcomeFile string
+	// BasePromptFile holds the shared human-like behavior rules injected
+	// into every persona prompt, so personas only carry their own voice.
+	BasePromptFile string
+	// PeerBotIDs are bot accounts run by other deployments in the same
+	// groups. Their messages are observed but never answered, so two
+	// personas never argue with each other in public.
+	PeerBotIDs []string
 	AdminUserIDs       []string
 	ChatPrefsFile      string
 	AffinityFile       string
@@ -326,7 +339,11 @@ func Load() (Config, error) {
 		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
 		FriendFileGroups:   parseList(os.Getenv("FRIEND_FILE_GROUPS")),
 		GroupWelcomeImage:  envOrAllowEmpty("GROUP_WELCOME_IMAGE", ""),
+		GroupWelcomeText:   envOrAllowEmpty("GROUP_WELCOME_TEXT", ""),
 		GroupWelcomeGroups: parseList(envOrAllowEmpty("GROUP_WELCOME_GROUPS", "")),
+		WelcomeFile:        envOrAllowEmpty("WELCOME_FILE", "data/welcome.json"),
+		BasePromptFile:     envOrAllowEmpty("BASE_PROMPT_FILE", "data/prompts/base-human.md"),
+		PeerBotIDs:         parseList(envOrAllowEmpty("PEER_BOT_IDS", "")),
 		ChatPrefsFile:      envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
 		AffinityFile:       envOr("AFFINITY_FILE", "data/affinity.json"),
 		IQChartAPIBase: envOr(
@@ -596,10 +613,41 @@ func Load() (Config, error) {
 	}
 	cfg.ProactiveGroups = proactiveGroups
 
+	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {
 		errs = append(errs, err)
 	}
 	return cfg, errors.Join(errs...)
+}
+
+// applyWelcomeFile lets data/welcome.json override the env welcome texts.
+// A missing file is not an error — env values stay in effect.
+func applyWelcomeFile(cfg *Config, errs *[]error) {
+	path := strings.TrimSpace(cfg.WelcomeFile)
+	if path == "" {
+		return
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if !os.IsNotExist(err) {
+			*errs = append(*errs, fmt.Errorf("read welcome file: %w", err))
+		}
+		return
+	}
+	var file struct {
+		FriendText string `json:"friend_text"`
+		GroupText  string `json:"group_text"`
+	}
+	if err := json.Unmarshal(data, &file); err != nil {
+		*errs = append(*errs, fmt.Errorf("parse welcome file: %w", err))
+		return
+	}
+	if text := strings.TrimSpace(file.FriendText); text != "" {
+		cfg.FriendWelcomeText = text
+	}
+	if text := strings.TrimSpace(file.GroupText); text != "" {
+		cfg.GroupWelcomeText = text
+	}
 }
 
 func (c Config) Validate() error {

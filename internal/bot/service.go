@@ -6,6 +6,7 @@ import (
 	"hash/fnv"
 	"log/slog"
 	"math/rand"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -139,6 +140,13 @@ type Service struct {
 	affinity       *affinity.Store
 	memeDir        string
 	keywordTools   []keywordTool
+	// basePrompt is the shared human-like behavior block loaded from
+	// cfg.BasePromptFile and appended to every persona prompt.
+	basePrompt string
+	// peerSelfIDs are our own other bot accounts. Their group messages are
+	// observed as [同伴账号] but never answered — two personas replying to
+	// each other read as one bot contradicting itself.
+	peerSelfIDs map[string]struct{}
 
 	stateMu          sync.Mutex
 	lastAccepted     map[string]time.Time
@@ -252,8 +260,36 @@ func NewWithRuntime(
 			Default:      true,
 		})
 	}
+	if path := strings.TrimSpace(cfg.BasePromptFile); path != "" {
+		if data, err := os.ReadFile(path); err == nil {
+			service.basePrompt = strings.TrimSpace(string(data))
+		} else if !os.IsNotExist(err) {
+			logger.Warn("failed to read base prompt file", "path", path, "error", err.Error())
+		}
+	}
 	service.flow = service.newPipeline()
 	return service
+}
+
+// SetPeerSelfIDs registers our own other bot accounts so their group
+// messages are observed but never answered.
+func (s *Service) SetPeerSelfIDs(selfIDs []string) {
+	peers := make(map[string]struct{}, len(selfIDs))
+	for _, selfID := range selfIDs {
+		selfID = strings.TrimSpace(selfID)
+		if selfID != "" {
+			peers[selfID] = struct{}{}
+		}
+	}
+	s.peerSelfIDs = peers
+}
+
+func (s *Service) isPeerSelf(userID string) bool {
+	if len(s.peerSelfIDs) == 0 {
+		return false
+	}
+	_, ok := s.peerSelfIDs[strings.TrimSpace(userID)]
+	return ok
 }
 
 func (s *Service) ProviderRegistry() *provider.Registry {
@@ -364,6 +400,43 @@ func (s *Service) RegisterKeywordMeme(pattern *regexp.Regexp) {
 		return
 	}
 	s.keywordTools = append(s.keywordTools, keywordTool{pattern: pattern, meme: true})
+}
+
+// ReferenceImageFor resolves the reference photo for an image-edit call.
+// A remembered per-chat image (/记住 带图) wins; when the chat has none the
+// bound persona's fixed default_image (canonical portrait) kicks in, so she
+// stops drifting face shapes in chats that never stored a photo.
+func (s *Service) ReferenceImageFor(ctx context.Context, actor tool.Actor) string {
+	if s.chatPrefs != nil {
+		if path := s.chatPrefs.LatestImage(actor.ChatType, actor.ChatID); path != "" {
+			return path
+		}
+	}
+	personaName := ""
+	if s.chatPrefs != nil {
+		personaName = s.chatPrefs.PersonaName(actor.ChatType, actor.ChatID)
+	}
+	if personaName == "" && s.bindings != nil {
+		var memberOf func(groupID, userID string) bool
+		if actor.ChatType == platform.ChatPrivate {
+			memberOf = func(groupID, userID string) bool {
+				return s.groupMemberOf(ctx, actor.SelfID, groupID, userID)
+			}
+		}
+		if rule, ok := s.bindings.MatchActor(
+			actor.Platform, actor.SelfID,
+			actor.ChatType, actor.ChatID, actor.UserID, memberOf,
+		); ok {
+			personaName = rule.Persona
+		}
+	}
+	if personaName == "" || s.personas == nil {
+		return ""
+	}
+	if profile, ok := s.personas.Get(personaName); ok {
+		return strings.TrimSpace(profile.DefaultImage)
+	}
+	return ""
 }
 
 type keywordTool struct {

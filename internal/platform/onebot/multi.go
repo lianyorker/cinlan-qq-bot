@@ -227,6 +227,34 @@ func (m *MultiAdapter) SetFriendWelcome(text, filePath string, groups []string) 
 	}
 }
 
+// SetGroupWelcome configures the text/image delivered when a member joins a
+// listed group on every account.
+func (m *MultiAdapter) SetGroupWelcome(text, imagePath string, groups []string) {
+	allowed := make(map[string]bool, len(groups))
+	for _, groupID := range groups {
+		allowed[groupID] = true
+	}
+	for _, account := range m.accounts {
+		account.adapter.GroupWelcomeText = text
+		account.adapter.GroupWelcomeImage = imagePath
+		account.adapter.GroupWelcomeGroups = allowed
+	}
+}
+
+// SetWelcomeSkip lists accounts that never receive welcomes on any account —
+// peer bots and our own other accounts joining shouldn't be greeted.
+func (m *MultiAdapter) SetWelcomeSkip(userIDs []string) {
+	skip := make(map[string]bool, len(userIDs))
+	for _, userID := range userIDs {
+		if userID = strings.TrimSpace(userID); userID != "" {
+			skip[userID] = true
+		}
+	}
+	for _, account := range m.accounts {
+		account.adapter.WelcomeSkipUserIDs = skip
+	}
+}
+
 func (m *MultiAdapter) Connected() bool {
 	for _, account := range m.accounts {
 		if account.adapter.Connected() {

@@ -208,7 +208,7 @@ func TestBindingRemovesOutboundLinks(t *testing.T) {
 	cfg := testBotConfig(t)
 	agentClient := &fakeAgent{
 		response: domain.AgentResponse{
-			Reply: "See https://example.com/path and docs.example.org/a.",
+			Reply: "看这个 https://example.com/path 吧。行吧。",
 		},
 	}
 	sender := &fakeSender{}
@@ -231,12 +231,69 @@ func TestBindingRemovesOutboundLinks(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("no-links", "hello", true))
 
 	if len(sender.messages) != 1 ||
-		strings.Contains(sender.messages[0].text, "example.") {
+		strings.Contains(sender.messages[0].text, "example.") ||
+		strings.Contains(sender.messages[0].text, "链接已省略") {
 		t.Fatalf("outbound = %#v", sender.messages)
 	}
 	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
 	if len(snapshot.History) != 2 ||
 		strings.Contains(snapshot.History[1].Content, "example.") {
+		t.Fatalf("history = %#v", snapshot.History)
+	}
+}
+
+func TestBindingDropsAllLinkReply(t *testing.T) {
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{
+		response: domain.AgentResponse{
+			Reply: "卡网是这个 wzyp.cn/item/6i2fcg",
+		},
+	}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	allowLinks := false
+	bindings, err := binding.NewRegistry([]binding.Rule{{
+		Name:       "no-links",
+		Platform:   "*",
+		SelfID:     "10001",
+		ChatType:   "group",
+		ChatID:     "30003",
+		AllowLinks: &allowLinks,
+	}})
+	if err != nil {
+		t.Fatalf("NewRegistry() error = %v", err)
+	}
+	service.SetChatBindings(bindings)
+
+	service.handleEvent(context.Background(), testEvent("no-links-all", "hello", true))
+
+	if len(sender.messages) != 0 {
+		t.Fatalf("outbound = %#v, want no messages", sender.messages)
+	}
+}
+
+func TestPeerBotAccountIsObservedButNeverAnswered(t *testing.T) {
+	cfg := testBotConfig(t)
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "不该发出去"}}
+	sender := &fakeSender{}
+	sessions := session.New(10, time.Hour)
+	service := New(cfg, agentClient, sender, sessions, testLogger())
+	service.SetPeerSelfIDs([]string{"10001", "10002"})
+
+	service.handleEvent(
+		context.Background(),
+		testEventFrom("peer-1", "我哪有渠道", true, "10002", "噜噜"),
+	)
+
+	if len(agentClient.requests) != 0 {
+		t.Fatalf("agent calls = %d, want 0", len(agentClient.requests))
+	}
+	if len(sender.messages) != 0 {
+		t.Fatalf("outbound = %#v, want none", sender.messages)
+	}
+	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
+	if len(snapshot.History) != 1 ||
+		!strings.Contains(snapshot.History[0].Content, "[其他机器人 10002]") {
 		t.Fatalf("history = %#v", snapshot.History)
 	}
 }

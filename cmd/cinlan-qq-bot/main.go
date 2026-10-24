@@ -250,6 +250,7 @@ func main() {
 			}
 			multiAdapter.SetAutoAcceptFriend(cfg.OneBotAutoAccept)
 			multiAdapter.SetFriendWelcome(cfg.FriendWelcomeText, cfg.FriendFilePath, cfg.FriendFileGroups)
+			multiAdapter.SetGroupWelcome(cfg.GroupWelcomeText, cfg.GroupWelcomeImage, cfg.GroupWelcomeGroups)
 			qqAdapter = multiAdapter
 		} else {
 			oneBotURL := cfg.OneBotWSURL
@@ -271,6 +272,7 @@ func main() {
 			oneBotAdapter.FriendFilePath = cfg.FriendFilePath
 			oneBotAdapter.FriendFileGroups = cfg.FriendFileGroups
 			oneBotAdapter.GroupWelcomeImage = cfg.GroupWelcomeImage
+			oneBotAdapter.GroupWelcomeText = cfg.GroupWelcomeText
 			oneBotAdapter.GroupWelcomeGroups = make(map[string]bool, len(cfg.GroupWelcomeGroups))
 			for _, groupID := range cfg.GroupWelcomeGroups {
 				oneBotAdapter.GroupWelcomeGroups[groupID] = true
@@ -321,6 +323,31 @@ func main() {
 	}
 	if checker, ok := qqAdapter.(bot.GroupMemberChecker); ok {
 		botService.SetGroupMemberChecker(checker)
+	}
+	peerSelfIDs := append([]string(nil), cfg.PeerBotIDs...)
+	if multi, ok := qqAdapter.(*onebotplatform.MultiAdapter); ok {
+		accounts := multi.Accounts()
+		if len(accounts) > 1 {
+			for _, account := range accounts {
+				peerSelfIDs = append(peerSelfIDs, account.SelfID)
+			}
+		}
+	}
+	if len(peerSelfIDs) > 0 {
+		botService.SetPeerSelfIDs(peerSelfIDs)
+		logger.Info("peer bot accounts registered", "accounts", len(peerSelfIDs))
+	}
+	// Same accounts never get a welcome — a peer bot joining shouldn't be
+	// greeted like a new member.
+	if len(peerSelfIDs) > 0 {
+		if multi, ok := qqAdapter.(*onebotplatform.MultiAdapter); ok {
+			multi.SetWelcomeSkip(peerSelfIDs)
+		} else if single, ok := qqAdapter.(*onebotplatform.Adapter); ok {
+			single.WelcomeSkipUserIDs = make(map[string]bool, len(peerSelfIDs))
+			for _, id := range peerSelfIDs {
+				single.WelcomeSkipUserIDs[id] = true
+			}
+		}
 	}
 	if warnStore, warnErr := moderation.Open(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "moderation.json"),

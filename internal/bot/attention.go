@@ -95,6 +95,10 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		)
 		return s.applyAttentionFallback(event, state, "attention_error")
 	}
+	if decision.Category == "unsafe" {
+		s.stats.attentionIgnored.Add(1)
+		return ignoreForAttention(event, state, "attention_unsafe")
+	}
 	if decision.Confidence < state.replyPolicy.ConfidenceThreshold {
 		return s.applyAttentionFallback(event, state, "attention_low_confidence")
 	}

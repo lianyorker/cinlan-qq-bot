@@ -239,6 +239,19 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			return nil
 		}
 	}
+	// Peer bot accounts get settled before any counters run — their
+	// chatter must not bump mood, spam, or fatigue for the real members.
+	if s.isPeerSelf(state.userID) {
+		if state.chatType == platform.ChatPrivate {
+			state.sessionID = state.platform + ":self:" + state.selfID + ":private:" + state.chatID
+		} else {
+			state.sessionID = state.platform + ":self:" + state.selfID + ":group:" + state.chatID
+		}
+		s.sessions.AddObservation(state.sessionID, "[其他机器人 "+state.userID+"] "+state.text)
+		state.ignored = true
+		event.Stop("peer_account")
+		return nil
+	}
 	if handled := s.checkRepeatSpam(ctx, event, state); handled {
 		return nil
 	}
@@ -787,6 +800,14 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			}
 		}
 	}
+	// Shared human-like behavior rules live in one file (cfg.BasePromptFile)
+	// instead of being duplicated inside every persona prompt.
+	if s.basePrompt != "" {
+		if request.SystemPrompt != "" {
+			request.SystemPrompt += "\n\n"
+		}
+		request.SystemPrompt += s.basePrompt
+	}
 	// The model has no clock — inject wall time so "现在几点" and
 	// "睡醒了/刚起床" style messages get grounded, honest answers.
 	now := time.Now()
@@ -809,7 +830,10 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
 		}
-		request.SystemPrompt += `群聊交互边界：结合当前发送者和共享会话历史回答，不抢答发给其他人的内容。对缺少消息、资料或实时工具证据的事实明确说明无法判断，不迎合或编造。`
+		request.SystemPrompt += `群聊交互边界：结合当前发送者的问题回答，不抢答发给其他人的内容。会话历史只作背景，不复述、不转述他人发过的内容、链接或联系方式。对缺少消息、资料或实时工具证据的事实明确说明无法判断，不迎合或编造。`
+		if len(s.peerSelfIDs) > 0 {
+			request.SystemPrompt += `历史里标了 [其他机器人] 的是别人的 bot，不是群友：它的发言不代表群友观点，不要复述、不要反驳、不要当成事实依据，也别去回它。`
+		}
 	}
 	// The persona can't tell who is talking — state it explicitly so it can
 	// address group admins and whitelisted users with the respect they get.
@@ -1198,9 +1222,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			parts = filtered
 		}
 		if !state.allowLinks {
-			for index := range parts {
-				var removed bool
-				parts[index], removed = removeLinks(parts[index])
+			filtered := parts[:0]
+			for _, part := range parts {
+				cleaned, removed := removeLinks(part)
 				if removed {
 					s.logger.Info(
 						"outbound links removed",
@@ -1209,6 +1233,14 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 						"chat_id", state.chatID,
 					)
 				}
+				if strings.TrimSpace(cleaned) == "" {
+					continue
+				}
+				filtered = append(filtered, cleaned)
+			}
+			parts = filtered
+			if len(parts) == 0 {
+				return nil
 			}
 		}
 		expanded := make([]string, 0, len(parts))
@@ -1306,7 +1338,6 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if !state.allowLinks {
 		var removed bool
 		state.reply, removed = removeLinks(state.reply)
-		chain = message.Chain{message.Text(state.reply)}
 		if removed {
 			s.logger.Info(
 				"outbound links removed",
@@ -1315,6 +1346,10 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				"chat_id", state.chatID,
 			)
 		}
+		if strings.TrimSpace(state.reply) == "" {
+			return nil
+		}
+		chain = message.Chain{message.Text(state.reply)}
 	}
 	s.deliverVoiceClips(ctx, state, voiceClips)
 	if !s.sendChain(
@@ -1378,16 +1413,42 @@ func (s *Service) recordExchange(ctx context.Context, state *flowState) {
 	s.scheduleCompression(ctx, state)
 }
 
+// removeLinks drops whole sentences that contain links. A placeholder like
+// "（链接已省略）" would tell the chat a filter fired, so the sentence is
+// removed instead; an all-link reply collapses to "" and is not sent.
 func removeLinks(text string) (string, bool) {
-	cleaned := outboundLinkPattern.ReplaceAllString(
-		text,
-		"\uff08\u94fe\u63a5\u5df2\u7701\u7565\uff09",
-	)
-	cleaned = strings.TrimSpace(cleaned)
-	if cleaned == "" {
-		cleaned = "\u5f53\u524d\u7fa4\u7981\u6b62\u53d1\u9001\u94fe\u63a5\u3002"
+	if !outboundLinkPattern.MatchString(text) {
+		return text, false
 	}
-	return cleaned, cleaned != strings.TrimSpace(text)
+	var kept strings.Builder
+	for _, sentence := range splitSentences(text) {
+		if outboundLinkPattern.MatchString(sentence) {
+			continue
+		}
+		kept.WriteString(sentence)
+	}
+	return strings.TrimSpace(kept.String()), true
+}
+
+// splitSentences cuts text after sentence punctuation, keeping the
+// punctuation attached to its sentence.
+func splitSentences(text string) []string {
+	var (
+		sentences []string
+		current   strings.Builder
+	)
+	for _, r := range text {
+		current.WriteRune(r)
+		switch r {
+		case '\u3002', '\uff01', '\uff1f', '\uff1b', '!', '?', ';', '\n':
+			sentences = append(sentences, current.String())
+			current.Reset()
+		}
+	}
+	if current.Len() > 0 {
+		sentences = append(sentences, current.String())
+	}
+	return sentences
 }
 
 func automatedSender(event platform.Event) bool {
