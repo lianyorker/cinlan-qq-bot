@@ -16,7 +16,8 @@ import (
 
 // Config configures a voice provider.
 type Config struct {
-	// Mode: "edge" (default), "openai", "volcano", "command", or "off".
+	// Mode: "edge" (default), "openai", "volcano", "breeze", "command",
+	// or "off".
 	Mode string
 	// Voice is the voice name, e.g. zh-CN-XiaoyiNeural (edge) or nova (openai).
 	Voice string
@@ -35,6 +36,11 @@ type Config struct {
 	VolcToken      string
 	VolcResourceID string
 	VolcEmotion    string
+	// "breeze" mode (Breeze Blue, api.breeze.blue): Voice is the
+	// voice_id (voc_…), APIURL overrides the API base (default
+	// https://api.breeze.blue), APIKey is the brz_… key sent as
+	// xi-api-key, and Model optionally selects model_id such as
+	// breeze-tts-2-multilingual for zh output.
 	// Rate/Pitch map to SSML prosody (edge only, e.g. "+10%", "+2Hz").
 	Rate  string
 	Pitch string
@@ -118,6 +124,29 @@ func New(cfg Config) (Provider, error) {
 			emotion:    strings.TrimSpace(cfg.VolcEmotion),
 			timeout:    cfg.Timeout,
 			client:     &http.Client{Timeout: cfg.Timeout},
+		}, nil
+	case "breeze", "breezeblue":
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			return nil, fmt.Errorf(
+				"tts breeze mode needs VOICE_API_KEY (brz_…)")
+		}
+		voice := strings.TrimSpace(cfg.Voice)
+		if strings.HasPrefix(voice, "zh-CN-") {
+			// Edge default leaking in — a Breeze voice_id is required;
+			// edge names would 404 against api.breeze.blue.
+			voice = ""
+		}
+		apiBase := strings.TrimSpace(cfg.APIURL)
+		if apiBase == "" {
+			apiBase = breezeDefaultAPIBase
+		}
+		return &breezeProvider{
+			apiBase: apiBase,
+			apiKey:  strings.TrimSpace(cfg.APIKey),
+			model:   strings.TrimSpace(cfg.Model),
+			voice:   voice,
+			timeout: cfg.Timeout,
+			client:  &http.Client{Timeout: cfg.Timeout},
 		}, nil
 	case "command":
 		if strings.TrimSpace(cfg.Command) == "" {
