@@ -1131,12 +1131,8 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 				continue
 			}
 			recalledRunes += len([]rune(f.Text))
-			age := humanizeGap(now.Sub(f.CreatedAt))
-			if age == "0分钟" {
-				age = "刚才"
-			}
 			recalled = append(recalled, fmt.Sprintf(
-				"你突然想起（%s记的）：%s", age, f.Text,
+				"你突然想起（%s记的）：%s", factAge(now, f.CreatedAt), f.Text,
 			))
 		}
 		if len(recalled) > 0 {
@@ -1147,17 +1143,28 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		// facts don't drown inside the generic memory list.
 		if promises := s.chatPrefs.PromiseFacts(
 			state.platform, state.chatType, state.chatID); len(promises) > 0 {
-			lines := make([]string, 0, len(promises))
+			lines := make([]string, 0, 3)
 			for _, p := range promises {
-				if recentSet[p.Text] {
+				if recentSet[p.Text] || len(lines) >= 3 {
 					continue
 				}
-				lines = append(lines, "· "+strings.TrimPrefix(p.Text, "承诺·"))
+				line := "· " + strings.TrimPrefix(p.Text, "承诺·")
+				if now.Sub(p.CreatedAt) > 24*time.Hour {
+					line += "（" + p.CreatedAt.Format("01-02") + "答应的）"
+				}
+				lines = append(lines, line)
 			}
 			if len(lines) > 0 {
 				request.SystemPrompt += "\n\n你之前答应过的事（别忘了兑现或跟进）：\n" +
 					strings.Join(lines, "\n")
 			}
+		}
+		// Upstream prevention beats post-send scrubbing: tell her which
+		// phrases the chat banned so she never produces them at all.
+		if bans := s.chatPrefs.ToneBans(
+			state.platform, state.chatType, state.chatID); len(bans) > 0 {
+			request.SystemPrompt += "\n\n他们让你别再说这些词：" +
+				strings.Join(bans, "、") + "——自然绕开，别再用了"
 		}
 		// Her take on the speaker: chat-local first, then the persona-wide
 		// profile so she recognizes people across her own bindings.
@@ -1317,6 +1324,11 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 		return nil
 	}
 
+	// Inbound-only learning runs before the path split — tone bans and
+	// self-corrections apply to every reply path, plugins included.
+	s.learnToneBan(state)
+	s.noteCorrection(state)
+
 	if state.pluginHandled {
 		state.reply = strings.TrimSpace(state.reply)
 		if state.reply == "" {
@@ -1324,6 +1336,10 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 			state.reply = state.errorReply
 			s.stats.agentErrors.Add(1)
 		}
+		// Plugin replies are still her voice: scrub banned phrases and
+		// capture any promise the canned line made.
+		s.applyToneGuard(state)
+		s.notePromise(state)
 		state.outbound = message.Chain{message.Text(state.reply)}
 		return nil
 	}
@@ -1355,13 +1371,11 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 		)
 		return nil
 	}
-	// Negative feedback + self-promise capture run on the resolved reply
-	// BEFORE the outbound chain is built — the scrubbed text is what sends
-	// AND what history records.
-	s.learnToneBan(state)
+	// Tone scrub + self-promise capture run on the resolved reply BEFORE
+	// the outbound chain is built — the scrubbed text is what sends AND
+	// what history records. (Inbound learning already ran above.)
 	s.applyToneGuard(state)
 	s.notePromise(state)
-	s.noteCorrection(state)
 	if state.outbound.Empty() {
 		state.outbound = message.Chain{message.Text(state.reply)}
 	}
@@ -1776,6 +1790,22 @@ func (s *Service) RecordOutboundAction(plat, selfID, chatType, chatID, desc stri
 		plat+":self:"+selfID+":"+kind+":"+chatID,
 		"[动作] "+desc,
 	)
+}
+
+// factAge renders how long ago a memory was learned — "刚才"/"N小时前"
+// within a day, absolute MM-DD for anything older so "12天前" reads as
+// an actual date instead of a vague gap.
+func factAge(now, at time.Time) string {
+	if at.IsZero() {
+		return "更早"
+	}
+	if d := now.Sub(at); d < 24*time.Hour {
+		if a := humanizeGap(d); a != "" && a != "0分钟" {
+			return a
+		}
+		return "刚才"
+	}
+	return at.Format("01-02")
 }
 
 // crisisSignals flags despair-level language in the inbound message —

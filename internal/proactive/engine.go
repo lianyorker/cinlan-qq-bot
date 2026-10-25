@@ -372,6 +372,15 @@ func (e *Engine) fire(
 			plat, chatType, chatID, e.deps.Now())); hint != "" {
 			system += "\n" + hint
 		}
+		// Time-of-day vibe + chat-banned phrases apply to cold openers
+		// too — proactive text bypasses the pipeline tone guard.
+		if hint := mood.Circadian(e.deps.Now()); hint != "" {
+			system += "\n" + hint
+		}
+		if bans := e.deps.ChatPrefs.ToneBans(plat, chatType, chatID); len(bans) > 0 {
+			system += "\n他们让你别再说这些词：" +
+				strings.Join(bans, "、") + "——别用"
+		}
 	}
 	text := "（群里没人说话，你想说点什么就说）"
 	if chatType == platform.ChatPrivate {
