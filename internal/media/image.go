@@ -162,8 +162,12 @@ func (g *ImageGenerator) Tool() tool.Definition {
 		Name: "generate_image",
 		Description: "根据用户描述生成一张图片并直接发送到当前会话。" +
 			"用户要求画图、生成图片或发一张图片时必须调用；不要只返回提示词。" +
+			"画的是你自己（你的自拍/照片/你的样子）时：prompt 以 [SELF] 开头，" +
+			"系统会自动带上你的参考照片走图生图，保证真人照片风格且长相一致——" +
+			"prompt 里只写场景、动作、穿着，不用编长相；image 参数留空。" +
+			"画别人或别的东西时正常写 prompt，不要加 [SELF]。" +
 			"如果返回“内容审核拒绝”错误：把提示词改写一遍再调用一次——" +
-			"去掉真人自拍、具体年龄、身材/裸露描述，改用动漫或插画风格重试；" +
+			"去掉真人自拍、具体年龄、身材/裸露描述，此时才允许改用插画风格重试；" +
 			"改写后仍被拒就直接跟用户说明被审核挡了，别反复重试。",
 		Parameters: map[string]any{
 			"type": "object",
@@ -191,6 +195,19 @@ func (g *ImageGenerator) Tool() tool.Definition {
 	}
 }
 
+// stripSelfTag detects the model's "this is a photo of ME" contract —
+// prompts describing her own selfie/photo open with [SELF] — and
+// returns the cleaned prompt so the tag never renders as literal text.
+func stripSelfTag(prompt string) (string, bool) {
+	t := strings.TrimSpace(prompt)
+	for _, tag := range []string{"[SELF]", "【SELF】", "[self]", "【self】"} {
+		if strings.HasPrefix(t, tag) {
+			return strings.TrimSpace(t[len(tag):]), true
+		}
+	}
+	return prompt, false
+}
+
 func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Result, error) {
 	var arguments imageArguments
 	decoder := json.NewDecoder(bytes.NewReader(call.Arguments))
@@ -202,6 +219,23 @@ func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Res
 		return tool.Result{}, errors.New("decode image generation arguments: trailing JSON data")
 	}
 	arguments.Prompt = strings.TrimSpace(arguments.Prompt)
+	if cleaned, isSelf := stripSelfTag(arguments.Prompt); isSelf {
+		arguments.Prompt = cleaned
+		// Her own photo: attach the stored reference when the model
+		// didn't supply one, so style stays photorealistic and the
+		// face stays the same person across generations.
+		if arguments.Image == "" && g.referenceFor != nil {
+			if ref := g.referenceFor(ctx, call.Actor); ref != "" {
+				arguments.Image = ref
+			}
+		}
+		if arguments.Image != "" {
+			arguments.Prompt +=
+				"，真人照片风格，与参考照片是同一个人，长相和发色保持一致"
+		} else {
+			arguments.Prompt += "，真人照片风格"
+		}
+	}
 	if arguments.Prompt == "" {
 		return tool.Result{}, errors.New("image prompt is empty")
 	}

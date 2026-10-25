@@ -1474,9 +1474,13 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				parts = []string{single}
 			}
 		} else {
+			planned := planReplyParts(state.reply)
+			if len(planned) <= 1 {
+				planned = softSplitReply(state.reply)
+			}
 			var truncated bool
 			parts, truncated = expandReplyParts(
-				planReplyParts(state.reply),
+				planned,
 				s.cfg.MaxReplyRunes,
 				s.cfg.MaxReplyChunks,
 			)

@@ -444,6 +444,46 @@ func stripSpeakerPrefix(text, name string) string {
 	return text
 }
 
+// softSplitReply breaks a long single-bubble reply into two parts at the
+// sentence boundary nearest the middle when the model forgot [[NEXT]].
+// People send short bursts, not walls of text — replies under 40 runes
+// or with no usable boundary stay whole.
+func softSplitReply(reply string) []string {
+	runes := []rune(reply)
+	if len(runes) < 40 {
+		return []string{reply}
+	}
+	mid := len(runes) / 2
+	best, bestScore := -1, -1
+	for i := 12; i < len(runes)-8; i++ {
+		d := i - mid
+		if d < 0 {
+			d = -d
+		}
+		score := -1
+		switch runes[i] {
+		case '。', '！', '？', '!', '?', '；', ';':
+			score = 1000 - d
+		case '，', ',':
+			score = 500 - d
+		case '~', '～':
+			score = 300 - d
+		}
+		if score > bestScore {
+			bestScore, best = score, i
+		}
+	}
+	if best < 0 {
+		return []string{reply}
+	}
+	head := strings.TrimSpace(string(runes[:best+1]))
+	tail := strings.TrimSpace(string(runes[best+1:]))
+	if head == "" || tail == "" {
+		return []string{reply}
+	}
+	return []string{head, tail}
+}
+
 func expandReplyParts(parts []string, maxRunes, maxChunks int) ([]string, bool) {
 	result := make([]string, 0, min(len(parts), maxChunks))
 	truncated := false

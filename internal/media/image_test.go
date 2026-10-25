@@ -19,6 +19,19 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
+func TestStripSelfTag(t *testing.T) {
+	cleaned, ok := stripSelfTag("[SELF] 刚洗完澡在浴室自拍")
+	if !ok || cleaned != "刚洗完澡在浴室自拍" {
+		t.Fatalf("stripSelfTag = %q, %v", cleaned, ok)
+	}
+	if _, ok := stripSelfTag("画一只橘猫"); ok {
+		t.Fatal("plain prompt wrongly tagged as self")
+	}
+	if _, ok := stripSelfTag("他说 [SELF] 在中间不算"); ok {
+		t.Fatal("mid-prompt tag must not count")
+	}
+}
+
 func TestImageGeneratorOpenAISavesAndReturnsImageChain(t *testing.T) {
 	imageData := testPNG(t)
 	server := httptest.NewServer(http.HandlerFunc(func(
