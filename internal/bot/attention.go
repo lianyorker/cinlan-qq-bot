@@ -76,6 +76,11 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		// the ambient classifier veto it.
 		return nil
 	}
+	if state.chatType == platform.ChatGroup && s.pendingGameMove(state) {
+		// She just threw a move — the opponent's bare counter-move is a
+		// game turn, not ambient noise.
+		return nil
+	}
 	if !s.allowAttentionDecision(state.rateLimitID) {
 		s.stats.attentionRateLimited.Add(1)
 		s.stats.attentionIgnored.Add(1)

@@ -194,6 +194,8 @@ type Service struct {
 	spamRepeats      map[string]spamRepeatEntry
 	fatigueMu        sync.Mutex
 	chatFatigue      map[string]fatigueEntry
+	gameMu           sync.Mutex
+	gameInvites      map[string]time.Time
 	chatMu           sync.Mutex
 	chatLocks        map[string]*sync.Mutex
 	recentMu         sync.Mutex

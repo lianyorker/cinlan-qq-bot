@@ -66,11 +66,11 @@ type flowState struct {
 	// extraPrompt carries the matched binding's prompt_file content —
 	// business rules stay scoped to their domain instead of leaking
 	// via the shared base prompt.
-	extraPrompt    string
-	replyPolicy    binding.ReplyPolicy
-	moderation     *binding.ModerationPolicy
-	learning       bool
-	allowLinks     bool
+	extraPrompt string
+	replyPolicy binding.ReplyPolicy
+	moderation  *binding.ModerationPolicy
+	learning    bool
+	allowLinks  bool
 	// prevActivityAt is the chat's previous traffic timestamp captured
 	// at ingress — after TouchActivity runs, lastActivity is already now.
 	prevActivityAt  time.Time
@@ -332,7 +332,8 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		// Real commands ride through mention-only: /开启通知 must be able
 		// to undo a notify-off group. Non-command "/" text still dies
 		// here — the attention stage does not re-gate mentions.
-		if !state.eventMentioned && !s.commandMessage(state.text) {
+		if !state.eventMentioned && !s.commandMessage(state.text) &&
+			!s.pendingGameMove(state) {
 			state.ignored = true
 			event.Stop("not_mentioned")
 			return nil
@@ -1639,6 +1640,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				s.feelAmbient(
 					ctx, state, "dice", 1, "掷了个骰子", 10*time.Minute,
 				)
+				s.noteGameMove(
+					state.platform + ":" + state.chatType + ":" + state.chatID,
+				)
 				continue
 			}
 			if isRPSMarker(part) {
@@ -1648,6 +1652,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				cleaned = append(cleaned, "[猜拳]")
 				s.feelAmbient(
 					ctx, state, "rps", 1, "跟人猜了把拳", 10*time.Minute,
+				)
+				s.noteGameMove(
+					state.platform + ":" + state.chatType + ":" + state.chatID,
 				)
 				continue
 			}

@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 )
@@ -152,6 +153,44 @@ func (s *Service) noteReplySent(chatKey, userID string) {
 	}
 	entry.at = s.now()
 	s.chatFatigue[chatKey] = entry
+}
+
+// gameInviteWindow is how long an outbound dice/rps move keeps the
+// opponent's bare counter-move reachable — long enough to throw back,
+// short enough to not stay open for random sticker spam.
+const gameInviteWindow = 2 * time.Minute
+
+// noteGameMove records that she just sent a dice/rps segment in this
+// chat, so the opponent's bare reply move can skip mention/attention
+// gates instead of dying at the door.
+func (s *Service) noteGameMove(chatKey string) {
+	s.gameMu.Lock()
+	defer s.gameMu.Unlock()
+	if s.gameInvites == nil {
+		s.gameInvites = map[string]time.Time{}
+	}
+	s.gameInvites[chatKey] = s.now()
+}
+
+// pendingGameMove reports whether this event is a bare game move that
+// answers her recent one — chain carries an rps/dice segment and an
+// invite is still warm in this chat.
+func (s *Service) pendingGameMove(state *flowState) bool {
+	hasMove := false
+	for _, component := range state.event.Chain {
+		if component.Type == message.TypeRPS || component.Type == message.TypeDice {
+			hasMove = true
+			break
+		}
+	}
+	if !hasMove {
+		return false
+	}
+	key := state.platform + ":" + state.chatType + ":" + state.chatID
+	s.gameMu.Lock()
+	defer s.gameMu.Unlock()
+	at, ok := s.gameInvites[key]
+	return ok && s.now().Sub(at) < gameInviteWindow
 }
 
 // checkMentionFatigue drops further messages from a user who already got
