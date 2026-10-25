@@ -338,12 +338,12 @@ func (s *Service) deliverVoiceClips(
 		return
 	}
 	if s.chatPrefs != nil {
-		if !s.chatPrefs.VoiceEnabled(state.platform, state.chatType, state.chatID) {
+		if !s.chatPrefs.VoiceEnabled(state.platform, state.selfID, state.chatType, state.chatID) {
 			return
 		}
 		// Belt-and-braces: even if the model ignored the disabled note
 		// and emitted [[SING]], drop those clips unless sing is on.
-		if !s.chatPrefs.SingEnabled(state.platform, state.chatType, state.chatID) {
+		if !s.chatPrefs.SingEnabled(state.platform, state.selfID, state.chatType, state.chatID) {
 			kept := clips[:0]
 			for _, clip := range clips {
 				if !clip.Singing {

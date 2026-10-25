@@ -115,8 +115,8 @@ func (e *Engine) sweep(ctx context.Context) {
 		return
 	}
 	for _, k := range e.deps.ChatPrefs.ChatKeys() {
-		e.consolidateFacts(ctx, k[0], k[1], k[2])
-		e.consolidateImpressions(ctx, k[0], k[1], k[2])
+		e.consolidateFacts(ctx, k[0], k[1], k[2], k[3])
+		e.consolidateImpressions(ctx, k[0], k[1], k[2], k[3])
 	}
 	e.journal(ctx)
 }
@@ -140,7 +140,7 @@ func (e *Engine) reply(
 
 // bindingFor finds the rule that serves this chat so consolidation runs
 // on the same provider/model the chat actually talks to.
-func (e *Engine) bindingFor(platform, chatType, chatID string) (binding.Rule, bool) {
+func (e *Engine) bindingFor(platform, selfID, chatType, chatID string) (binding.Rule, bool) {
 	if e.deps.Bindings == nil {
 		return binding.Rule{}, false
 	}
@@ -150,6 +150,11 @@ func (e *Engine) bindingFor(platform, chatType, chatID string) (binding.Rule, bo
 		}
 		if rule.Platform != "" && rule.Platform != "*" &&
 			rule.Platform != platform {
+			continue
+		}
+		// A rule pinned to a specific account only consolidates that
+		// account's memory cell — same room, different owner.
+		if rs := strings.TrimSpace(rule.SelfID); rs != "" && rs != selfID {
 			continue
 		}
 		for _, id := range rule.ChatIDs {
@@ -163,12 +168,12 @@ func (e *Engine) bindingFor(platform, chatType, chatID string) (binding.Rule, bo
 
 // consolidateFacts asks the model to fuse the chat's scattered fact
 // lines into fewer, denser entries once the list outgrows the floor.
-func (e *Engine) consolidateFacts(ctx context.Context, platform, chatType, chatID string) {
-	facts := e.deps.ChatPrefs.FactTexts(platform, chatType, chatID)
+func (e *Engine) consolidateFacts(ctx context.Context, platform, selfID, chatType, chatID string) {
+	facts := e.deps.ChatPrefs.FactTexts(platform, selfID, chatType, chatID)
 	if len(facts) <= e.cfg.MergeFactsAt {
 		return
 	}
-	rule, ok := e.bindingFor(platform, chatType, chatID)
+	rule, ok := e.bindingFor(platform, selfID, chatType, chatID)
 	if !ok {
 		return
 	}
@@ -200,7 +205,7 @@ func (e *Engine) consolidateFacts(ctx context.Context, platform, chatType, chatI
 	if len(merged) == 0 || len(merged) >= len(facts) {
 		return // model didn't actually shrink the list — keep originals
 	}
-	if err := e.deps.ChatPrefs.RewriteFacts(platform, chatType, chatID, merged); err != nil {
+	if err := e.deps.ChatPrefs.RewriteFacts(platform, selfID, chatType, chatID, merged); err != nil {
 		e.deps.Logger.Warn("reflect fact rewrite failed",
 			"chat", chatType+":"+chatID, "error", err.Error())
 		return
@@ -214,12 +219,12 @@ func (e *Engine) consolidateFacts(ctx context.Context, platform, chatType, chatI
 // impressions into compact "群友速写" roster facts once the map exceeds
 // the threshold — important members keep their own line, the rest get
 // a shared one instead of silently evaporating at the cap.
-func (e *Engine) consolidateImpressions(ctx context.Context, platform, chatType, chatID string) {
-	snap := e.deps.ChatPrefs.ImpressionSnapshot(platform, chatType, chatID)
+func (e *Engine) consolidateImpressions(ctx context.Context, platform, selfID, chatType, chatID string) {
+	snap := e.deps.ChatPrefs.ImpressionSnapshot(platform, selfID, chatType, chatID)
 	if len(snap) <= e.cfg.MergeImpressionsAt {
 		return
 	}
-	rule, ok := e.bindingFor(platform, chatType, chatID)
+	rule, ok := e.bindingFor(platform, selfID, chatType, chatID)
 	if !ok {
 		return
 	}
@@ -274,13 +279,13 @@ func (e *Engine) consolidateImpressions(ctx context.Context, platform, chatType,
 	for _, s := range list[len(list)/2:] {
 		kept[s.id] = s.text
 	}
-	if err := e.deps.ChatPrefs.RewriteImpressions(platform, chatType, chatID, kept); err != nil {
+	if err := e.deps.ChatPrefs.RewriteImpressions(platform, selfID, chatType, chatID, kept); err != nil {
 		e.deps.Logger.Warn("reflect impression rewrite failed",
 			"chat", chatType+":"+chatID, "error", err.Error())
 		return
 	}
 	for _, line := range roster {
-		_ = e.deps.ChatPrefs.AddFact(platform, chatType, chatID, line)
+		_ = e.deps.ChatPrefs.AddFact(platform, selfID, chatType, chatID, line)
 	}
 	e.deps.Logger.Info("reflect condensed impressions",
 		"chat", chatType+":"+chatID,
@@ -303,7 +308,11 @@ func (e *Engine) journal(ctx context.Context) {
 			plat = e.deps.Platform
 		}
 		for _, chatID := range rule.ChatIDs {
-			if e.deps.ChatPrefs.HasFactPrefix(plat, chatType, chatID, prefix) {
+			selfID := strings.TrimSpace(rule.SelfID)
+			if selfID == "" {
+				continue
+			}
+			if e.deps.ChatPrefs.HasFactPrefix(plat, selfID, chatType, chatID, prefix) {
 				continue // already wrote today
 			}
 			if e.deps.Activity != nil {
@@ -313,17 +322,13 @@ func (e *Engine) journal(ctx context.Context) {
 					continue
 				}
 			}
-			selfID := strings.TrimSpace(rule.SelfID)
-			if selfID == "" {
-				continue
-			}
 			sessionID := plat + ":self:" + selfID +
 				":" + chatType + ":" + chatID
 			history, _ := e.deps.Sessions.Snapshot(sessionID)
 			if len(history) < 4 {
 				continue // not enough of a day to write about
 			}
-			e.writeJournal(ctx, rule, plat, chatType, chatID, history, prefix)
+			e.writeJournal(ctx, rule, plat, selfID, chatType, chatID, history, prefix)
 		}
 	}
 }
@@ -331,7 +336,7 @@ func (e *Engine) journal(ctx context.Context) {
 func (e *Engine) writeJournal(
 	ctx context.Context,
 	rule binding.Rule,
-	platform, chatType, chatID string,
+	platform, selfID, chatType, chatID string,
 	history []domain.ChatMessage,
 	prefix string,
 ) {
@@ -381,7 +386,7 @@ func (e *Engine) writeJournal(
 		if len(line) > 120 {
 			line = string([]rune(line)[:120])
 		}
-		_ = e.deps.ChatPrefs.AddFact(platform, chatType, chatID, prefix+" "+line)
+		_ = e.deps.ChatPrefs.AddFact(platform, selfID, chatType, chatID, prefix+" "+line)
 	}
 	if len(lines) > 0 {
 		e.deps.Logger.Info("reflect journaled",

@@ -95,9 +95,10 @@ func TestFeelEventWritesMoodAndObservation(t *testing.T) {
 		platform:  "qq-onebot",
 		chatType:  "group",
 		chatID:    "2",
+		selfID:    "10001",
 	}
 	svc.feelEvent(context.Background(), state, -5, "刚撤了条广告，有点无语")
-	if score := prefs.MoodScore("qq-onebot", "group", "2", time.Now()); score != -5 {
+	if score := prefs.MoodScore("qq-onebot", "10001", "group", "2", time.Now()); score != -5 {
 		t.Fatalf("mood = %d, want -5", score)
 	}
 	found := false

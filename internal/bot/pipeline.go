@@ -210,7 +210,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	// 管理员 /关闭通知 后，该群只在被 @ 时回复。
 	if s.chatPrefs != nil &&
 		state.chatType == platform.ChatGroup &&
-		!s.chatPrefs.NotifyEnabled(state.platform, state.chatType, state.chatID) &&
+		!s.chatPrefs.NotifyEnabled(state.platform, state.selfID, state.chatType, state.chatID) &&
 		(state.replyPolicy.Mode == binding.ReplyModeAIDecide ||
 			state.replyPolicy.Mode == binding.ReplyModeAlways) {
 		policy := state.replyPolicy
@@ -292,26 +292,20 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	var moodScore int
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
 		if delta := mood.Score(state.text, state.eventMentioned); delta != 0 {
-			if score, err := s.chatPrefs.BumpMood(
-				state.platform, state.chatType, state.chatID, delta, s.now(),
-			); err != nil {
+			if score, err := s.chatPrefs.BumpMood(state.platform, state.selfID, state.chatType, state.chatID, delta, s.now()); err != nil {
 				s.logger.Warn("mood update failed", "error", err.Error())
 			} else {
 				moodScore = score
 			}
 		} else {
-			moodScore = s.chatPrefs.MoodScore(
-				state.platform, state.chatType, state.chatID, s.now(),
-			)
+			moodScore = s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())
 		}
 		// mood→action: pushed past -60 the persona clams up on its own —
 		// the safe equivalent of storming off. Reversible, self-expiring.
 		if moodScore <= -60 &&
-			!s.chatPrefs.Muted(state.platform, state.chatType, state.chatID, s.now()) {
+			!s.chatPrefs.Muted(state.platform, state.selfID, state.chatType, state.chatID, s.now()) {
 			until := s.now().Add(30 * time.Minute)
-			if err := s.chatPrefs.SetMuteUntil(
-				state.platform, state.chatType, state.chatID, until,
-			); err == nil {
+			if err := s.chatPrefs.SetMuteUntil(state.platform, state.selfID, state.chatType, state.chatID, until); err == nil {
 				s.logger.Info("mood crash, going quiet",
 					"chat_type", state.chatType, "chat_id", state.chatID,
 					"mood", moodScore, "until", until.Format("15:04"))
@@ -319,9 +313,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			}
 		}
 	}
-	if s.chatPrefs != nil && s.chatPrefs.Muted(
-		state.platform, state.chatType, state.chatID, s.now(),
-	) {
+	if s.chatPrefs != nil && s.chatPrefs.Muted(state.platform, state.selfID, state.chatType, state.chatID, s.now()) {
 		state.ignored = true
 		event.Stop("self_muted")
 		return nil
@@ -720,9 +712,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			); len(refs) > 0 {
 				payload["image"] = refs[0]
 			} else if s.chatPrefs != nil {
-				if path := s.chatPrefs.ImageForPrompt(
-					state.platform,
-					state.chatType,
+				if path := s.chatPrefs.ImageForPrompt(state.platform, state.selfID, state.chatType,
 					state.chatID,
 					prompt,
 				); path != "" {
@@ -929,9 +919,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		valueString(event.Values, "agent.prompt_context"),
 	)
 	if s.chatPrefs != nil {
-		if pinned := s.chatPrefs.PersonaName(
-			state.platform, state.chatType, state.chatID,
-		); pinned != "" {
+		if pinned := s.chatPrefs.PersonaName(state.platform, state.selfID, state.chatType, state.chatID); pinned != "" {
 			state.personaName = pinned
 		}
 	}
@@ -1053,14 +1041,14 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	}
 	if s.voiceProvider != nil {
 		if s.chatPrefs != nil &&
-			!s.chatPrefs.VoiceEnabled(state.platform, state.chatType, state.chatID) {
+			!s.chatPrefs.VoiceEnabled(state.platform, state.selfID, state.chatType, state.chatID) {
 			// Voice off — teaching [[VOICE]] here makes the model fake
 			// sending clips that the delivery layer then silently drops.
 			request.SystemPrompt += "\n\n" + voiceDisabledNote
 		} else {
 			request.SystemPrompt += "\n\n" + voicePromptNote
 			if s.chatPrefs != nil &&
-				s.chatPrefs.SingEnabled(state.platform, state.chatType, state.chatID) {
+				s.chatPrefs.SingEnabled(state.platform, state.selfID, state.chatType, state.chatID) {
 				request.SystemPrompt += "\n" + singPromptNote
 			} else {
 				request.SystemPrompt += "\n" + singDisabledNote
@@ -1086,7 +1074,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		request.SystemPrompt += "\n" + note
 	}
 	if s.chatPrefs != nil {
-		if notes := s.chatPrefs.NotesText(state.platform, state.chatType, state.chatID); notes != "" {
+		if notes := s.chatPrefs.NotesText(state.platform, state.selfID, state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
 		}
 		// Who is this person — cached QQ profile, refreshed weekly. It's
@@ -1104,7 +1092,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		learnedRunes := 0
 		// Fill the budget newest-first — when memory must shrink, the
 		// freshest lines stay; the oldest fade first, like real memory.
-		recent := s.chatPrefs.RecentFacts(state.platform, state.chatType, state.chatID, 10)
+		recent := s.chatPrefs.RecentFacts(state.platform, state.selfID, state.chatType, state.chatID, 10)
 		for i := len(recent) - 1; i >= 0; i-- {
 			f := recent[i]
 			if learnedRunes+len([]rune(f.Text)) > learnedBudgetRunes {
@@ -1121,9 +1109,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		recalled := make([]string, 0)
 		recalledRunes := 0
-		for _, f := range s.chatPrefs.RecallFacts(
-			state.platform, state.chatType, state.chatID, state.text, 5,
-		) {
+		for _, f := range s.chatPrefs.RecallFacts(state.platform, state.selfID, state.chatType, state.chatID, state.text, 5) {
 			if recentSet[f.Text] {
 				continue
 			}
@@ -1141,8 +1127,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		// Promises stay load-bearing — surfaced separately so the 承诺·
 		// facts don't drown inside the generic memory list.
-		if promises := s.chatPrefs.PromiseFacts(
-			state.platform, state.chatType, state.chatID); len(promises) > 0 {
+		if promises := s.chatPrefs.PromiseFacts(state.platform, state.selfID, state.chatType, state.chatID); len(promises) > 0 {
 			lines := make([]string, 0, 3)
 			for _, p := range promises {
 				if recentSet[p.Text] || len(lines) >= 3 {
@@ -1161,16 +1146,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		// Upstream prevention beats post-send scrubbing: tell her which
 		// phrases the chat banned so she never produces them at all.
-		if bans := s.chatPrefs.ToneBans(
-			state.platform, state.chatType, state.chatID); len(bans) > 0 {
+		if bans := s.chatPrefs.ToneBans(state.platform, state.selfID, state.chatType, state.chatID); len(bans) > 0 {
 			request.SystemPrompt += "\n\n他们让你别再说这些词：" +
 				strings.Join(bans, "、") + "——自然绕开，别再用了"
 		}
 		// Her take on the speaker: chat-local first, then the persona-wide
 		// profile so she recognizes people across her own bindings.
-		imp := s.chatPrefs.Impression(
-			state.platform, state.chatType, state.chatID, state.userID,
-		)
+		imp := s.chatPrefs.Impression(state.platform, state.selfID, state.chatType, state.chatID, state.userID)
 		if imp.Text == "" && state.personaName != "" {
 			imp = s.chatPrefs.Profile(state.platform, state.personaName, state.userID)
 		}
@@ -1188,9 +1170,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// Humanization hints: current mood tier + circadian rhythm — both
 	// gated by MoodEnabled so formal bindings can opt out of both.
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
-		if hint := mood.Hint(s.chatPrefs.MoodScore(
-			state.platform, state.chatType, state.chatID, s.now(),
-		)); hint != "" {
+		if hint := mood.Hint(s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
 		if hint := mood.Circadian(s.now()); hint != "" {
@@ -1340,6 +1320,7 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 		// capture any promise the canned line made.
 		s.applyToneGuard(state)
 		s.notePromise(state)
+		s.noteFulfillment(state)
 		state.outbound = message.Chain{message.Text(state.reply)}
 		return nil
 	}
@@ -1376,6 +1357,7 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 	// what history records. (Inbound learning already ran above.)
 	s.applyToneGuard(state)
 	s.notePromise(state)
+	s.noteFulfillment(state)
 	if state.outbound.Empty() {
 		state.outbound = message.Chain{message.Text(state.reply)}
 	}
@@ -1471,6 +1453,12 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if s.affinity != nil {
 		state.reply = s.extractAffinityDelta(state)
 	}
+	// Typing pace: a person never answers a paragraph in 0ms. Delay the
+	// first outgoing text by reply length — short lines stay instant.
+	// Plugin/canned replies keep their snappiness.
+	if !state.pluginHandled {
+		s.paceReply(state.reply)
+	}
 	chain := state.outbound
 	if chain.Empty() {
 		chain = message.Chain{message.Text(state.reply)}
@@ -1552,9 +1540,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			if key, ok := parseStoredImageMarker(part); ok {
 				path := ""
 				if s.chatPrefs != nil {
-					path = s.chatPrefs.ImageForPrompt(
-						state.platform, state.chatType, state.chatID, key,
-					)
+					path = s.chatPrefs.ImageForPrompt(state.platform, state.selfID, state.chatType, state.chatID, key)
 				}
 				if path == "" {
 					skippedMarkers++
@@ -1833,6 +1819,90 @@ var toneBanPattern = regexp.MustCompile(
 	`(?:别老说|别再说|不要老说|以后别说|能不能别说|别老提|别再提|能不能别老提|别总提|少说点|少提点)([^\s，。！？!?,；;~～]{1,10})`,
 )
 
+// toneUnbanPattern catches the chat lifting a ban — "可以说emo了",
+// "解禁了". The captured phrase may carry a trailing 了/啦.
+var toneUnbanPattern = regexp.MustCompile(
+	`(?:可以说|现在可以说|解禁了?)([^\s，。！？!?,；;~～]{1,10})`,
+)
+
+// fulfillPattern marks her own reply as the promise being done —
+// "提醒你了" "帮你查好了". ClosePromise still requires real overlap
+// with a stored 承诺· line, so the cue alone closes nothing.
+var fulfillPattern = regexp.MustCompile(
+	`(?:提醒你了|帮(?:你)?(?:查|发|带|买|订|做|找|叫|喊)(?:好|完|到|了)|发(?:给)?你了|说到做到|兑现了|答应你的.{0,10}(?:来了|发了|搞定))`,
+)
+
+// cancelPromisePattern catches the user calling a promise off —
+// "不用提醒了" "算了不用叫我".
+var cancelPromisePattern = regexp.MustCompile(
+	`(?:不用(?:再)?(?:提醒|叫|喊|发|带)|别提醒了|取消了|算了不用)`,
+)
+
+// paceReply simulates a beat of typing: longer replies take longer to
+// land. Under ~10 runes she's just quick — no delay at all.
+func (s *Service) paceReply(text string) {
+	runes := len([]rune(text))
+	if runes < 10 {
+		return
+	}
+	d := 350*time.Millisecond + time.Duration(runes)*45*time.Millisecond
+	if d > 2400*time.Millisecond {
+		d = 2400 * time.Millisecond
+	}
+	time.Sleep(d)
+}
+
+// learnToneUnban lifts a stored ban when the chat says the word is fine
+// again — "可以说emo了". The pair keeps the ban table honest.
+func (s *Service) learnToneUnban(state *flowState) {
+	if s.chatPrefs == nil || state.text == "" {
+		return
+	}
+	for _, m := range toneUnbanPattern.FindAllStringSubmatch(state.text, 3) {
+		phrase := strings.TrimRight(
+			strings.Trim(m[1], "「」\"'‘’“”、，。！？!?,；;~～ "),
+			"了啦",
+		)
+		if phrase == "" {
+			continue
+		}
+		s.chatPrefs.RemoveToneBan(
+			state.platform, state.selfID, state.chatType, state.chatID, phrase)
+		s.sessions.AddObservation(
+			state.sessionID, "[语气] 解禁了「"+phrase+"」")
+	}
+}
+
+// notePromiseCancel drops an open promise when the user calls it off —
+// "不用提醒我了" cancels "承诺·提醒他带伞". Requires bigram overlap so a
+// generic "不用带" can't nuke an unrelated promise.
+func (s *Service) notePromiseCancel(state *flowState) {
+	if s.chatPrefs == nil || !cancelPromisePattern.MatchString(state.text) {
+		return
+	}
+	if s.chatPrefs.ClosePromise(
+		state.platform, state.selfID, state.chatType, state.chatID,
+		state.text,
+	) {
+		s.sessions.AddObservation(state.sessionID, "[承诺] 对方取消了")
+	}
+}
+
+// noteFulfillment closes an open promise when HER reply carries the
+// completion cue — "提醒你了" matching "承诺·提醒他". Reply text is the
+// overlap source: the promise's own words need to echo in it.
+func (s *Service) noteFulfillment(state *flowState) {
+	if s.chatPrefs == nil || !fulfillPattern.MatchString(state.reply) {
+		return
+	}
+	if s.chatPrefs.ClosePromise(
+		state.platform, state.selfID, state.chatType, state.chatID,
+		state.reply,
+	) {
+		s.sessions.AddObservation(state.sessionID, "[承诺] 兑现了一条")
+	}
+}
+
 // learnToneBan picks up inbound "别再说X" feedback, stores the phrase,
 // and notes it in session history so the change is visible.
 func (s *Service) learnToneBan(state *flowState) {
@@ -1847,8 +1917,7 @@ func (s *Service) learnToneBan(state *flowState) {
 		if n := len([]rune(ban)); n < 1 || n > 10 {
 			continue
 		}
-		s.chatPrefs.AddToneBan(
-			state.platform, state.chatType, state.chatID, ban)
+		s.chatPrefs.AddToneBan(state.platform, state.selfID, state.chatType, state.chatID, ban)
 		if s.sessions != nil {
 			s.sessions.AddObservation(state.sessionID,
 				"[语气] 对方让我别再说「"+ban+"」")
@@ -1863,7 +1932,7 @@ func (s *Service) applyToneGuard(state *flowState) {
 	if s.chatPrefs == nil || state.reply == "" {
 		return
 	}
-	bans := s.chatPrefs.ToneBans(state.platform, state.chatType, state.chatID)
+	bans := s.chatPrefs.ToneBans(state.platform, state.selfID, state.chatType, state.chatID)
 	if len(bans) == 0 {
 		return
 	}
@@ -1909,8 +1978,7 @@ func (s *Service) notePromise(state *flowState) {
 		if n := len([]rune(snippet)); n < 6 || n > 40 {
 			continue
 		}
-		_ = s.chatPrefs.AddFact(
-			state.platform, state.chatType, state.chatID,
+		_ = s.chatPrefs.AddFact(state.platform, state.selfID, state.chatType, state.chatID,
 			"承诺·"+snippet)
 	}
 }
@@ -2340,9 +2408,7 @@ func (s *Service) feelEvent(
 		return
 	}
 	if s.chatPrefs != nil && delta != 0 {
-		if _, err := s.chatPrefs.BumpMood(
-			state.platform, state.chatType, state.chatID, delta, s.now(),
-		); err != nil {
+		if _, err := s.chatPrefs.BumpMood(state.platform, state.selfID, state.chatType, state.chatID, delta, s.now()); err != nil {
 			s.logger.Warn("mood update failed", "error", err.Error())
 		}
 	}

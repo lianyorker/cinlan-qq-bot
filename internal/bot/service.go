@@ -472,13 +472,13 @@ func (s *Service) RegisterKeywordMeme(pattern *regexp.Regexp) {
 // stops drifting face shapes in chats that never stored a photo.
 func (s *Service) ReferenceImageFor(ctx context.Context, actor tool.Actor) string {
 	if s.chatPrefs != nil {
-		if path := s.chatPrefs.LatestImage(actor.Platform, actor.ChatType, actor.ChatID); path != "" {
+		if path := s.chatPrefs.LatestImage(actor.Platform, actor.SelfID, actor.ChatType, actor.ChatID); path != "" {
 			return path
 		}
 	}
 	personaName := ""
 	if s.chatPrefs != nil {
-		personaName = s.chatPrefs.PersonaName(actor.Platform, actor.ChatType, actor.ChatID)
+		personaName = s.chatPrefs.PersonaName(actor.Platform, actor.SelfID, actor.ChatType, actor.ChatID)
 	}
 	if personaName == "" && s.bindings != nil {
 		var memberOf func(groupID, userID string) bool

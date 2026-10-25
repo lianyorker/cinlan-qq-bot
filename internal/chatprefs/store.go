@@ -279,9 +279,26 @@ func (s *Store) SetClock(now func() time.Time) {
 	s.now = now
 }
 
-func key(platform, chatType, chatID string) string {
+func key(platform, selfID, chatType, chatID string) string {
+	return strings.TrimSpace(platform) + ":" +
+		strings.TrimSpace(selfID) + ":" +
+		strings.TrimSpace(chatType) + ":" + strings.TrimSpace(chatID)
+}
+
+// legacyKey is the pre-selfID 3-part shape kept as a read/write
+// fallback so memories stored before account scoping are still seen.
+func legacyKey(platform, chatType, chatID string) string {
 	return strings.TrimSpace(platform) + ":" +
 		strings.TrimSpace(chatType) + ":" + strings.TrimSpace(chatID)
+}
+
+// lookup is the read-only variant: scoped key first, then the legacy
+// shared entry — nil when neither exists. No creation, no claim.
+func (s *Store) lookup(platform, selfID, chatType, chatID string) *chatEntry {
+	if e := s.data[key(platform, selfID, chatType, chatID)]; e != nil {
+		return e
+	}
+	return s.data[legacyKey(platform, chatType, chatID)]
 }
 
 // userKey scopes a bare user id to its platform — a douyin uid and a QQ
@@ -304,106 +321,118 @@ func sanitizeProfileText(text string) string {
 	return strings.Join(strings.Fields(text), " ")
 }
 
-func splitKey(k string) (platform, chatType, chatID string) {
-	first := strings.IndexByte(k, ':')
-	if first < 0 {
-		return "", k, ""
+func splitKey(k string) (platform, selfID, chatType, chatID string) {
+	parts := strings.SplitN(k, ":", 4)
+	switch len(parts) {
+	case 4:
+		return parts[0], parts[1], parts[2], parts[3]
+	case 3:
+		// legacy platform:chatType:chatID — account-unscoped.
+		return parts[0], "", parts[1], parts[2]
+	case 2:
+		// oldest legacy: chatType:chatID with no platform.
+		return "", "", parts[0], parts[1]
+	case 1:
+		return "", "", k, ""
 	}
-	rest := k[first+1:]
-	second := strings.IndexByte(rest, ':')
-	if second < 0 {
-		return "", k[:first], rest
-	}
-	return k[:first], rest[:second], rest[second+1:]
+	return "", "", "", ""
 }
 
-func (s *Store) entry(platform, chatType, chatID string) *chatEntry {
-	e := s.data[key(platform, chatType, chatID)]
-	if e == nil {
-		e = &chatEntry{}
-		s.data[key(platform, chatType, chatID)] = e
+func (s *Store) entry(platform, selfID, chatType, chatID string) *chatEntry {
+	sk := key(platform, selfID, chatType, chatID)
+	if e := s.data[sk]; e != nil {
+		return e
 	}
+	// Claim-on-touch: a legacy shared entry becomes this account's own
+	// the first time that account touches the chat — first claim wins.
+	if e := s.data[legacyKey(platform, chatType, chatID)]; e != nil && selfID != "" {
+		delete(s.data, legacyKey(platform, chatType, chatID))
+		s.data[sk] = e
+		return e
+	}
+	e := &chatEntry{}
+	s.data[sk] = e
 	return e
 }
 
 // SetNotifyEnabled toggles proactive replies for the chat. Enabled is the
 // default; when disabled the bot only answers explicit mentions.
-func (s *Store) SetNotifyEnabled(platform, chatType, chatID string, enabled bool) error {
+func (s *Store) SetNotifyEnabled(platform, selfID, chatType, chatID string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entry(platform, chatType, chatID).NotifyOff = !enabled
+	s.entry(platform, selfID, chatType, chatID).NotifyOff = !enabled
 	return s.saveLocked()
 }
 
-func (s *Store) NotifyEnabled(platform, chatType, chatID string) bool {
+func (s *Store) NotifyEnabled(platform, selfID, chatType, chatID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	return e == nil || !e.NotifyOff
 }
 
 // SetVoiceEnabled toggles [[VOICE]] replies for the chat. Enabled is the
 // default; disabled strips the model's voice markers into silence.
-func (s *Store) SetVoiceEnabled(platform, chatType, chatID string, enabled bool) error {
+func (s *Store) SetVoiceEnabled(platform, selfID, chatType, chatID string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entry(platform, chatType, chatID).VoiceOff = !enabled
+	s.entry(platform, selfID, chatType, chatID).VoiceOff = !enabled
 	return s.saveLocked()
 }
 
 // VoiceEnabled reports whether voice clips are allowed for the chat.
-func (s *Store) VoiceEnabled(platform, chatType, chatID string) bool {
+func (s *Store) VoiceEnabled(platform, selfID, chatType, chatID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	return e == nil || !e.VoiceOff
 }
 
 // SetSingEnabled toggles [[SING]] clips for the chat. Unlike voice,
 // singing defaults OFF — operators opt in with /唱歌 开启.
-func (s *Store) SetSingEnabled(platform, chatType, chatID string, enabled bool) error {
+func (s *Store) SetSingEnabled(platform, selfID, chatType, chatID string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entry(platform, chatType, chatID).SingOn = enabled
+	s.entry(platform, selfID, chatType, chatID).SingOn = enabled
 	return s.saveLocked()
 }
 
 // SingEnabled reports whether [[SING]] clips are allowed for the chat.
-func (s *Store) SingEnabled(platform, chatType, chatID string) bool {
+func (s *Store) SingEnabled(platform, selfID, chatType, chatID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	return e != nil && e.SingOn
 }
 
 // SetPersona pins the active persona for the chat; empty restores the
 // binding default.
-func (s *Store) SetPersona(platform, chatType, chatID, persona string) error {
+func (s *Store) SetPersona(platform, selfID, chatType, chatID, persona string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entry(platform, chatType, chatID).Persona = strings.TrimSpace(persona)
+	s.entry(platform, selfID, chatType, chatID).Persona = strings.TrimSpace(persona)
 	return s.saveLocked()
 }
 
 // PersonaName returns the chat's pinned persona, or "" for the default.
-func (s *Store) PersonaName(platform, chatType, chatID string) string {
+func (s *Store) PersonaName(platform, selfID, chatType, chatID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return ""
 	}
 	return e.Persona
 }
 
-func (s *Store) AddNote(platform, chatType, chatID, text string) error {
+func (s *Store) AddNote(platform, selfID, chatType, chatID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return errors.New("note is empty")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	if len(e.Notes) >= maxNotesPerChat {
 		return errors.New("note limit reached")
 	}
@@ -413,7 +442,7 @@ func (s *Store) AddNote(platform, chatType, chatID, text string) error {
 
 // AddImageNote remembers an image reference under a name so keyword image
 // generation can reuse it when the prompt mentions that name.
-func (s *Store) AddImageNote(platform, chatType, chatID, name, path string) error {
+func (s *Store) AddImageNote(platform, selfID, chatType, chatID, name, path string) error {
 	name = strings.TrimSpace(name)
 	path = strings.TrimSpace(path)
 	if name == "" || path == "" {
@@ -421,7 +450,7 @@ func (s *Store) AddImageNote(platform, chatType, chatID, name, path string) erro
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	// Replace an existing note under the same key.
 	for i, n := range e.ImageNotes {
 		if n.Key == name {
@@ -434,10 +463,10 @@ func (s *Store) AddImageNote(platform, chatType, chatID, name, path string) erro
 }
 
 // LatestImage returns the most recently stored image note path for a chat.
-func (s *Store) LatestImage(platform, chatType, chatID string) string {
+func (s *Store) LatestImage(platform, selfID, chatType, chatID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.ImageNotes) == 0 {
 		return ""
 	}
@@ -445,10 +474,10 @@ func (s *Store) LatestImage(platform, chatType, chatID string) string {
 }
 
 // ImageForPrompt returns the stored image path whose key appears in prompt.
-func (s *Store) ImageForPrompt(platform, chatType, chatID, prompt string) string {
+func (s *Store) ImageForPrompt(platform, selfID, chatType, chatID, prompt string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return ""
 	}
@@ -614,7 +643,7 @@ func archiveFactLocked(e *chatEntry, evicted fact) {
 // ignored; over capacity the least-recently-recalled memory moves into
 // the long-term Archive instead of being lost. Zero-information filler
 // ("嗯", "好的") is rejected so the memory pool stays meaningful.
-func (s *Store) AddFact(platform, chatType, chatID, text string) error {
+func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return errors.New("fact is empty")
@@ -624,7 +653,7 @@ func (s *Store) AddFact(platform, chatType, chatID, text string) error {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return s.addFactLocked(s.entry(platform, chatType, chatID), text, s.now())
+	return s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, s.now())
 }
 
 // addFactLocked does the append/dedupe/prune under the held lock so
@@ -652,14 +681,14 @@ func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
 
 // AddToneBan records a phrase this chat told her to stop saying.
 // Deduped, capped — new complaints bump old ones out.
-func (s *Store) AddToneBan(platform, chatType, chatID, phrase string) {
+func (s *Store) AddToneBan(platform, selfID, chatType, chatID, phrase string) {
 	phrase = strings.TrimSpace(phrase)
 	if phrase == "" {
 		return
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	for _, b := range e.ToneBans {
 		if b == phrase {
 			return
@@ -673,10 +702,10 @@ func (s *Store) AddToneBan(platform, chatType, chatID, phrase string) {
 }
 
 // ToneBans returns the phrases this chat asked her to drop.
-func (s *Store) ToneBans(platform, chatType, chatID string) []string {
+func (s *Store) ToneBans(platform, selfID, chatType, chatID string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.ToneBans) == 0 {
 		return nil
 	}
@@ -685,13 +714,73 @@ func (s *Store) ToneBans(platform, chatType, chatID string) []string {
 	return out
 }
 
+// RemoveToneBan lifts a ban — "可以说X了" gives the phrase back.
+// Matches exact or substring: ban "emo" lifts for "说emo了".
+func (s *Store) RemoveToneBan(platform, selfID, chatType, chatID, phrase string) {
+	phrase = strings.TrimSpace(phrase)
+	if phrase == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(platform, selfID, chatType, chatID)
+	kept := e.ToneBans[:0]
+	for _, b := range e.ToneBans {
+		if b == phrase || strings.Contains(b, phrase) || strings.Contains(phrase, b) {
+			continue
+		}
+		kept = append(kept, b)
+	}
+	if len(kept) != len(e.ToneBans) {
+		e.ToneBans = kept
+		_ = s.saveLocked()
+	}
+}
+
+// ClosePromise drops the closest open 承诺· fact when her reply shows
+// she just did the thing ("提醒你了" / "帮你查好了"). Needs a real
+// overlap — the fulfillment cue alone never closes anything.
+func (s *Store) ClosePromise(platform, selfID, chatType, chatID, text string) bool {
+	if strings.TrimSpace(text) == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(platform, selfID, chatType, chatID)
+	if e == nil {
+		return false
+	}
+	grams := textBigrams(text)
+	closest, best := -1, 0
+	for i, f := range e.Facts {
+		if !strings.HasPrefix(f.Text, promisePrefix) {
+			continue
+		}
+		overlap := 0
+		for g := range textBigrams(f.Text) {
+			if grams[g] {
+				overlap++
+			}
+		}
+		if overlap > best {
+			best, closest = overlap, i
+		}
+	}
+	if closest < 0 || best < 2 {
+		return false
+	}
+	e.Facts = append(e.Facts[:closest], e.Facts[closest+1:]...)
+	_ = s.saveLocked()
+	return true
+}
+
 // PromiseFacts returns the "承诺·…" lines she still owes this chat —
 // things she said she'd do. Surfaced to proactive and prompts so a
 // promise doesn't die the moment it was spoken.
-func (s *Store) PromiseFacts(platform, chatType, chatID string) []fact {
+func (s *Store) PromiseFacts(platform, selfID, chatType, chatID string) []fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return nil
 	}
@@ -713,10 +802,10 @@ func (s *Store) PromiseFacts(platform, chatType, chatID string) []fact {
 // Permanent fields (ToneBans, Impressions) deliberately do NOT count:
 // they never expire, so counting them would keep the gate open forever
 // and the 念头 check would silently never dampen anything.
-func (s *Store) HasThoughtMaterial(platform, chatType, chatID string, now time.Time) bool {
+func (s *Store) HasThoughtMaterial(platform, selfID, chatType, chatID string, now time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return false
 	}
@@ -734,7 +823,7 @@ const promisePrefix = "承诺·"
 
 // ReplaceFact updates the closest existing fact with new text — the
 // "she corrected herself" path; falls back to AddFact when no match.
-func (s *Store) ReplaceFact(platform, chatType, chatID, target, text string) error {
+func (s *Store) ReplaceFact(platform, selfID, chatType, chatID, target, text string) error {
 	text = strings.TrimSpace(text)
 	target = strings.TrimSpace(target)
 	if text == "" || target == "" {
@@ -742,7 +831,7 @@ func (s *Store) ReplaceFact(platform, chatType, chatID, target, text string) err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	now := s.now()
 	if idx := bestFactMatch(e.Facts, target); idx >= 0 {
 		e.Facts[idx].Text = text
@@ -753,14 +842,14 @@ func (s *Store) ReplaceFact(platform, chatType, chatID, target, text string) err
 }
 
 // ForgetFact drops the closest matching fact — deliberate forgetting.
-func (s *Store) ForgetFact(platform, chatType, chatID, target string) error {
+func (s *Store) ForgetFact(platform, selfID, chatType, chatID, target string) error {
 	target = strings.TrimSpace(target)
 	if target == "" {
 		return errors.New("nothing to forget")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.entry(platform, selfID, chatType, chatID)
 	if e == nil {
 		return errors.New("没有相关的记忆")
 	}
@@ -775,10 +864,10 @@ func (s *Store) ForgetFact(platform, chatType, chatID, target string) error {
 // first — memories the conversation just pulled back into her head.
 // Searches both active Facts and long-term Archive via hybrid lexical +
 // semantic concept/vector scoring.
-func (s *Store) RecallFacts(platform, chatType, chatID, query string, limit int) []fact {
+func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, limit int) []fact {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.entry(platform, selfID, chatType, chatID)
 	if e == nil {
 		return nil
 	}
@@ -837,10 +926,10 @@ func (s *Store) RecallFacts(platform, chatType, chatID, query string, limit int)
 
 // FactsSnapshot returns all chat facts, oldest first (compression,
 // admin views, tests).
-func (s *Store) FactsSnapshot(platform, chatType, chatID string) []fact {
+func (s *Store) FactsSnapshot(platform, selfID, chatType, chatID string) []fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return nil
 	}
@@ -849,10 +938,10 @@ func (s *Store) FactsSnapshot(platform, chatType, chatID string) []fact {
 
 // RecentFacts returns the newest keepAlways facts — the steady core of
 // what she still holds about this chat.
-func (s *Store) RecentFacts(platform, chatType, chatID string, keepAlways int) []fact {
+func (s *Store) RecentFacts(platform, selfID, chatType, chatID string, keepAlways int) []fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.Facts) == 0 {
 		return nil
 	}
@@ -864,10 +953,10 @@ func (s *Store) RecentFacts(platform, chatType, chatID string, keepAlways int) [
 }
 
 // ForgetImpression clears the take on one member of this chat.
-func (s *Store) ForgetImpression(platform, chatType, chatID, userID string) error {
+func (s *Store) ForgetImpression(platform, selfID, chatType, chatID, userID string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.entry(platform, selfID, chatType, chatID)
 	if e == nil || e.Impressions == nil {
 		return errors.New("没有相关印象")
 	}
@@ -879,7 +968,7 @@ func (s *Store) ForgetImpression(platform, chatType, chatID, userID string) erro
 }
 
 // SetImpression overwrites the persona's remembered take on one member.
-func (s *Store) SetImpression(platform, chatType, chatID, userID, text string) error {
+func (s *Store) SetImpression(platform, selfID, chatType, chatID, userID, text string) error {
 	text = strings.TrimSpace(text)
 	userID = strings.TrimSpace(userID)
 	if userID == "" || text == "" {
@@ -887,7 +976,7 @@ func (s *Store) SetImpression(platform, chatType, chatID, userID, text string) e
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	if e.Impressions == nil {
 		e.Impressions = map[string]fact{}
 	}
@@ -908,10 +997,10 @@ func (s *Store) SetImpression(platform, chatType, chatID, userID, text string) e
 }
 
 // Impression returns the remembered take on a member, empty if none.
-func (s *Store) Impression(platform, chatType, chatID, userID string) fact {
+func (s *Store) Impression(platform, selfID, chatType, chatID, userID string) fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return fact{}
 	}
@@ -1005,10 +1094,10 @@ func (s *Store) SetUserBadge(platform, userID, groupID string, badge GroupBadge)
 }
 
 // NotesText returns the remembered notes for the chat joined with newlines.
-func (s *Store) NotesText(platform, chatType, chatID string) string {
+func (s *Store) NotesText(platform, selfID, chatType, chatID string) string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.Notes) == 0 {
 		return ""
 	}
@@ -1055,13 +1144,13 @@ func decayedMood(e *chatEntry, now time.Time) int {
 
 // BumpMood adjusts the chat mood score by delta (clamped -100..100) and
 // persists. Returns the resulting decayed-adjusted score.
-func (s *Store) BumpMood(platform, chatType, chatID string, delta int, now time.Time) (int, error) {
+func (s *Store) BumpMood(platform, selfID, chatType, chatID string, delta int, now time.Time) (int, error) {
 	if delta == 0 {
-		return s.MoodScore(platform, chatType, chatID, now), nil
+		return s.MoodScore(platform, selfID, chatType, chatID, now), nil
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	mood := decayedMood(e, now) + delta
 	if mood > 100 {
 		mood = 100
@@ -1074,48 +1163,49 @@ func (s *Store) BumpMood(platform, chatType, chatID string, delta int, now time.
 }
 
 // MoodScore returns the decayed mood score for the chat (0 when unset).
-func (s *Store) MoodScore(platform, chatType, chatID string, now time.Time) int {
+func (s *Store) MoodScore(platform, selfID, chatType, chatID string, now time.Time) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return decayedMood(s.data[key(platform, chatType, chatID)], now)
+	return decayedMood(s.lookup(platform, selfID, chatType, chatID), now)
 }
 
 // SetMuteUntil makes the bot ignore the chat until the given time —
 // the "go quiet" tool's backing switch.
-func (s *Store) SetMuteUntil(platform, chatType, chatID string, until time.Time) error {
+func (s *Store) SetMuteUntil(platform, selfID, chatType, chatID string, until time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entry(platform, chatType, chatID).MuteUntil = until
+	s.entry(platform, selfID, chatType, chatID).MuteUntil = until
 	return s.saveLocked()
 }
 
 // Muted reports whether the chat is currently self-muted.
-func (s *Store) Muted(platform, chatType, chatID string, now time.Time) bool {
+func (s *Store) Muted(platform, selfID, chatType, chatID string, now time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	return e != nil && !e.MuteUntil.IsZero() && now.Before(e.MuteUntil)
 }
 
 // ChatKeys lists every chat that has a prefs entry — the reflect engine
-// sweeps these for consolidation work. Each triple is
-// {platform, chatType, chatID}.
-func (s *Store) ChatKeys() [][3]string {
+// sweeps these for consolidation work. Each tuple is
+// {platform, selfID, chatType, chatID}; selfID "" marks a legacy
+// shared entry no account has claimed yet.
+func (s *Store) ChatKeys() [][4]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	out := make([][3]string, 0, len(s.data))
+	out := make([][4]string, 0, len(s.data))
 	for k := range s.data {
-		platform, chatType, chatID := splitKey(k)
-		out = append(out, [3]string{platform, chatType, chatID})
+		platform, selfID, chatType, chatID := splitKey(k)
+		out = append(out, [4]string{platform, selfID, chatType, chatID})
 	}
 	return out
 }
 
 // FactTexts returns the chat's fact lines as plain strings.
-func (s *Store) FactTexts(platform, chatType, chatID string) []string {
+func (s *Store) FactTexts(platform, selfID, chatType, chatID string) []string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.Facts) == 0 {
 		return nil
 	}
@@ -1128,10 +1218,10 @@ func (s *Store) FactTexts(platform, chatType, chatID string) []string {
 
 // ImpressionSnapshot returns every member impression with its anchors,
 // so the reflect engine can sort by staleness.
-func (s *Store) ImpressionSnapshot(platform, chatType, chatID string) map[string]fact {
+func (s *Store) ImpressionSnapshot(platform, selfID, chatType, chatID string) map[string]fact {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.Impressions) == 0 {
 		return nil
 	}
@@ -1143,10 +1233,10 @@ func (s *Store) ImpressionSnapshot(platform, chatType, chatID string) map[string
 }
 
 // ImpressionTexts returns every member impression as userID -> text.
-func (s *Store) ImpressionTexts(platform, chatType, chatID string) map[string]string {
+func (s *Store) ImpressionTexts(platform, selfID, chatType, chatID string) map[string]string {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil || len(e.Impressions) == 0 {
 		return nil
 	}
@@ -1159,10 +1249,10 @@ func (s *Store) ImpressionTexts(platform, chatType, chatID string) map[string]st
 
 // HasFactPrefix reports whether any fact starts with the prefix — the
 // journal uses it to keep one diary entry per day.
-func (s *Store) HasFactPrefix(platform, chatType, chatID, prefix string) bool {
+func (s *Store) HasFactPrefix(platform, selfID, chatType, chatID, prefix string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
 		return false
 	}
@@ -1177,10 +1267,10 @@ func (s *Store) HasFactPrefix(platform, chatType, chatID, prefix string) bool {
 // RewriteFacts swaps the whole fact list for the consolidated lines the
 // reflect pass produced — anchors refresh because merged lines were
 // just re-thought, not rescued from a shelf.
-func (s *Store) RewriteFacts(platform, chatType, chatID string, texts []string) error {
+func (s *Store) RewriteFacts(platform, selfID, chatType, chatID string, texts []string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.entry(platform, chatType, chatID)
+	e := s.entry(platform, selfID, chatType, chatID)
 	now := s.now()
 	seen := map[string]bool{}
 	facts := make([]fact, 0, len(texts))
@@ -1201,10 +1291,10 @@ func (s *Store) RewriteFacts(platform, chatType, chatID string, texts []string) 
 
 // RewriteImpressions replaces the member impressions wholesale — stale
 // members condensed into a roster fact have their entries dropped.
-func (s *Store) RewriteImpressions(platform, chatType, chatID string, texts map[string]string) error {
+func (s *Store) RewriteImpressions(platform, selfID, chatType, chatID string, texts map[string]string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	e := s.data[key(platform, chatType, chatID)]
+	e := s.entry(platform, selfID, chatType, chatID)
 	if e == nil {
 		return errors.New("没有相关印象")
 	}

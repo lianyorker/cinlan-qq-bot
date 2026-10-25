@@ -188,15 +188,18 @@ func (e *Engine) sweep(ctx context.Context) {
 			} else if e.cfg.PrivateAllow == nil || !e.cfg.PrivateAllow(chatID) {
 				continue
 			}
-			if !e.eligible(plat, chatType, chatID) {
+			selfID := strings.TrimSpace(rule.SelfID)
+			if selfID == "" {
+				selfID = e.deps.DefaultSelfID
+			}
+			if !e.eligible(plat, selfID, chatType, chatID) {
 				continue
 			}
 			// Mood gates the urge to talk: sulking chats stay silent,
 			// cheerful chats get chatty.
 			moodScore := 0
 			if e.deps.ChatPrefs != nil {
-				moodScore = e.deps.ChatPrefs.MoodScore(
-					plat, chatType, chatID, e.deps.Now())
+				moodScore = e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())
 				if moodScore <= -30 {
 					continue
 				}
@@ -208,8 +211,7 @@ func (e *Engine) sweep(ctx context.Context) {
 			// 念头门: a chat with nothing worth bringing up — no fresh
 			// memories, no open promises — rarely deserves a cold opener.
 			// Dampen rather than mute so she can still just say hi.
-			if e.deps.ChatPrefs != nil && !e.deps.ChatPrefs.HasThoughtMaterial(
-				plat, chatType, chatID, e.deps.Now()) {
+			if e.deps.ChatPrefs != nil && !e.deps.ChatPrefs.HasThoughtMaterial(plat, selfID, chatType, chatID, e.deps.Now()) {
 				chance *= 0.35
 			}
 			// Circadian: evening is her chatty window; morning/noon dim.
@@ -241,7 +243,7 @@ func (e *Engine) platformOf(rule binding.Rule) string {
 	return e.deps.Platform
 }
 
-func (e *Engine) eligible(plat, chatType, chatID string) bool {
+func (e *Engine) eligible(plat, selfID, chatType, chatID string) bool {
 	now := e.deps.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
@@ -257,10 +259,10 @@ func (e *Engine) eligible(plat, chatType, chatID string) bool {
 		return false
 	}
 	if e.deps.ChatPrefs != nil {
-		if !e.deps.ChatPrefs.NotifyEnabled(plat, chatType, chatID) {
+		if !e.deps.ChatPrefs.NotifyEnabled(plat, selfID, chatType, chatID) {
 			return false
 		}
-		if e.deps.ChatPrefs.Muted(plat, chatType, chatID, now) {
+		if e.deps.ChatPrefs.Muted(plat, selfID, chatType, chatID, now) {
 			return false
 		}
 	}
@@ -344,7 +346,7 @@ func (e *Engine) fire(
 	if e.deps.ChatPrefs != nil {
 		// Ground the opener in what she actually remembers — “想你了”
 		// lands, generic filler doesn't.
-		if facts := e.deps.ChatPrefs.RecentFacts(plat, chatType, chatID, 8); len(facts) > 0 {
+		if facts := e.deps.ChatPrefs.RecentFacts(plat, selfID, chatType, chatID, 8); len(facts) > 0 {
 			lines := make([]string, 0, len(facts))
 			for _, f := range facts {
 				lines = append(lines, "· "+f.Text)
@@ -353,14 +355,12 @@ func (e *Engine) fire(
 				strings.Join(lines, "\n")
 		}
 		if chatType == platform.ChatPrivate {
-			if imp := e.deps.ChatPrefs.Impression(
-				plat, chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
+			if imp := e.deps.ChatPrefs.Impression(plat, selfID, chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
 				system += "\n你对他的感觉：" + imp.Text
 			}
 		}
 		// Open promises are her best opener — "说到做到" beats small talk.
-		if promises := e.deps.ChatPrefs.PromiseFacts(
-			plat, chatType, chatID); len(promises) > 0 {
+		if promises := e.deps.ChatPrefs.PromiseFacts(plat, selfID, chatType, chatID); len(promises) > 0 {
 			lines := make([]string, 0, len(promises))
 			for _, p := range promises {
 				lines = append(lines, "· "+strings.TrimPrefix(p.Text, "承诺·"))
@@ -368,8 +368,7 @@ func (e *Engine) fire(
 			system += "\n你之前答应过的事（这次开口可以先兑现它）：\n" +
 				strings.Join(lines, "\n")
 		}
-		if hint := mood.Hint(e.deps.ChatPrefs.MoodScore(
-			plat, chatType, chatID, e.deps.Now())); hint != "" {
+		if hint := mood.Hint(e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())); hint != "" {
 			system += "\n" + hint
 		}
 		// Time-of-day vibe + chat-banned phrases apply to cold openers
@@ -377,7 +376,7 @@ func (e *Engine) fire(
 		if hint := mood.Circadian(e.deps.Now()); hint != "" {
 			system += "\n" + hint
 		}
-		if bans := e.deps.ChatPrefs.ToneBans(plat, chatType, chatID); len(bans) > 0 {
+		if bans := e.deps.ChatPrefs.ToneBans(plat, selfID, chatType, chatID); len(bans) > 0 {
 			system += "\n他们让你别再说这些词：" +
 				strings.Join(bans, "、") + "——别用"
 		}
@@ -513,7 +512,7 @@ func (e *Engine) sendProactive(
 				}
 			default: // IMG/IMAGE/PHOTO remembered images
 				if e.deps.ChatPrefs != nil {
-					file = e.deps.ChatPrefs.ImageForPrompt(plat, chatType, chatID, key)
+					file = e.deps.ChatPrefs.ImageForPrompt(plat, selfID, chatType, chatID, key)
 				}
 			}
 			if file != "" {

@@ -182,7 +182,7 @@ func QuietTool(prefs *chatprefs.Store, now func() time.Time) tool.Definition {
 				minutes = maxQuietMinutes
 			}
 			until := now().Add(time.Duration(minutes) * time.Minute)
-			if err := prefs.SetMuteUntil(call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID, until); err != nil {
+			if err := prefs.SetMuteUntil(call.Actor.Platform, call.Actor.SelfID, call.Actor.ChatType, call.Actor.ChatID, until); err != nil {
 				return tool.Result{Error: "没装成：" + err.Error()}, nil
 			}
 			return tool.Result{Content: fmt.Sprintf(

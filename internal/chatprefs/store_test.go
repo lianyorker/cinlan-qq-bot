@@ -21,10 +21,10 @@ func TestFactRoundTripWithTimestamps(t *testing.T) {
 	s := newTestStore(t)
 	now := time.Date(2026, 10, 24, 15, 0, 0, 0, time.Local)
 	s.SetClock(func() time.Time { return now })
-	if err := s.AddFact("qq-onebot", "group", "1", "阿茶生日10.28"); err != nil {
+	if err := s.AddFact("qq-onebot", "10001", "group", "1", "阿茶生日10.28"); err != nil {
 		t.Fatalf("AddFact() error = %v", err)
 	}
-	facts := s.FactsSnapshot("qq-onebot", "group", "1")
+	facts := s.FactsSnapshot("qq-onebot", "10001", "group", "1")
 	if len(facts) != 1 || facts[0].Text != "阿茶生日10.28" ||
 		facts[0].CreatedAt.IsZero() {
 		t.Fatalf("facts = %#v", facts)
@@ -33,34 +33,34 @@ func TestFactRoundTripWithTimestamps(t *testing.T) {
 
 func TestReplaceFactUpdatesMatchOrAppendsNew(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.AddFact("qq-onebot", "group", "1", "阿茶生日10.28")
-	if err := s.ReplaceFact("qq-onebot", "group", "1", "阿茶生日", "阿茶生日11.02"); err != nil {
+	_ = s.AddFact("qq-onebot", "10001", "group", "1", "阿茶生日10.28")
+	if err := s.ReplaceFact("qq-onebot", "10001", "group", "1", "阿茶生日", "阿茶生日11.02"); err != nil {
 		t.Fatalf("ReplaceFact() error = %v", err)
 	}
-	facts := s.FactsSnapshot("qq-onebot", "group", "1")
+	facts := s.FactsSnapshot("qq-onebot", "10001", "group", "1")
 	if len(facts) != 1 || facts[0].Text != "阿茶生日11.02" {
 		t.Fatalf("after replace facts = %#v", facts)
 	}
 	// No match — replace degrades to add instead of deadlocking.
-	if err := s.ReplaceFact("qq-onebot", "group", "1", "完全不相干的东西", "新的记忆事实"); err != nil {
+	if err := s.ReplaceFact("qq-onebot", "10001", "group", "1", "完全不相干的东西", "新的记忆事实"); err != nil {
 		t.Fatalf("ReplaceFact(fallback) error = %v", err)
 	}
-	if len(s.FactsSnapshot("qq-onebot", "group", "1")) != 2 {
-		t.Fatalf("fallback should append: %#v", s.FactsSnapshot("qq-onebot", "group", "1"))
+	if len(s.FactsSnapshot("qq-onebot", "10001", "group", "1")) != 2 {
+		t.Fatalf("fallback should append: %#v", s.FactsSnapshot("qq-onebot", "10001", "group", "1"))
 	}
 }
 
 func TestForgetFactNeedsStrongMatch(t *testing.T) {
 	s := newTestStore(t)
-	_ = s.AddFact("qq-onebot", "group", "1", "阿茶生日10.28")
+	_ = s.AddFact("qq-onebot", "10001", "group", "1", "阿茶生日10.28")
 	// A vague target must not erase a loosely related memory.
-	if err := s.ForgetFact("qq-onebot", "group", "1", "随便说点什么"); err == nil {
+	if err := s.ForgetFact("qq-onebot", "10001", "group", "1", "随便说点什么"); err == nil {
 		t.Fatal("vague forget should fail")
 	}
-	if err := s.ForgetFact("qq-onebot", "group", "1", "阿茶生日10.28"); err != nil {
+	if err := s.ForgetFact("qq-onebot", "10001", "group", "1", "阿茶生日10.28"); err != nil {
 		t.Fatalf("exact forget error = %v", err)
 	}
-	if len(s.FactsSnapshot("qq-onebot", "group", "1")) != 0 {
+	if len(s.FactsSnapshot("qq-onebot", "10001", "group", "1")) != 0 {
 		t.Fatal("fact should be forgotten")
 	}
 }
@@ -70,13 +70,13 @@ func TestRecallFactsRanksAndMarksSeen(t *testing.T) {
 	base := time.Date(2026, 10, 24, 15, 0, 0, 0, time.Local)
 	clock := base
 	s.SetClock(func() time.Time { return clock })
-	_ = s.AddFact("qq-onebot", "group", "1", "阿茶生日10.28")
-	_ = s.AddFact("qq-onebot", "group", "1", "群友都不吃辣")
-	_ = s.AddFact("qq-onebot", "group", "1", "阿茶喜欢喝冰美式咖啡")
+	_ = s.AddFact("qq-onebot", "10001", "group", "1", "阿茶生日10.28")
+	_ = s.AddFact("qq-onebot", "10001", "group", "1", "群友都不吃辣")
+	_ = s.AddFact("qq-onebot", "10001", "group", "1", "阿茶喜欢喝冰美式咖啡")
 	clock = base.Add(2 * time.Hour)
 
 	// Query mentioning 阿茶+咖啡 should rank the coffee fact top.
-	hits := s.RecallFacts("qq-onebot", "group", "1", "阿茶今天还喝咖啡吗", 5)
+	hits := s.RecallFacts("qq-onebot", "10001", "group", "1", "阿茶今天还喝咖啡吗", 5)
 	if len(hits) == 0 {
 		t.Fatal("no recall hits")
 	}
@@ -84,11 +84,11 @@ func TestRecallFactsRanksAndMarksSeen(t *testing.T) {
 		t.Fatalf("top hit = %q, want coffee fact", hits[0].Text)
 	}
 	// Unrelated query gets nothing.
-	if hits := s.RecallFacts("qq-onebot", "group", "1", "今天天气怎么样", 5); len(hits) != 0 {
+	if hits := s.RecallFacts("qq-onebot", "10001", "group", "1", "今天天气怎么样", 5); len(hits) != 0 {
 		t.Fatalf("unrelated recall = %#v", hits)
 	}
 	// Recall bumped LastSeenAt beyond CreatedAt.
-	for _, f := range s.FactsSnapshot("qq-onebot", "group", "1") {
+	for _, f := range s.FactsSnapshot("qq-onebot", "10001", "group", "1") {
 		if f.Text == "阿茶喜欢喝冰美式咖啡" && !f.LastSeenAt.After(f.CreatedAt) {
 			t.Fatal("recalled fact LastSeenAt not bumped")
 		}
@@ -153,18 +153,18 @@ func TestSameIDsAreIsolatedAcrossPlatforms(t *testing.T) {
 	s := newTestStore(t)
 	// Same group id and user id, two different platforms — writes to one
 	// must never surface in the other.
-	_ = s.AddFact("qq-onebot", "group", "1", "QQ 侧的记忆")
-	_ = s.AddFact("douyin", "group", "1", "抖音侧的记忆")
-	if got := s.FactsSnapshot("qq-onebot", "group", "1"); len(got) != 1 ||
+	_ = s.AddFact("qq-onebot", "10001", "group", "1", "QQ 侧的记忆")
+	_ = s.AddFact("douyin", "9999", "group", "1", "抖音侧的记忆")
+	if got := s.FactsSnapshot("qq-onebot", "10001", "group", "1"); len(got) != 1 ||
 		got[0].Text != "QQ 侧的记忆" {
 		t.Fatalf("qq facts polluted: %#v", got)
 	}
-	if got := s.FactsSnapshot("douyin", "group", "1"); len(got) != 1 ||
+	if got := s.FactsSnapshot("douyin", "9999", "group", "1"); len(got) != 1 ||
 		got[0].Text != "抖音侧的记忆" {
 		t.Fatalf("douyin facts polluted: %#v", got)
 	}
-	_ = s.SetImpression("qq-onebot", "group", "1", "10001", "QQ 印象")
-	if got := s.Impression("douyin", "group", "1", "10001").Text; got != "" {
+	_ = s.SetImpression("qq-onebot", "10001", "group", "1", "10001", "QQ 印象")
+	if got := s.Impression("douyin", "9999", "group", "1", "10001").Text; got != "" {
 		t.Fatalf("impression leaked across platforms: %q", got)
 	}
 	_ = s.SetProfile("qq-onebot", "七七", "10001", "QQ 画像")
@@ -195,7 +195,7 @@ func TestLegacyMigrationKeepsScopedDataOnCollision(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	facts := s.FactsSnapshot("qq-onebot", "group", "1")
+	facts := s.FactsSnapshot("qq-onebot", "10001", "group", "1")
 	if len(facts) != 1 || facts[0].Text != "scoped 新数据" {
 		t.Fatalf("collision should keep scoped data, got %#v", facts)
 	}
@@ -204,7 +204,7 @@ func TestLegacyMigrationKeepsScopedDataOnCollision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := s2.FactsSnapshot("qq-onebot", "group", "1"); len(got) != 1 {
+	if got := s2.FactsSnapshot("qq-onebot", "10001", "group", "1"); len(got) != 1 {
 		t.Fatalf("migration did not persist: %#v", got)
 	}
 }
@@ -221,15 +221,15 @@ func TestLegacyJSONMigratesStringFacts(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	facts := s.FactsSnapshot("qq-onebot", "group", "1")
+	facts := s.FactsSnapshot("qq-onebot", "10001", "group", "1")
 	if len(facts) != 2 || facts[0].Text != "老事实一" {
 		t.Fatalf("migrated facts = %#v", facts)
 	}
-	if got := s.Impression("qq-onebot", "group", "1", "10001").Text; got != "老印象" {
+	if got := s.Impression("qq-onebot", "10001", "group", "1", "10001").Text; got != "老印象" {
 		t.Fatalf("migrated impression = %q", got)
 	}
 	// Rewrite persists the new v2 layout without losing data.
-	if err := s.AddFact("qq-onebot", "group", "1", "新的记忆事实"); err != nil {
+	if err := s.AddFact("qq-onebot", "10001", "group", "1", "新的记忆事实"); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(path)
@@ -245,24 +245,24 @@ func TestRecallFactsSemanticAndArchivePool(t *testing.T) {
 
 	// First fact: sleep/fatigue domain, will be pushed out of the 40-slot
 	// active Facts ring into the long-term Archive.
-	if err := s.AddFact("qq-onebot", "private", "u1", "他经常熬夜通宵写代码"); err != nil {
+	if err := s.AddFact("qq-onebot", "10001", "private", "u1", "他经常熬夜通宵写代码"); err != nil {
 		t.Fatal(err)
 	}
 	for i := 0; i < 45; i++ {
 		now = now.Add(time.Minute)
-		if err := s.AddFact("qq-onebot", "private", "u1", "日常琐事编号"+string(rune('A'+i%20))+string(rune('0'+i/20))); err != nil {
+		if err := s.AddFact("qq-onebot", "10001", "private", "u1", "日常琐事编号"+string(rune('A'+i%20))+string(rune('0'+i/20))); err != nil {
 			t.Fatal(err)
 		}
 	}
 
 	// Active Facts is capped at 40, so the earliest sleep fact is now in Archive.
-	if active := s.FactsSnapshot("qq-onebot", "private", "u1"); len(active) != maxFactsPerChat {
+	if active := s.FactsSnapshot("qq-onebot", "10001", "private", "u1"); len(active) != maxFactsPerChat {
 		t.Fatalf("active facts = %d, want %d", len(active), maxFactsPerChat)
 	}
 
 	// Query has zero literal bigram overlap with "他经常熬夜通宵写代码",
 	// but hits the sleep/fatigue concept cluster and searches Archive.
-	recalled := s.RecallFacts("qq-onebot", "private", "u1", "最近睡眠不足好困想早点休息", 5)
+	recalled := s.RecallFacts("qq-onebot", "10001", "private", "u1", "最近睡眠不足好困想早点休息", 5)
 	found := false
 	for _, f := range recalled {
 		if f.Text == "他经常熬夜通宵写代码" {

@@ -134,13 +134,13 @@ func registerLocalExtensions(
 			if !isOperator(c) {
 				return command.Result{Handled: true, Reply: "权限不足。"}, nil
 			}
-			if err := store.SetNotifyEnabled(c.Event.Platform, c.Event.MessageType, c.Event.ChatID, true); err != nil {
+			if err := store.SetNotifyEnabled(c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, true); err != nil {
 				return command.Result{Handled: true, Reply: "保存失败：" + err.Error()}, nil
 			}
 			// "叫回来" lifts everything: notify on, self-mute cleared, and
 			// any handoff released — the single wake command now that
 			// /人工 /恢复 are gone.
-			_ = store.SetMuteUntil(c.Event.Platform, c.Event.MessageType, c.Event.ChatID, time.Time{})
+			_ = store.SetMuteUntil(c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, time.Time{})
 			service.ClearHandoff(c.SessionID)
 			return command.Result{Handled: true, Reply: "通知已开启，装死/接管状态也一并解除。"}, nil
 		},
@@ -155,7 +155,7 @@ func registerLocalExtensions(
 			if !isOperator(c) {
 				return command.Result{Handled: true, Reply: "权限不足。"}, nil
 			}
-			if err := store.SetNotifyEnabled(c.Event.Platform, c.Event.MessageType, c.Event.ChatID, false); err != nil {
+			if err := store.SetNotifyEnabled(c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, false); err != nil {
 				return command.Result{Handled: true, Reply: "保存失败：" + err.Error()}, nil
 			}
 			return command.Result{Handled: true, Reply: "本群通知已关闭，只在 @ 我时回复。"}, nil
@@ -191,6 +191,7 @@ func registerLocalExtensions(
 			}
 			if err := store.AddNote(
 				c.Event.Platform,
+				c.Event.SelfID,
 				c.Event.MessageType,
 				c.Event.ChatID,
 				text,
@@ -209,6 +210,7 @@ func registerLocalExtensions(
 				}
 				if err := store.AddImageNote(
 					c.Event.Platform,
+					c.Event.SelfID,
 					c.Event.MessageType,
 					c.Event.ChatID,
 					name,
@@ -273,14 +275,14 @@ func registerLocalExtensions(
 			switch arg {
 			case "开启", "开", "on":
 				if err := store.SetVoiceEnabled(
-					c.Event.Platform, c.Event.MessageType, c.Event.ChatID, true,
+					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, true,
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
 				return command.Result{Handled: true, Reply: "语音已开启，可以点语音了。"}, nil
 			case "关闭", "关", "off":
 				if err := store.SetVoiceEnabled(
-					c.Event.Platform, c.Event.MessageType, c.Event.ChatID, false,
+					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, false,
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
@@ -288,7 +290,7 @@ func registerLocalExtensions(
 			default:
 				state := "开启"
 				if !store.VoiceEnabled(
-					c.Event.Platform, c.Event.MessageType, c.Event.ChatID,
+					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID,
 				) {
 					state = "关闭"
 				}
@@ -310,14 +312,14 @@ func registerLocalExtensions(
 			switch arg {
 			case "开启", "开", "on":
 				if err := store.SetSingEnabled(
-					c.Event.Platform, c.Event.MessageType, c.Event.ChatID, true,
+					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, true,
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
 				return command.Result{Handled: true, Reply: "唱歌已开启（目前是电子音念唱，不是真歌声）。"}, nil
 			case "关闭", "关", "off":
 				if err := store.SetSingEnabled(
-					c.Event.Platform, c.Event.MessageType, c.Event.ChatID, false,
+					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, false,
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
@@ -325,7 +327,7 @@ func registerLocalExtensions(
 			default:
 				state := "关闭"
 				if store.SingEnabled(
-					c.Event.Platform, c.Event.MessageType, c.Event.ChatID,
+					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID,
 				) {
 					state = "开启"
 				}

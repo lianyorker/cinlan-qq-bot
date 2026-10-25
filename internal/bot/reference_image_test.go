@@ -46,7 +46,7 @@ func TestReferenceImageForFallsThroughToPersonaDefault(t *testing.T) {
 	}
 
 	// A remembered per-chat image must win over the persona default.
-	if err := prefs.AddImageNote("qq-onebot", "group", "30003", "自定义", "/tmp/chat-note.png"); err != nil {
+	if err := prefs.AddImageNote("qq-onebot", "10001", "group", "30003", "自定义", "/tmp/chat-note.png"); err != nil {
 		t.Fatalf("AddImageNote() error = %v", err)
 	}
 	if got := service.ReferenceImageFor(context.Background(), actor); got != "/tmp/chat-note.png" {
