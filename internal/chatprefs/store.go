@@ -9,6 +9,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strings"
 	"sync"
@@ -19,6 +20,15 @@ import (
 
 const maxNotesPerChat = 50
 const maxNoteRunes = 2000
+
+// profileLinkPattern strips URLs from cross-chat identity records.
+// A persona profile follows the user everywhere — a link learned in
+// group A must never resurface as an ad in group B.
+var profileLinkPattern = regexp.MustCompile(
+	`(?i)(?:https?://|www\.)[a-z0-9._~:/?#@!$&'()*+,;=%-]+|` +
+		`(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}` +
+		`(?:/[a-z0-9._~:/?#@!$&'()*+,;=%-]*)?`,
+)
 
 type imageNote struct {
 	Key  string `json:"key"`
@@ -244,6 +254,14 @@ func userKey(platform, userID string) string {
 // and scopes the trailing user id to its platform.
 func profileKey(platform, persona, userID string) string {
 	return strings.TrimSpace(persona) + "|" + userKey(platform, userID)
+}
+
+// sanitizeProfileText strips URLs from profile content. Profiles are
+// cross-chat identity notes — "这人是卖挂的" is a fact she can carry,
+// but the storefront link must not travel with it into other chats.
+func sanitizeProfileText(text string) string {
+	text = profileLinkPattern.ReplaceAllString(text, "")
+	return strings.Join(strings.Fields(text), " ")
 }
 
 func splitKey(k string) (platform, chatType, chatID string) {
@@ -769,7 +787,7 @@ func (s *Store) Impression(platform, chatType, chatID, userID string) fact {
 func (s *Store) SetProfile(platform, persona, userID, text string) error {
 	persona = strings.TrimSpace(persona)
 	userID = strings.TrimSpace(userID)
-	text = strings.TrimSpace(text)
+	text = sanitizeProfileText(text)
 	if persona == "" || userID == "" || text == "" {
 		return errors.New("profile needs persona, user and text")
 	}

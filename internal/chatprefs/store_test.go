@@ -106,6 +106,23 @@ func TestPersonaProfileScopedByPersona(t *testing.T) {
 	}
 }
 
+func TestProfileStripsLinksSoPromosCantTravel(t *testing.T) {
+	s := newTestStore(t)
+	// A promo link learned in group A must not resurface when this
+	// user's profile is injected in another chat.
+	if err := s.SetProfile("qq-onebot", "七七", "10001",
+		"卖卡的，找他买 https://shop.example.com/x 或者 wzyp.cn/item/1"); err != nil {
+		t.Fatal(err)
+	}
+	got := s.Profile("qq-onebot", "七七", "10001").Text
+	if strings.Contains(got, "http") || strings.Contains(got, "wzyp.cn") {
+		t.Fatalf("link leaked into profile: %q", got)
+	}
+	if got != "卖卡的，找他买 或者" {
+		t.Fatalf("profile text = %q", got)
+	}
+}
+
 func TestUserCardPersistsBadgesAcrossRefreshes(t *testing.T) {
 	s := newTestStore(t)
 	if err := s.SetUserBadge("qq-onebot", "10001", "30003",
