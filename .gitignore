@@ -33,3 +33,6 @@ new-persona-renqi.json
 affinity-prompts-patch.json
 
 .cinlan-*.tmp.md
+
+/cinlan-qq-bot-windows-amd64.exe
+cinlan-qq-bot-*-amd64

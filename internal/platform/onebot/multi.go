@@ -255,6 +255,14 @@ func (m *MultiAdapter) SetWelcomeSkip(userIDs []string) {
 	}
 }
 
+// SetOnSelfAction wires the persona recall hook for adapter-side sends
+// (welcomes etc.) onto every underlying account adapter.
+func (m *MultiAdapter) SetOnSelfAction(fn func(selfID, chatType, chatID, desc string)) {
+	for _, account := range m.accounts {
+		account.adapter.OnSelfAction = fn
+	}
+}
+
 func (m *MultiAdapter) Connected() bool {
 	for _, account := range m.accounts {
 		if account.adapter.Connected() {

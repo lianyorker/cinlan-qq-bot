@@ -34,4 +34,8 @@ type AgentResponse struct {
 	Reply   string
 	Chain   message.Chain
 	Handoff bool
+	// ToolActivity lists the tool calls the agent ran this turn ("用了 X"),
+	// so the pipeline can note them into session history — she should
+	// remember what she DID, not only what she said.
+	ToolActivity []string
 }

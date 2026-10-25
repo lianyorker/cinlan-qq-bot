@@ -688,6 +688,13 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 				state.messageID,
 				message.Chain{message.Text(kt.reply)},
 			) {
+				// Keyword replies bypass the agent; note the exchange so she
+				// still remembers having answered.
+				if s.sessions != nil {
+					s.sessions.AddExchange(
+						state.sessionID, state.promptText, kt.reply,
+					)
+				}
 				state.ignored = true
 				event.Stop("keyword_reply")
 				return nil
@@ -1270,6 +1277,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		return nil
 	}
 	state.response = response
+	for _, act := range response.ToolActivity {
+		s.recordSelfAction(state, act)
+	}
 	s.stats.processed.Add(1)
 	return nil
 }
@@ -1710,6 +1720,49 @@ func (s *Service) extractAffinityDelta(state *flowState) string {
 	return strings.TrimSpace(
 		affinityMarkerPattern.ReplaceAllString(state.reply, ""),
 	)
+}
+
+// RecordOutboundAction is the self-action sink for sends that bypass the
+// pipeline — cron deliveries, adapter welcomes, future auto-delivery. Callers
+// resolve the platform they belong to; the note lands in that chat's session
+// so she remembers having done it.
+func (s *Service) RecordOutboundAction(plat, selfID, chatType, chatID, desc string) {
+	if s.sessions == nil {
+		return
+	}
+	kind := "private"
+	if chatType == platform.ChatGroup {
+		kind = "group"
+	}
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return
+	}
+	if r := []rune(desc); len(r) > 120 {
+		desc = string(r[:120]) + "…"
+	}
+	s.sessions.AddObservation(
+		plat+":self:"+selfID+":"+kind+":"+chatID,
+		"[动作] "+desc,
+	)
+}
+
+// recordSelfAction drops a first-person action note into session history so
+// later turns remember what she DID — tool runs, timed sends, adapter-side
+// deliveries — not only what she said. New self-initiated side effects should
+// funnel through here instead of inventing another recall path.
+func (s *Service) recordSelfAction(state *flowState, desc string) {
+	if state == nil || s.sessions == nil || state.sessionID == "" {
+		return
+	}
+	desc = strings.TrimSpace(desc)
+	if desc == "" {
+		return
+	}
+	if r := []rune(desc); len(r) > 140 {
+		desc = string(r[:140]) + "…"
+	}
+	s.sessions.AddObservation(state.sessionID, "[动作] "+desc)
 }
 
 func (s *Service) recordExchange(ctx context.Context, state *flowState) {

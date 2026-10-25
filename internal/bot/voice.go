@@ -373,6 +373,9 @@ func (s *Service) deliverVoiceClips(
 		ctx, state.selfID, state.chatType, state.chatID,
 		clips, voiceName, voiceRate,
 	)
+	s.feelAmbient(
+		ctx, state, "voice", 1, "发了条语音", 10*time.Minute,
+	)
 }
 
 // sendVoiceClips synthesizes each clip and sends it as a record message;

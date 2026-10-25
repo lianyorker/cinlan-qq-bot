@@ -51,6 +51,11 @@ type Scheduler struct {
 	now        func() time.Time
 	path       string
 	persistErr error
+	// recorder, when set, is told about each successful delivery so the bot
+	// can remember its own timed sends. recordedAt throttles that note to
+	// one per job per few minutes so tight intervals don't flood history.
+	recorder   func(Job)
+	recordedAt map[string]time.Time
 }
 
 func New(sender Sender, logger *slog.Logger) *Scheduler {
@@ -75,12 +80,13 @@ func newScheduler(sender Sender, logger *slog.Logger, path string) *Scheduler {
 		logger = slog.Default()
 	}
 	return &Scheduler{
-		jobs:    make(map[string]Job),
-		running: make(map[string]bool),
-		sender:  sender,
-		logger:  logger,
-		now:     time.Now,
-		path:    path,
+		jobs:       make(map[string]Job),
+		running:    make(map[string]bool),
+		recordedAt: make(map[string]time.Time),
+		sender:     sender,
+		logger:     logger,
+		now:        time.Now,
+		path:       path,
 	}
 }
 
@@ -88,6 +94,33 @@ func (s *Scheduler) Path() string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.path
+}
+
+// SetRecorder registers a callback invoked after each successful delivery,
+// outside the scheduler lock. The bot uses it to note its own timed sends
+// into session history so she remembers having sent them.
+func (s *Scheduler) SetRecorder(fn func(Job)) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.recorder = fn
+}
+
+// deliveryRecorderLocked returns a bound recorder for this job, throttled so
+// recurring jobs don't spam session history — at most one note every
+// 20 minutes per job. Callers must hold s.mu; the returned callback runs
+// unlocked by RunDue.
+func (s *Scheduler) deliveryRecorderLocked(job Job, now time.Time) func(Job) {
+	if s.recorder == nil {
+		return nil
+	}
+	if last, ok := s.recordedAt[job.ID]; ok && now.Sub(last) < 20*time.Minute {
+		return nil
+	}
+	s.recordedAt[job.ID] = now
+	rec := s.recorder
+	return func(done Job) {
+		rec(done)
+	}
 }
 
 func (s *Scheduler) PersistenceError() error {
@@ -212,7 +245,11 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 				Chain:    message.Chain{message.Text(job.Text)},
 			})
 		}
+		var rec func(Job)
 		s.mu.Lock()
+		if err == nil {
+			rec = s.deliveryRecorderLocked(job, now)
+		}
 		delete(s.running, job.ID)
 		current, exists := s.jobs[job.ID]
 		if exists && job.Once && err == nil {
@@ -234,6 +271,9 @@ func (s *Scheduler) RunDue(ctx context.Context) {
 			s.logger.Error("cron job result persistence failed", "job_id", job.ID, "error", persistErr)
 		}
 		s.mu.Unlock()
+		if rec != nil {
+			rec(job)
+		}
 	}
 }
 

@@ -331,7 +331,11 @@ func (c *HTTPClient) replyWithTools(
 	parent context.Context,
 	input domain.AgentRequest,
 	requestTools *tool.Registry,
-) (domain.AgentResponse, error) {
+) (resp domain.AgentResponse, err error) {
+	var activity []string
+	defer func() {
+		resp.ToolActivity = activity
+	}()
 	ctx, cancel := context.WithTimeout(parent, c.cfg.Timeout)
 	defer cancel()
 	messages, err := c.buildOpenAIMessages(input)
@@ -418,6 +422,10 @@ func (c *HTTPClient) replyWithTools(
 
 		messages = append(messages, choice)
 		for _, call := range choice.ToolCalls {
+			activity = append(
+				activity,
+				toolActivitySummary(call.Function.Name, call.Function.Arguments),
+			)
 			content := map[string]any{}
 			if call.Type != "" && call.Type != "function" {
 				content["error"] = "unsupported tool call type"
@@ -464,7 +472,11 @@ func (c *HTTPClient) replyCustomWithTools(
 	parent context.Context,
 	input domain.AgentRequest,
 	requestTools *tool.Registry,
-) (domain.AgentResponse, error) {
+) (resp domain.AgentResponse, err error) {
+	var activity []string
+	defer func() {
+		resp.ToolActivity = activity
+	}()
 	ctx, cancel := context.WithTimeout(parent, c.cfg.Timeout)
 	defer cancel()
 	maxRounds := c.maxToolRounds
@@ -538,6 +550,10 @@ func (c *HTTPClient) replyCustomWithTools(
 				toolResults = append(toolResults, result)
 				continue
 			}
+			activity = append(
+				activity,
+				toolActivitySummary(name, string(arguments)),
+			)
 			executed, executeErr := c.executeTool(
 				ctx,
 				requestTools,
@@ -944,6 +960,49 @@ func (c *HTTPClient) parseResponse(body []byte) (domain.AgentResponse, error) {
 	default:
 		return domain.AgentResponse{}, fmt.Errorf("unsupported agent mode %q", c.cfg.Mode)
 	}
+}
+
+// toolActivitySummary condenses one tool call into a short "用了 X" note the
+// session can keep — the name plus one salient string argument when present.
+// Shell/exec tools deliberately keep just the name so a command line full of
+// paths or secrets never lands in chat history.
+func toolActivitySummary(name, rawArgs string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return ""
+	}
+	lower := strings.ToLower(name)
+	if strings.Contains(lower, "shell") || strings.Contains(lower, "exec") {
+		return name
+	}
+	if rawArgs = strings.TrimSpace(rawArgs); rawArgs == "" {
+		return name
+	}
+	var parsed map[string]any
+	if err := json.Unmarshal([]byte(rawArgs), &parsed); err != nil {
+		return name
+	}
+	for _, key := range []string{
+		"query", "text", "url", "path", "action", "content",
+		"target", "file", "message", "prompt", "title",
+	} {
+		v, ok := parsed[key]
+		if !ok {
+			continue
+		}
+		s, isStr := v.(string)
+		if !isStr {
+			continue
+		}
+		s = strings.Join(strings.Fields(s), " ")
+		if r := []rune(s); len(r) > 40 {
+			s = string(r[:40]) + "…"
+		}
+		if s != "" {
+			return name + "「" + s + "」"
+		}
+	}
+	return name
 }
 
 func textResponse(reply string) domain.AgentResponse {

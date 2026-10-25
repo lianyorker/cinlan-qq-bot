@@ -315,6 +315,25 @@ func main() {
 		providerRegistry,
 		plugin.NewRegistry(),
 	)
+	// Self-action recall: timed deliveries and adapter-side welcomes bypass
+	// the pipeline, so record them into the chat's session explicitly.
+	recordSelfAction := func(selfID, chatType, chatID, desc string) {
+		botService.RecordOutboundAction(
+			platform.PlatformQQOneBot, selfID, chatType, chatID, desc,
+		)
+	}
+	scheduler.SetRecorder(func(job cron.Job) {
+		recordSelfAction(
+			job.SelfID, job.ChatType, job.ChatID,
+			"定时发了消息："+job.Text,
+		)
+	})
+	switch adapter := qqAdapter.(type) {
+	case *onebotplatform.Adapter:
+		adapter.OnSelfAction = recordSelfAction
+	case *onebotplatform.MultiAdapter:
+		adapter.SetOnSelfAction(recordSelfAction)
+	}
 	if fileSender, ok := qqAdapter.(bot.FileSender); ok {
 		botService.SetFileSender(fileSender)
 	}

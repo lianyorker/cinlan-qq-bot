@@ -39,6 +39,19 @@ type Adapter struct {
 	// WelcomeSkipUserIDs never gets friend/group welcomes — peer bot
 	// accounts and our own self IDs shouldn't be greeted like members.
 	WelcomeSkipUserIDs map[string]bool
+	// OnSelfAction reports adapter-side sends the persona should remember —
+	// welcomes fire outside the pipeline, so without this hook she'd forget
+	// greeting anyone. Set by main once the bot service exists.
+	OnSelfAction func(selfID, chatType, chatID, desc string)
+}
+
+// emitSelfAction forwards an adapter-side send to the persona's recall hook
+// when one is wired.
+func (a *Adapter) emitSelfAction(selfID, chatType, chatID, desc string) {
+	if a.OnSelfAction == nil {
+		return
+	}
+	a.OnSelfAction(selfID, chatType, chatID, desc)
 }
 
 func NewAdapter(client *onebot.Client, logger *slog.Logger) *Adapter {
@@ -91,7 +104,7 @@ func (a *Adapter) Run(ctx context.Context) error {
 					continue
 				}
 				a.logger.Info("friend_add notice", "user_id", event.UserID.String())
-				a.deliverFriendWelcome(ctx, event.UserID.String())
+				a.deliverFriendWelcome(ctx, event.SelfID.String(), event.UserID.String())
 				continue
 			}
 			if event.PostType == "notice" && event.NoticeType == "group_increase" {
@@ -102,7 +115,9 @@ func (a *Adapter) Run(ctx context.Context) error {
 					!a.welcomeSkipped(userID) {
 					a.logger.Info("group_increase notice",
 						"group_id", groupID, "user_id", userID)
-					a.deliverGroupWelcome(ctx, groupID, userID)
+					a.deliverGroupWelcome(
+						ctx, event.SelfID.String(), groupID, userID,
+					)
 				}
 			}
 			converted, err := convertEvent(event)
@@ -277,7 +292,7 @@ func (a *Adapter) autoAcceptFriendRequest(ctx context.Context, event onebot.Even
 		return
 	}
 	a.logger.Info("auto-accepted friend request", "user_id", userID)
-	a.deliverFriendWelcome(ctx, userID)
+	a.deliverFriendWelcome(ctx, event.SelfID.String(), userID)
 }
 
 // friendWelcomeSent dedupes welcome delivery across the request-accept and
@@ -314,7 +329,7 @@ func (a *Adapter) welcomeSkipped(userID string) bool {
 // and image to a group that just gained a member. The newest group
 // announcement is read first so the welcome can point at it. Deduped per
 // member like friend welcomes.
-func (a *Adapter) deliverGroupWelcome(ctx context.Context, groupID, userID string) {
+func (a *Adapter) deliverGroupWelcome(ctx context.Context, selfID, groupID, userID string) {
 	text := strings.TrimSpace(a.GroupWelcomeText)
 	path := strings.TrimSpace(a.GroupWelcomeImage)
 	if (text == "" && path == "") || !groupWelcomeRecent.mark(groupID+":"+userID) {
@@ -337,6 +352,10 @@ func (a *Adapter) deliverGroupWelcome(ctx context.Context, groupID, userID strin
 	}
 	a.logger.Info("group welcome sent",
 		"group_id", groupID, "user_id", userID)
+	a.emitSelfAction(
+		selfID, platform.ChatGroup, groupID,
+		"欢迎了新成员进群",
+	)
 }
 
 // groupNotice returns the newest group announcement text (truncated), so a
@@ -392,7 +411,7 @@ func (a *Adapter) groupNotice(ctx context.Context, groupID string) string {
 	return ""
 }
 
-func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {
+func (a *Adapter) deliverFriendWelcome(ctx context.Context, selfID, userID string) {
 	if !friendWelcomeRecent.mark(userID) {
 		return
 	}
@@ -400,6 +419,11 @@ func (a *Adapter) deliverFriendWelcome(ctx context.Context, userID string) {
 		if err := a.client.SendPrivateText(ctx, userID, text); err != nil {
 			a.logger.Warn("failed to send friend welcome text",
 				"user_id", userID, "error", err.Error())
+		} else {
+			a.emitSelfAction(
+				selfID, platform.ChatPrivate, userID,
+				"给新好友发了欢迎消息",
+			)
 		}
 	}
 	if path := strings.TrimSpace(a.FriendFilePath); path != "" {
