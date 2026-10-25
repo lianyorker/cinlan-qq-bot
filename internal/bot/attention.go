@@ -61,7 +61,10 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 
 	direct := state.eventMentioned ||
 		state.replyPolicy.AllowsUser(state.userID)
-	if isAcknowledgement(state.text) {
+	// An engaged continuation — her recent move or reply — keeps the
+	// channel warm: even a bare "好的" may be answering her question.
+	engaged := s.pendingGameMove(state) || s.pendingFollowUp(state)
+	if isAcknowledgement(state.text) && !engaged {
 		s.stats.attentionIgnored.Add(1)
 		return ignoreForAttention(event, state, "acknowledgement")
 	}
@@ -76,9 +79,9 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		// the ambient classifier veto it.
 		return nil
 	}
-	if state.chatType == platform.ChatGroup && s.pendingGameMove(state) {
-		// She just threw a move — the opponent's bare counter-move is a
-		// game turn, not ambient noise.
+	if engaged {
+		// A game counter-move or the engaged user's follow-up is a
+		// conversation turn, not ambient noise.
 		return nil
 	}
 	if !s.allowAttentionDecision(state.rateLimitID) {

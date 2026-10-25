@@ -193,6 +193,39 @@ func (s *Service) pendingGameMove(state *flowState) bool {
 	return ok && s.now().Sub(at) < gameInviteWindow
 }
 
+// followUpWindow is how long she stays tuned to the last user she
+// replied to — their follow-ups don't need another mention to reach
+// her, the way a person already in conversation keeps listening.
+const followUpWindow = 3 * time.Minute
+
+// pendingFollowUp reports whether this event is a continuation from the
+// user she just answered in this group chat. Past the fatigue streak
+// the drift-off gate owns that user again, and messages aimed at other
+// members never count as her continuation.
+func (s *Service) pendingFollowUp(state *flowState) bool {
+	if state.chatType != platform.ChatGroup {
+		return false
+	}
+	if mentionsAnotherUser(state.event.Chain, state.selfID) ||
+		containsTextualMention(state.text) {
+		return false
+	}
+	key := state.platform + ":" + state.chatType + ":" + state.chatID
+	s.fatigueMu.Lock()
+	entry, ok := s.chatFatigue[key]
+	s.fatigueMu.Unlock()
+	if !ok || entry.userID != state.userID {
+		return false
+	}
+	if s.now().Sub(entry.at) >= followUpWindow {
+		return false
+	}
+	if count := s.cfg.MentionFatigueCount; count > 0 && entry.streak >= count {
+		return false
+	}
+	return true
+}
+
 // checkMentionFatigue drops further messages from a user who already got
 // several replies in a row — same person nagging a refused/done topic
 // gets ignored the way a human would drift off. Only group chats; a

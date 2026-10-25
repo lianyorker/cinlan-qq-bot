@@ -333,7 +333,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		// to undo a notify-off group. Non-command "/" text still dies
 		// here — the attention stage does not re-gate mentions.
 		if !state.eventMentioned && !s.commandMessage(state.text) &&
-			!s.pendingGameMove(state) {
+			!s.pendingGameMove(state) && !s.pendingFollowUp(state) {
 			state.ignored = true
 			event.Stop("not_mentioned")
 			return nil
