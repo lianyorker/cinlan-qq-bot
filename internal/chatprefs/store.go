@@ -163,7 +163,13 @@ func Load(path, legacyPlatform string) (*Store, error) {
 	if store.cards == nil {
 		store.cards = map[string]UserCard{}
 	}
-	store.migrateLegacy(legacyPlatform)
+	if store.migrateLegacy(legacyPlatform) {
+		// Rewrite the file in the new layout right away — otherwise the
+		// migration only lives in memory until the next coincidental save.
+		if saveErr := store.saveLocked(); saveErr != nil {
+			return store, saveErr
+		}
+	}
 	return store, nil
 }
 
