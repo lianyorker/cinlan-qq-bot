@@ -229,7 +229,7 @@ func (s *Service) checkRepeatSpam(
 	// once per message.
 	if s.affinity != nil && s.cfg.SpamRepeatPenalty > 0 &&
 		!s.markSpamPenalized(key) {
-		s.affinity.Add(state.selfID, state.userID, -s.cfg.SpamRepeatPenalty)
+		s.affinity.Add(state.platform, state.selfID, state.userID, -s.cfg.SpamRepeatPenalty)
 		state.spamPenalty += s.cfg.SpamRepeatPenalty
 	}
 	mode := pickSpamMode(s.cfg.SpamRepeatMode)

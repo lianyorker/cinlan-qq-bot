@@ -367,12 +367,14 @@ func main() {
 	}
 	if warnStore, warnErr := moderation.Open(
 		filepath.Join(filepath.Dir(cfg.ChatPrefsFile), "moderation.json"),
+		platform.PlatformQQOneBot,
 	); warnErr != nil {
 		logger.Warn("moderation store unavailable", "error", warnErr)
 	} else {
 		botService.SetModerationStore(warnStore)
 	}
-	if affinityStore, affinityErr := affinity.Load(cfg.AffinityFile); affinityErr != nil {
+	if affinityStore, affinityErr := affinity.Load(
+		cfg.AffinityFile, platform.PlatformQQOneBot); affinityErr != nil {
 		logger.Warn("affinity store unavailable", "error", affinityErr)
 	} else {
 		botService.SetAffinity(affinityStore)

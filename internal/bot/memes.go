@@ -24,19 +24,32 @@ const (
 	maxMemeBytes        = 20 << 20
 )
 
-// memeDirFor returns the per-chat meme pool directory.
-func (s *Service) memeDirFor(chatType, chatID string) string {
+// memeDirFor returns the platform-scoped per-chat meme pool directory.
+// Pools saved before the platform scope existed ("group_123") are
+// renamed on first touch so collected memes carry over.
+func (s *Service) memeDirFor(platform, chatType, chatID string) string {
 	if s.memeDir == "" {
 		return ""
 	}
-	return filepath.Join(s.memeDir, chatType+"_"+chatID)
+	dir := filepath.Join(s.memeDir, platform+"_"+chatType+"_"+chatID)
+	legacy := filepath.Join(s.memeDir, chatType+"_"+chatID)
+	if plat := strings.TrimSpace(platform); plat != "" && legacy != dir {
+		if _, err := os.Stat(dir); os.IsNotExist(err) {
+			if _, err := os.Stat(legacy); err == nil {
+				// Best-effort rename — if it fails the old pool stays put
+				// and the chat just starts a fresh scoped pool.
+				_ = os.Rename(legacy, dir)
+			}
+		}
+	}
+	return dir
 }
 
 // collectMemes saves every image in the incoming chain into the per-chat
 // meme pool, then asks the vision model for a short meaning tag stored in a
 // sidecar file so later queries can retrieve the right sticker.
-func (s *Service) collectMemes(chatType, chatID string, refs []string) {
-	dir := s.memeDirFor(chatType, chatID)
+func (s *Service) collectMemes(platform, chatType, chatID string, refs []string) {
+	dir := s.memeDirFor(platform, chatType, chatID)
 	if dir == "" || len(refs) == 0 {
 		return
 	}
@@ -88,8 +101,8 @@ func (s *Service) describeMeme(path string) {
 
 // pickMeme returns a stored meme matching query, or a random one when no
 // query is given or nothing matches.
-func (s *Service) pickMeme(chatType, chatID, query string) (string, error) {
-	dir := s.memeDirFor(chatType, chatID)
+func (s *Service) pickMeme(platform, chatType, chatID, query string) (string, error) {
+	dir := s.memeDirFor(platform, chatType, chatID)
 	if dir == "" {
 		return "", errors.New("meme pool disabled")
 	}

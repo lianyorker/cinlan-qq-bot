@@ -555,7 +555,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 	// or [[MEME]] marker can resend them.
 	refs := s.EventImageRefs(ctx, state.selfID, state.event.Chain)
 	if len(refs) > 0 {
-		go s.collectMemes(state.chatType, state.chatID, refs)
+		go s.collectMemes(state.platform, state.chatType, state.chatID, refs)
 		s.noteRecentImage(
 			state.chatType, state.chatID, state.userID,
 			refs[len(refs)-1],
@@ -576,7 +576,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			if loc := kt.pattern.FindStringIndex(state.text); loc != nil {
 				query = strings.TrimSpace(state.text[loc[1]:])
 			}
-			path, memeErr := s.pickMeme(state.chatType, state.chatID, query)
+			path, memeErr := s.pickMeme(state.platform, state.chatType, state.chatID, query)
 			var chain message.Chain
 			if memeErr != nil {
 				chain = message.Chain{message.Text(memeErr.Error())}
@@ -764,6 +764,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 	if s.handleCommand(
 		ctx,
 		state.sessionID,
+		state.platform,
 		state.selfID,
 		state.chatType,
 		state.chatID,
@@ -1016,7 +1017,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		request.SystemPrompt += "对方是私聊好友或 allowed_users 里的熟人，优先响应他的诉求。"
 	}
 	if s.affinity != nil {
-		score := s.affinity.Score(state.selfID, state.userID)
+		score := s.affinity.Score(state.platform, state.selfID, state.userID)
 		level := affinity.Level(score)
 		percent := affinity.Percent(score)
 		if state.chatType == platform.ChatPrivate ||
@@ -1521,7 +1522,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			}
 			if query, ok := parseMemeMarker(part); ok {
 				path, memeErr := s.pickMeme(
-					state.chatType, state.chatID, query,
+					state.platform, state.chatType, state.chatID, query,
 				)
 				if memeErr != nil {
 					skippedMarkers++
@@ -1702,7 +1703,7 @@ func (s *Service) extractAffinityDelta(state *flowState) string {
 				delta = -5
 			}
 			if delta != 0 {
-				s.affinity.Add(state.selfID, state.userID, delta)
+				s.affinity.Add(state.platform, state.selfID, state.userID, delta)
 			}
 		}
 	}
@@ -1714,7 +1715,7 @@ func (s *Service) extractAffinityDelta(state *flowState) string {
 func (s *Service) recordExchange(ctx context.Context, state *flowState) {
 	s.sessions.AddExchange(state.sessionID, state.promptText, state.reply)
 	if s.affinity != nil {
-		s.affinity.Add(state.selfID, state.userID, 1)
+		s.affinity.Add(state.platform, state.selfID, state.userID, 1)
 	}
 	s.scheduleCompression(ctx, state)
 }

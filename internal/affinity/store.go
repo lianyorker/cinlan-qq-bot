@@ -81,7 +81,9 @@ type Store struct {
 }
 
 // Load opens the JSON score file; a missing file yields an empty store.
-func Load(path string) (*Store, error) {
+// legacyPlatform is stamped onto pre-platform two-part keys so an
+// upgrade keeps old scores instead of orphaning them.
+func Load(path, legacyPlatform string) (*Store, error) {
 	store := &Store{path: strings.TrimSpace(path), scores: map[string]int{}}
 	if store.path == "" {
 		return store, nil
@@ -99,26 +101,56 @@ func Load(path string) (*Store, error) {
 	if store.scores == nil {
 		store.scores = map[string]int{}
 	}
+	if store.migrateLegacy(legacyPlatform) {
+		// Rewrite the file in the new layout right away — otherwise the
+		// migration only lives in memory until the next coincidental save.
+		if saveErr := store.saveLocked(); saveErr != nil {
+			return store, saveErr
+		}
+	}
 	return store, nil
 }
 
-// Key builds the score key for a user talking to a bot account.
-func Key(selfID, userID string) string {
-	return strings.TrimSpace(selfID) + ":" + strings.TrimSpace(userID)
+// migrateLegacy prefixes keys saved before the platform scope existed
+// ("self:user") with the legacy platform. Scoped keys already present
+// always win — a collision merges the old score into the scoped entry
+// rather than discarding it.
+func (s *Store) migrateLegacy(legacyPlatform string) (migrated bool) {
+	lp := strings.TrimSpace(legacyPlatform)
+	if lp == "" {
+		return false
+	}
+	for k, score := range s.scores {
+		if strings.Count(k, ":") != 1 {
+			continue
+		}
+		dst := lp + ":" + k
+		s.scores[dst] += score
+		delete(s.scores, k)
+		migrated = true
+	}
+	return migrated
+}
+
+// Key builds the score key for a user talking to a bot account on a
+// given platform — a douyin uid and a QQ number never share a score.
+func Key(platform, selfID, userID string) string {
+	return strings.TrimSpace(platform) + ":" + strings.TrimSpace(selfID) +
+		":" + strings.TrimSpace(userID)
 }
 
 // Score returns the user's current affinity score.
-func (s *Store) Score(selfID, userID string) int {
+func (s *Store) Score(platform, selfID, userID string) int {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return s.scores[Key(selfID, userID)]
+	return s.scores[Key(platform, selfID, userID)]
 }
 
 // Add increments a user's score by delta and persists the file.
-func (s *Store) Add(selfID, userID string, delta int) int {
+func (s *Store) Add(platform, selfID, userID string, delta int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	key := Key(selfID, userID)
+	key := Key(platform, selfID, userID)
 	s.scores[key] += delta
 	if s.scores[key] < 0 {
 		s.scores[key] = 0

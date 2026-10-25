@@ -9,6 +9,7 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 )
@@ -26,8 +27,10 @@ type Store struct {
 	warns map[string]warnEntry
 }
 
-// Open loads (or creates) the warning store at path.
-func Open(path string) (*Store, error) {
+// Open loads (or creates) the warning store at path. legacyPlatform is
+// stamped onto pre-platform three-part keys so an upgrade keeps the
+// warning counts instead of orphaning them.
+func Open(path, legacyPlatform string) (*Store, error) {
 	store := &Store{path: path, warns: make(map[string]warnEntry)}
 	data, err := os.ReadFile(path)
 	switch {
@@ -47,7 +50,36 @@ func Open(path string) (*Store, error) {
 	default:
 		return nil, fmt.Errorf("moderation store: %w", err)
 	}
+	if store.migrateLegacy(legacyPlatform) {
+		// Rewrite right away so the migration doesn't depend on the
+		// next coincidental Warn() firing.
+		if saveErr := store.saveLocked(); saveErr != nil {
+			return store, saveErr
+		}
+	}
 	return store, nil
+}
+
+// migrateLegacy prefixes keys saved before the platform scope existed
+// ("chatType:chatID:userID") with the legacy platform. Scoped keys
+// already present always win — a collision keeps the newer count.
+func (s *Store) migrateLegacy(legacyPlatform string) (migrated bool) {
+	lp := strings.TrimSpace(legacyPlatform)
+	if lp == "" {
+		return false
+	}
+	for k, entry := range s.warns {
+		if strings.Count(k, ":") != 2 {
+			continue
+		}
+		dst := lp + ":" + k
+		if _, clash := s.warns[dst]; !clash {
+			s.warns[dst] = entry
+		}
+		delete(s.warns, k)
+		migrated = true
+	}
+	return migrated
 }
 
 // Warn increments and returns the warning count for key, persisting to disk.

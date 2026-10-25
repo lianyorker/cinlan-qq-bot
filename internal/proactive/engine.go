@@ -74,7 +74,7 @@ type Deps struct {
 	Stickers func(personaName string) map[string]string
 	// ResolveMeme maps a [[MEME:query]] to a stored chat image path;
 	// "" means nothing matched.
-	ResolveMeme func(chatType, chatID, query string) string
+	ResolveMeme func(platform, chatType, chatID, query string) string
 	// DefaultSelfID fills rules that carry no explicit self_id.
 	DefaultSelfID string
 	Now           func() time.Time
@@ -481,7 +481,7 @@ func (e *Engine) sendProactive(
 				}
 			case "MEME":
 				if e.deps.ResolveMeme != nil {
-					file = e.deps.ResolveMeme(chatType, chatID, key)
+					file = e.deps.ResolveMeme(plat, chatType, chatID, key)
 				}
 			default: // IMG/IMAGE/PHOTO remembered images
 				if e.deps.ChatPrefs != nil {

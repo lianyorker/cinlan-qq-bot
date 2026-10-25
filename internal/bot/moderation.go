@@ -108,7 +108,8 @@ func (s *Service) stageModeration(
 		}
 	}
 
-	key := state.chatType + ":" + state.chatID + ":" + state.userID
+	key := state.platform + ":" + state.chatType + ":" +
+		state.chatID + ":" + state.userID
 	count := s.warnStore.Warn(key)
 	limit := pol.EffectiveWarnLimit()
 	action := pol.EffectiveAction()

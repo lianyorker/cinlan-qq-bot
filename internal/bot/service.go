@@ -449,8 +449,8 @@ func (s *Service) SetTranscriber(t voiceTranscriber) {
 
 // MemeFile resolves a meme-pool query to a file path for the proactive
 // engine; "" means nothing matched (or the pool is off).
-func (s *Service) MemeFile(chatType, chatID, query string) string {
-	path, err := s.pickMeme(chatType, chatID, query)
+func (s *Service) MemeFile(platform, chatType, chatID, query string) string {
+	path, err := s.pickMeme(platform, chatType, chatID, query)
 	if err != nil {
 		return ""
 	}
@@ -952,7 +952,7 @@ func (s *Service) handlePlatformEvent(ctx context.Context, event platform.Event)
 
 func (s *Service) handleCommand(
 	ctx context.Context,
-	sessionID, selfID, chatType, chatID, userID, senderName, messageID, text string,
+	sessionID, plat, selfID, chatType, chatID, userID, senderName, messageID, text string,
 ) bool {
 	command := strings.ToLower(strings.TrimSpace(text))
 	var reply string
@@ -966,7 +966,7 @@ func (s *Service) handleCommand(
 			reply = "亲密度功能未开启。"
 			break
 		}
-		score := s.affinity.Score(selfID, userID)
+		score := s.affinity.Score(plat, selfID, userID)
 		level, percent := affinity.Level(score), affinity.Percent(score)
 		if chatType == platform.ChatPrivate {
 			level, percent = affinity.LevelIntimate, 100
