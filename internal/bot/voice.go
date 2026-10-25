@@ -56,7 +56,8 @@ const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOI
 
 // singPromptNote is appended only when the chat has singing enabled —
 // it teaches the [[SING]] marker the model otherwise must not emit.
-const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 唱一小段（自己编的歌词小段，不照抄真实歌词，不超过两段每段200字内，可以带～拖音）；语速按歌定 [[SING:0.7]] 慢歌、[[SING:1.2]] 快歌；没说清唱什么可以先反问。你是用和自己说话一样的声音真唱，被夸好听可以得意，唱得不好就嘴硬说没发挥好。`
+const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 唱一小段（自己编的歌词小段，不照抄真实歌词，不超过两段每段200字内，可以带～拖音）；语速按歌定 [[SING:0.7]] 慢歌、[[SING:1.2]] 快歌；没说清唱什么可以先反问。
+唱歌时的消息顺序：最多先发一条寒暄（"咳咳清嗓子"之类），然后 [[SING]] 唱，唱完最多再发一条收尾——歌词只写进标记里，文字泡里严禁再复述歌词；"唱完啦"这类收尾只准说一遍，整个唱歌回合连文字泡最多 3 条。你是用和自己说话一样的声音真唱，被夸好听可以得意，唱得不好就嘴硬说没发挥好。`
 
 // singDisabledNote is appended while singing is off — the model must
 // admit it cannot sing instead of silently emitting a dropped marker.
