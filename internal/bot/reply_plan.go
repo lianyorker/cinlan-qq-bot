@@ -282,10 +282,14 @@ func planReplyParts(reply string) []string {
 			parts = append(parts, part)
 		}
 	}
-	if len(parts) <= 2 {
+	// Up to four [[NEXT]] bursts ride through as separate bubbles —
+	// people fire several short messages, not two giant ones. Any
+	// excess beyond four merges into the last bubble so nothing is lost.
+	if len(parts) <= 4 {
 		return parts
 	}
-	return []string{parts[0], strings.Join(parts[1:], "\n")}
+	head := append([]string{}, parts[:3]...)
+	return append(head, strings.Join(parts[3:], "\n"))
 }
 
 // inlineMarkerPattern finds [[MEME...]] / [[IMG:...]] / [[IMAGE:...]] /
