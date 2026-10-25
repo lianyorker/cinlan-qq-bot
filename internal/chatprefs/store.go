@@ -709,17 +709,16 @@ func (s *Store) PromiseFacts(platform, chatType, chatID string) []fact {
 }
 
 // HasThoughtMaterial reports whether this chat holds anything worth
-// spontaneously bringing up — fresh memories or open promises. The
-// proactive engine reads this as "念头": no material, less chit-chat.
+// spontaneously bringing up — open promises or memories still warm.
+// Permanent fields (ToneBans, Impressions) deliberately do NOT count:
+// they never expire, so counting them would keep the gate open forever
+// and the 念头 check would silently never dampen anything.
 func (s *Store) HasThoughtMaterial(platform, chatType, chatID string, now time.Time) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.data[key(platform, chatType, chatID)]
 	if e == nil {
 		return false
-	}
-	if len(e.ToneBans) > 0 || len(e.Impressions) > 0 {
-		return true
 	}
 	recent := now.Add(-14 * 24 * time.Hour)
 	for _, f := range e.Facts {

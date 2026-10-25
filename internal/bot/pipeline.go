@@ -1178,12 +1178,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			)
 		}
 	}
-	// Humanization hints: current mood tier + late-night drowsiness. Both
-	// are persona-agnostic nudges, appended after operator notes.
+	// Humanization hints: current mood tier + circadian rhythm — both
+	// gated by MoodEnabled so formal bindings can opt out of both.
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
 		if hint := mood.Hint(s.chatPrefs.MoodScore(
 			state.platform, state.chatType, state.chatID, s.now(),
 		)); hint != "" {
+			request.SystemPrompt += "\n\n" + hint
+		}
+		if hint := mood.Circadian(s.now()); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
 	}
@@ -1193,11 +1196,6 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if feeling := s.recentFeeling(state); feeling != "" {
 		request.SystemPrompt += "\n\n（你刚刚的真实感受：" + feeling +
 			"——这是你自己的情绪，不是别人说的话）"
-	}
-	// Circadian rhythm: morning-her and late-night-her don't talk the
-	// same — a soft time-of-day nudge alongside the hard sleep window.
-	if hint := mood.Circadian(s.now()); hint != "" {
-		request.SystemPrompt += "\n\n" + hint
 	}
 	if s.cfg.Asleep(s.now()) {
 		request.SystemPrompt += fmt.Sprintf(
@@ -1797,10 +1795,12 @@ var crisisWords = []string{
 	"撑不下去", "想不开", "活不下去", "想跳楼", "了结",
 }
 
-// toneBanPattern catches the chat telling her to drop a phrase:
-// 别老说emo / 别再说缩写 / 能不能别老提咖啡 / 少发点梗图.
+// toneBanPattern catches the chat telling her to drop a PHRASE —
+// word-complaint verbs only (说/提). Action complaints like "别烦我"
+// or "别再发图" are respect-end / spam complaints, not vocabulary
+// bans, and must NOT scrub the words "烦我" or "发图" out of replies.
 var toneBanPattern = regexp.MustCompile(
-	`(?:别老说|别再说|不要老说|以后别说|能不能别说|能不能别|少说点|少发点|别老发|别总发|别再发)([^\s，。！？!?,；;~～]{1,10})`,
+	`(?:别老说|别再说|不要老说|以后别说|能不能别说|别老提|别再提|能不能别老提|别总提|少说点|少提点)([^\s，。！？!?,；;~～]{1,10})`,
 )
 
 // learnToneBan picks up inbound "别再说X" feedback, stores the phrase,
