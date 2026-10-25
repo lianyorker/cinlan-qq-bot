@@ -205,6 +205,15 @@ func (e *Engine) sweep(ctx context.Context) {
 			if moodScore >= 30 {
 				chance = min(chance*1.5, 0.5)
 			}
+			// 念头门: a chat with nothing worth bringing up — no fresh
+			// memories, no open promises — rarely deserves a cold opener.
+			// Dampen rather than mute so she can still just say hi.
+			if e.deps.ChatPrefs != nil && !e.deps.ChatPrefs.HasThoughtMaterial(
+				plat, chatType, chatID, e.deps.Now()) {
+				chance *= 0.35
+			}
+			// Circadian: evening is her chatty window; morning/noon dim.
+			chance *= mood.CircadianFactor(e.deps.Now())
 			if e.deps.Rand.Float64() < chance {
 				e.fire(ctx, rule, plat, chatType, chatID)
 			}
@@ -348,6 +357,16 @@ func (e *Engine) fire(
 				plat, chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
 				system += "\n你对他的感觉：" + imp.Text
 			}
+		}
+		// Open promises are her best opener — "说到做到" beats small talk.
+		if promises := e.deps.ChatPrefs.PromiseFacts(
+			plat, chatType, chatID); len(promises) > 0 {
+			lines := make([]string, 0, len(promises))
+			for _, p := range promises {
+				lines = append(lines, "· "+strings.TrimPrefix(p.Text, "承诺·"))
+			}
+			system += "\n你之前答应过的事（这次开口可以先兑现它）：\n" +
+				strings.Join(lines, "\n")
 		}
 		if hint := mood.Hint(e.deps.ChatPrefs.MoodScore(
 			plat, chatType, chatID, e.deps.Now())); hint != "" {

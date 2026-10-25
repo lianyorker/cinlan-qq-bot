@@ -42,7 +42,7 @@ func TestReplaceFactUpdatesMatchOrAppendsNew(t *testing.T) {
 		t.Fatalf("after replace facts = %#v", facts)
 	}
 	// No match — replace degrades to add instead of deadlocking.
-	if err := s.ReplaceFact("qq-onebot", "group", "1", "完全不相干的东西", "新事实"); err != nil {
+	if err := s.ReplaceFact("qq-onebot", "group", "1", "完全不相干的东西", "新的记忆事实"); err != nil {
 		t.Fatalf("ReplaceFact(fallback) error = %v", err)
 	}
 	if len(s.FactsSnapshot("qq-onebot", "group", "1")) != 2 {
@@ -229,7 +229,7 @@ func TestLegacyJSONMigratesStringFacts(t *testing.T) {
 		t.Fatalf("migrated impression = %q", got)
 	}
 	// Rewrite persists the new v2 layout without losing data.
-	if err := s.AddFact("qq-onebot", "group", "1", "新事实"); err != nil {
+	if err := s.AddFact("qq-onebot", "group", "1", "新的记忆事实"); err != nil {
 		t.Fatal(err)
 	}
 	raw, _ := os.ReadFile(path)

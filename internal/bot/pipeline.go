@@ -1143,6 +1143,22 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n\n这条消息让你想起的旧记忆，提不提随你：\n" +
 				strings.Join(recalled, "\n")
 		}
+		// Promises stay load-bearing — surfaced separately so the 承诺·
+		// facts don't drown inside the generic memory list.
+		if promises := s.chatPrefs.PromiseFacts(
+			state.platform, state.chatType, state.chatID); len(promises) > 0 {
+			lines := make([]string, 0, len(promises))
+			for _, p := range promises {
+				if recentSet[p.Text] {
+					continue
+				}
+				lines = append(lines, "· "+strings.TrimPrefix(p.Text, "承诺·"))
+			}
+			if len(lines) > 0 {
+				request.SystemPrompt += "\n\n你之前答应过的事（别忘了兑现或跟进）：\n" +
+					strings.Join(lines, "\n")
+			}
+		}
 		// Her take on the speaker: chat-local first, then the persona-wide
 		// profile so she recognizes people across her own bindings.
 		imp := s.chatPrefs.Impression(
@@ -1178,11 +1194,21 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		request.SystemPrompt += "\n\n（你刚刚的真实感受：" + feeling +
 			"——这是你自己的情绪，不是别人说的话）"
 	}
+	// Circadian rhythm: morning-her and late-night-her don't talk the
+	// same — a soft time-of-day nudge alongside the hard sleep window.
+	if hint := mood.Circadian(s.now()); hint != "" {
+		request.SystemPrompt += "\n\n" + hint
+	}
 	if s.cfg.Asleep(s.now()) {
 		request.SystemPrompt += fmt.Sprintf(
 			"\n\n现在是深夜 %s，你很困——回复短一点迷糊一点，闲聊可以装没看全。",
 			s.now().Format("15:04"),
 		)
+	}
+	// Crisis vs. just-sad: despair signals get a care line instead of
+	// banter. Not a block — we stay present, we just stop joking.
+	if crisisSignals(state.text) {
+		request.SystemPrompt += "\n\n（他现在情绪可能很危险，别抖机灵别灌鸡汤，认真接住他的话，陪着他）"
 	}
 	if appendPrompt, ok := event.Values["agent.system_prompt_append"].(string); ok {
 		appendPrompt = strings.TrimSpace(appendPrompt)
@@ -1331,6 +1357,13 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 		)
 		return nil
 	}
+	// Negative feedback + self-promise capture run on the resolved reply
+	// BEFORE the outbound chain is built — the scrubbed text is what sends
+	// AND what history records.
+	s.learnToneBan(state)
+	s.applyToneGuard(state)
+	s.notePromise(state)
+	s.noteCorrection(state)
 	if state.outbound.Empty() {
 		state.outbound = message.Chain{message.Text(state.reply)}
 	}
@@ -1745,6 +1778,136 @@ func (s *Service) RecordOutboundAction(plat, selfID, chatType, chatID, desc stri
 		plat+":self:"+selfID+":"+kind+":"+chatID,
 		"[动作] "+desc,
 	)
+}
+
+// crisisSignals flags despair-level language in the inbound message —
+// not unsafe-for-others content (that hits the unsafe gate earlier),
+// but someone who might need real presence instead of jokes.
+func crisisSignals(text string) bool {
+	for _, w := range crisisWords {
+		if strings.Contains(text, w) {
+			return true
+		}
+	}
+	return false
+}
+
+var crisisWords = []string{
+	"想死", "不想活", "自杀", "自残", "活着没意思",
+	"撑不下去", "想不开", "活不下去", "想跳楼", "了结",
+}
+
+// toneBanPattern catches the chat telling her to drop a phrase:
+// 别老说emo / 别再说缩写 / 能不能别老提咖啡 / 少发点梗图.
+var toneBanPattern = regexp.MustCompile(
+	`(?:别老说|别再说|不要老说|以后别说|能不能别说|能不能别|少说点|少发点|别老发|别总发|别再发)([^\s，。！？!?,；;~～]{1,10})`,
+)
+
+// learnToneBan picks up inbound "别再说X" feedback, stores the phrase,
+// and notes it in session history so the change is visible.
+func (s *Service) learnToneBan(state *flowState) {
+	if s.chatPrefs == nil || state.text == "" {
+		return
+	}
+	for _, m := range toneBanPattern.FindAllStringSubmatch(state.text, 3) {
+		ban := strings.Trim(m[1], "「」\"'‘’“”、，。！？!?,；;~～ ")
+		for _, suf := range []string{"了", "吧", "啊", "呀", "啦", "嘛", "的"} {
+			ban = strings.TrimSuffix(ban, suf)
+		}
+		if n := len([]rune(ban)); n < 1 || n > 10 {
+			continue
+		}
+		s.chatPrefs.AddToneBan(
+			state.platform, state.chatType, state.chatID, ban)
+		if s.sessions != nil {
+			s.sessions.AddObservation(state.sessionID,
+				"[语气] 对方让我别再说「"+ban+"」")
+		}
+	}
+}
+
+// applyToneGuard scrubs banned phrases out of her reply (and the text
+// segments of a prebuilt outbound chain). If the scrub would empty the
+// message entirely, keep the original — silence is worse than a repeat.
+func (s *Service) applyToneGuard(state *flowState) {
+	if s.chatPrefs == nil || state.reply == "" {
+		return
+	}
+	bans := s.chatPrefs.ToneBans(state.platform, state.chatType, state.chatID)
+	if len(bans) == 0 {
+		return
+	}
+	cleaned := state.reply
+	for _, ban := range bans {
+		cleaned = strings.ReplaceAll(cleaned, ban, "")
+	}
+	cleaned = strings.TrimSpace(cleaned)
+	if cleaned == "" || cleaned == state.reply {
+		return
+	}
+	state.reply = cleaned
+	for i := range state.outbound {
+		if state.outbound[i].Type != message.TypeText {
+			continue
+		}
+		t, ok := state.outbound[i].Data["text"].(string)
+		if !ok {
+			continue
+		}
+		for _, ban := range bans {
+			t = strings.ReplaceAll(t, ban, "")
+		}
+		state.outbound[i].Data["text"] = t
+	}
+}
+
+// promisePattern spots commitment-shaped sentences in HER OWN reply —
+// "我待会提醒你" "我帮你查" "我到时候给你发" — so a spoken promise
+// becomes a fact she can be held to.
+var promisePattern = regexp.MustCompile(
+	`[^\n。！？!?；;]{0,12}(?:我到时(?:候)?|我回头|我待会|我待会儿|我明天|我下次|我保证|我帮你|我给你发|我到时候提醒|说话算话|说定了)[^\n。！？!?；;]{0,30}`,
+)
+
+// notePromise stores commitment-shaped outbound sentences as 承诺· facts.
+func (s *Service) notePromise(state *flowState) {
+	if s.chatPrefs == nil || state.reply == "" {
+		return
+	}
+	for _, m := range promisePattern.FindAllString(state.reply, 2) {
+		snippet := strings.TrimSpace(strings.Trim(m,
+			"「」\"'‘’“”、，。！？!?,；;~～ "))
+		if n := len([]rune(snippet)); n < 6 || n > 40 {
+			continue
+		}
+		_ = s.chatPrefs.AddFact(
+			state.platform, state.chatType, state.chatID,
+			"承诺·"+snippet)
+	}
+}
+
+// correctionPattern catches the user revising an earlier claim:
+// "说错了" / "我记错了" / "不是周五是周六".
+var correctionPattern = regexp.MustCompile(
+	`(说错|记错|搞错|口误)了|不是([^\s，。！？!?,；;]{1,14})[,，]?\s*是([^\s，。！？!?,；;]{1,14})`,
+)
+
+// noteCorrection observes when the user corrects themselves so later
+// turns see "她改口了" as context — the remember tool can also rewrite
+// the underlying fact deliberately.
+func (s *Service) noteCorrection(state *flowState) {
+	if s.sessions == nil || state.text == "" {
+		return
+	}
+	m := correctionPattern.FindStringSubmatch(state.text)
+	if m == nil {
+		return
+	}
+	note := "对方纠正了自己之前的说法"
+	if m[2] != "" && m[3] != "" {
+		note = fmt.Sprintf("对方纠正：不是%s，是%s",
+			strings.TrimSpace(m[2]), strings.TrimSpace(m[3]))
+	}
+	s.sessions.AddObservation(state.sessionID, "[纠错] "+note)
 }
 
 // recordSelfAction drops a first-person action note into session history so

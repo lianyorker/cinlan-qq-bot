@@ -38,10 +38,46 @@ type imageNote struct {
 // fact is one remembered line with time anchors. CreatedAt marks when
 // the persona first learned it; LastSeenAt bumps every time the line
 // resurfaces in a prompt — stale, never-recalled memories fade first.
+// Weight is memory heat: facts that keep getting recalled score harder,
+// so the lines she actually uses stay reachable. 0 means default 1.
 type fact struct {
 	Text       string    `json:"text"`
 	CreatedAt  time.Time `json:"created_at,omitempty"`
 	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
+	Weight     float64   `json:"weight,omitempty"`
+}
+
+// factWeight normalizes the heat multiplier; stored zero / corrupt
+// values fall back to neutral.
+func factWeight(f fact) float64 {
+	if f.Weight <= 0 || f.Weight > maxFactWeight {
+		if f.Weight > maxFactWeight {
+			return maxFactWeight
+		}
+		return 1
+	}
+	return f.Weight
+}
+
+// memoryWorthy gates writes: filler with no information content
+// ("嗯", "好的", bare punctuation) never becomes a fact.
+func memoryWorthy(text string) bool {
+	t := strings.TrimSpace(text)
+	runes := []rune(t)
+	if len(runes) < minFactRunes {
+		return false
+	}
+	for _, w := range fillerBlacklist {
+		if t == w {
+			return false
+		}
+	}
+	return true
+}
+
+var fillerBlacklist = []string{
+	"嗯", "哦", "啊", "好的", "好的好的", "收到", "知道了", "可以", "行",
+	"okk", "ok", "yes", "嗯嗯", "哈哈", "2333", "666", "在的", "在", "在吗",
 }
 
 func (f *fact) UnmarshalJSON(raw []byte) error {
@@ -78,6 +114,10 @@ type chatEntry struct {
 	// Impressions maps a QQ user id to the persona's remembered take on
 	// that member ("爱抬杠","生日10.28"), updated by the remember tool.
 	Impressions map[string]fact `json:"impressions,omitempty"`
+	// ToneBans are phrases the chat told her to stop saying
+	// ("别老说emo" → "emo" lands here). Outbound replies get scrubbed
+	// before send — negative feedback that actually sticks.
+	ToneBans []string `json:"tone_bans,omitempty"`
 }
 
 // persistedStore wraps the chat map with persona-scoped user profiles.
@@ -425,6 +465,11 @@ const (
 	maxArchivePerChat     = 400
 	maxImpressionsPerChat = 60
 	maxProfilesPerPersona = 120
+	maxToneBansPerChat    = 20
+	// minFactRunes / maxFactWeight bound the memory quality gate and the
+	// recall-heat multiplier.
+	minFactRunes  = 4
+	maxFactWeight = 3.0
 	// recentFactsPerPrompt keeps the freshest memories always visible;
 	// the rest only resurface when the current message brings them up.
 	recentFactsPerPrompt = 10
@@ -525,6 +570,8 @@ func bestFactMatch(facts []fact, target string) int {
 // scoreFactHybrid combines CJK bigram overlap with local semantic concept
 // clusters and optional dense vector similarity so cross-word cues like
 // "天天熬夜写代码" <-> "睡眠不足想休息" still trigger memory recall.
+// The fact's Weight (memory heat) scales the final score — frequently
+// recalled memories resurface easier.
 func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.Engine) int {
 	score := scoreFact(f, grams)
 	if concepts := vecstore.ConceptOverlap(f.Text, query); concepts > 0 {
@@ -538,7 +585,7 @@ func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.
 			score += int(sim * 6)
 		}
 	}
-	return score
+	return int(float64(score) * factWeight(f))
 }
 
 func archiveFactLocked(e *chatEntry, evicted fact) {
@@ -565,11 +612,15 @@ func archiveFactLocked(e *chatEntry, evicted fact) {
 
 // AddFact stores a self-learned fact line for the chat. Duplicates are
 // ignored; over capacity the least-recently-recalled memory moves into
-// the long-term Archive instead of being lost.
+// the long-term Archive instead of being lost. Zero-information filler
+// ("嗯", "好的") is rejected so the memory pool stays meaningful.
 func (s *Store) AddFact(platform, chatType, chatID, text string) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return errors.New("fact is empty")
+	}
+	if !memoryWorthy(text) {
+		return errors.New("nothing worth remembering")
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -598,6 +649,89 @@ func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
 	e.Facts = append(e.Facts, fact{Text: text, CreatedAt: now, LastSeenAt: now})
 	return s.saveLocked()
 }
+
+// AddToneBan records a phrase this chat told her to stop saying.
+// Deduped, capped — new complaints bump old ones out.
+func (s *Store) AddToneBan(platform, chatType, chatID, phrase string) {
+	phrase = strings.TrimSpace(phrase)
+	if phrase == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(platform, chatType, chatID)
+	for _, b := range e.ToneBans {
+		if b == phrase {
+			return
+		}
+	}
+	if len(e.ToneBans) >= maxToneBansPerChat {
+		e.ToneBans = e.ToneBans[1:]
+	}
+	e.ToneBans = append(e.ToneBans, phrase)
+	_ = s.saveLocked()
+}
+
+// ToneBans returns the phrases this chat asked her to drop.
+func (s *Store) ToneBans(platform, chatType, chatID string) []string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(platform, chatType, chatID)]
+	if e == nil || len(e.ToneBans) == 0 {
+		return nil
+	}
+	out := make([]string, len(e.ToneBans))
+	copy(out, e.ToneBans)
+	return out
+}
+
+// PromiseFacts returns the "承诺·…" lines she still owes this chat —
+// things she said she'd do. Surfaced to proactive and prompts so a
+// promise doesn't die the moment it was spoken.
+func (s *Store) PromiseFacts(platform, chatType, chatID string) []fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(platform, chatType, chatID)]
+	if e == nil {
+		return nil
+	}
+	var out []fact
+	collect := func(list []fact) {
+		for _, f := range list {
+			if strings.HasPrefix(f.Text, promisePrefix) {
+				out = append(out, f)
+			}
+		}
+	}
+	collect(e.Facts)
+	collect(e.Archive)
+	return out
+}
+
+// HasThoughtMaterial reports whether this chat holds anything worth
+// spontaneously bringing up — fresh memories or open promises. The
+// proactive engine reads this as "念头": no material, less chit-chat.
+func (s *Store) HasThoughtMaterial(platform, chatType, chatID string, now time.Time) bool {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.data[key(platform, chatType, chatID)]
+	if e == nil {
+		return false
+	}
+	if len(e.ToneBans) > 0 || len(e.Impressions) > 0 {
+		return true
+	}
+	recent := now.Add(-14 * 24 * time.Hour)
+	for _, f := range e.Facts {
+		if strings.HasPrefix(f.Text, promisePrefix) || factAnchor(f).After(recent) {
+			return true
+		}
+	}
+	return false
+}
+
+// promisePrefix marks facts that record something she offered to do.
+const promisePrefix = "承诺·"
 
 // ReplaceFact updates the closest existing fact with new text — the
 // "she corrected herself" path; falls back to AddFact when no match.
@@ -686,11 +820,14 @@ func (s *Store) RecallFacts(platform, chatType, chatID, query string, limit int)
 		}
 		out = append(out, h.f)
 		// Recalled memories stay fresh — LastSeenAt is her "used it
-		// recently" signal for later pruning.
+		// recently" signal for later pruning, and Weight creeps up so
+		// lines she actually leans on recall harder next time.
 		if h.archived {
 			e.Archive[h.idx].LastSeenAt = now
+			e.Archive[h.idx].Weight = factWeight(e.Archive[h.idx]) + 0.25
 		} else {
 			e.Facts[h.idx].LastSeenAt = now
+			e.Facts[h.idx].Weight = factWeight(e.Facts[h.idx]) + 0.25
 		}
 	}
 	if len(out) > 0 {

@@ -92,7 +92,7 @@ func TestConsolidateFactsShrinks(t *testing.T) {
 func TestConsolidateFactsSkipsWhenSmall(t *testing.T) {
 	agent := &fakeAgent{reply: "x"}
 	e, store := newEngine(t, agent)
-	_ = store.AddFact("qq-onebot", "private", "u1", "一条")
+	_ = store.AddFact("qq-onebot", "private", "u1", "一条测试记忆")
 	e.consolidateFacts(context.Background(), "qq-onebot", "private", "u1")
 	if len(agent.seen) != 0 {
 		t.Fatal("below threshold should not call the model")
@@ -103,7 +103,7 @@ func TestConsolidateFactsKeepsOnNoShrink(t *testing.T) {
 	agent := &fakeAgent{reply: "1\n2\n3\n4\n5\n6\n7\n8"}
 	e, store := newEngine(t, agent)
 	for i := 0; i < 8; i++ {
-		_ = store.AddFact("qq-onebot", "private", "u1", fmt.Sprintf("m%d", i))
+		_ = store.AddFact("qq-onebot", "private", "u1", fmt.Sprintf("记忆条目%d", i))
 	}
 	e.consolidateFacts(context.Background(), "qq-onebot", "private", "u1")
 	if got := store.FactsSnapshot("qq-onebot", "private", "u1"); len(got) != 8 {

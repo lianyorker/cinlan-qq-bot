@@ -2,7 +2,10 @@
 // renders the prompt hint that nudges persona replies toward the mood.
 package mood
 
-import "strings"
+import (
+	"strings"
+	"time"
+)
 
 // Score returns the mood delta for one inbound message. Only messages that
 // mention the bot move the meter — ambient chatter between other people is
@@ -50,5 +53,37 @@ func Hint(score int) string {
 		return "（当前心情：不错——语气轻松点，可以多聊两句）"
 	default:
 		return ""
+	}
+}
+
+// Circadian returns a time-of-day state hint — morning her and 3am her
+// don't feel the same. Only non-neutral hours get a line.
+func Circadian(now time.Time) string {
+	switch h := now.Hour(); {
+	case h >= 6 && h < 9:
+		return "（现在是早上，你刚醒不久——精神还行，说话清醒利落）"
+	case h >= 13 && h < 15:
+		return "（现在是午后，你有点犯困——语气松一点、懒一点）"
+	case h >= 22:
+		return "（现在晚了，你安静下来了——比白天话少、语气柔一点）"
+	default:
+		return ""
+	}
+}
+
+// CircadianFactor scales the urge to start a conversation by hour —
+// she doesn't get chatty at the same rate at 8am and 1am. Sleep-window
+// hours (23-07) are handled separately by the hard asleep gate; this
+// shapes the awake-but-dim hours.
+func CircadianFactor(now time.Time) float64 {
+	switch h := now.Hour(); {
+	case h >= 6 && h < 9:
+		return 0.8 // 刚醒，还没那么话痨
+	case h >= 12 && h < 14:
+		return 0.8 // 午休犯困
+	case h >= 19 && h < 23:
+		return 1.2 // 晚上是最想聊天的时候
+	default:
+		return 1.0
 	}
 }
