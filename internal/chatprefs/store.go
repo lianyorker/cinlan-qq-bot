@@ -685,8 +685,16 @@ func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
 		archiveFactLocked(e, e.Facts[oldest])
 		e.Facts = append(e.Facts[:oldest], e.Facts[oldest+1:]...)
 	}
+	// Emotional intensity boost: memories formed during strong feelings
+	// (fight, big joy) start with higher recall heat — like the flash-bulb
+	// effect in real memory where surprises stick harder.
+	var initWeight float64
+	if currentMood >= 30 || currentMood <= -30 {
+		initWeight = 1.5
+	}
 	e.Facts = append(e.Facts, fact{
 		Text: text, CreatedAt: now, LastSeenAt: now, Mood: currentMood,
+		Weight: initWeight,
 	})
 	return s.saveLocked()
 }
@@ -1276,14 +1284,39 @@ func (s *Store) HasFactPrefix(platform, selfID, chatType, chatID, prefix string)
 	return false
 }
 
+// FactMeta returns aggregate metadata across a chat's active facts so
+// the reflect engine can propagate emotional color and recall heat
+// through a merge instead of resetting them to zero.
+func (s *Store) FactMeta(platform, selfID, chatType, chatID string) (avgMood int, avgWeight float64) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil || len(e.Facts) == 0 {
+		return 0, 1
+	}
+	var totalMood int
+	var totalWeight float64
+	for _, f := range e.Facts {
+		totalMood += f.Mood
+		totalWeight += factWeight(f)
+	}
+	n := len(e.Facts)
+	return totalMood / n, totalWeight / float64(n)
+}
+
 // RewriteFacts swaps the whole fact list for the consolidated lines the
-// reflect pass produced — anchors refresh because merged lines were
-// just re-thought, not rescued from a shelf.
-func (s *Store) RewriteFacts(platform, selfID, chatType, chatID string, texts []string) error {
+// reflect pass produced. avgMood and avgWeight carry forward the
+// pre-merge emotional color and recall heat so consolidation no longer
+// resets them to zero — a memory that tasted bitter before the merge
+// still tastes bitter after.
+func (s *Store) RewriteFacts(platform, selfID, chatType, chatID string, texts []string, avgMood int, avgWeight float64) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	e := s.entry(platform, selfID, chatType, chatID)
 	now := s.now()
+	if avgWeight <= 0 {
+		avgWeight = 1
+	}
 	seen := map[string]bool{}
 	facts := make([]fact, 0, len(texts))
 	for _, t := range texts {
@@ -1292,7 +1325,13 @@ func (s *Store) RewriteFacts(platform, selfID, chatType, chatID string, texts []
 			continue
 		}
 		seen[t] = true
-		facts = append(facts, fact{Text: t, CreatedAt: now, LastSeenAt: now})
+		facts = append(facts, fact{
+			Text:       t,
+			CreatedAt:  now,
+			LastSeenAt: now,
+			Mood:       avgMood,
+			Weight:     avgWeight,
+		})
 	}
 	if len(facts) > maxFactsPerChat {
 		facts = facts[len(facts)-maxFactsPerChat:]

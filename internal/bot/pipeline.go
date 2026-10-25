@@ -1101,11 +1101,23 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		learned := make([]string, 0)
 		recentSet := map[string]bool{}
 		learnedRunes := 0
+		var selfState string // 状态· fact: how she's been changing lately
 		// Fill the budget newest-first — when memory must shrink, the
 		// freshest lines stay; the oldest fade first, like real memory.
 		recent := s.chatPrefs.RecentFacts(state.platform, state.selfID, state.chatType, state.chatID, 10)
 		for i := len(recent) - 1; i >= 0; i-- {
 			f := recent[i]
+			// Self-state facts are injected separately as a personality
+			// micro-shift, not as regular memory lines.
+			if strings.HasPrefix(f.Text, "状态·") {
+				if selfState == "" {
+					// Keep only the newest (first seen in reverse order).
+					selfState = strings.TrimPrefix(f.Text, "状态·")
+					selfState = strings.TrimLeft(selfState, "0123456789. ")
+				}
+				recentSet[f.Text] = true
+				continue
+			}
 			if learnedRunes+len([]rune(f.Text)) > learnedBudgetRunes {
 				continue
 			}
@@ -1114,6 +1126,12 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			learned = append(learned, "· "+f.Text)
 		}
 		slices.Reverse(learned)
+		// Self-state injection: a gentle nudge about how she's been
+		// shifting — personality stays static (red line), but her recent
+		// tendencies ("最近更黏某人了") inform the current turn.
+		if selfState != "" {
+			request.SystemPrompt += "\n\n你最近的感觉（不用特意提起，让它自然影响你说话的方式）：" + selfState
+		}
 		if len(learned) > 0 {
 			request.SystemPrompt += "\n\n你自己记住的关于这个聊天的信息（可能过时，记不清就用'好像''大概'的语气）：\n" +
 				strings.Join(learned, "\n")

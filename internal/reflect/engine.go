@@ -119,6 +119,7 @@ func (e *Engine) sweep(ctx context.Context) {
 		e.consolidateImpressions(ctx, k[0], k[1], k[2], k[3])
 	}
 	e.journal(ctx)
+	e.selfState(ctx)
 }
 
 // reply routes an agent request through the binding's provider (or the
@@ -177,6 +178,10 @@ func (e *Engine) consolidateFacts(ctx context.Context, platform, selfID, chatTyp
 	if !ok {
 		return
 	}
+	// Capture emotional color and recall heat BEFORE the merge so
+	// consolidated facts inherit them instead of resetting to zero.
+	avgMood, avgWeight := e.deps.ChatPrefs.FactMeta(platform, selfID, chatType, chatID)
+
 	var b strings.Builder
 	for i, f := range facts {
 		fmt.Fprintf(&b, "%d. %s\n", i+1, f)
@@ -205,14 +210,15 @@ func (e *Engine) consolidateFacts(ctx context.Context, platform, selfID, chatTyp
 	if len(merged) == 0 || len(merged) >= len(facts) {
 		return // model didn't actually shrink the list — keep originals
 	}
-	if err := e.deps.ChatPrefs.RewriteFacts(platform, selfID, chatType, chatID, merged); err != nil {
+	if err := e.deps.ChatPrefs.RewriteFacts(platform, selfID, chatType, chatID, merged, avgMood, avgWeight); err != nil {
 		e.deps.Logger.Warn("reflect fact rewrite failed",
 			"chat", chatType+":"+chatID, "error", err.Error())
 		return
 	}
 	e.deps.Logger.Info("reflect merged facts",
 		"chat", chatType+":"+chatID,
-		"before", len(facts), "after", len(merged))
+		"before", len(facts), "after", len(merged),
+		"mood_carry", avgMood, "weight_carry", avgWeight)
 }
 
 // consolidateImpressions folds the stalest half of a chat's member
@@ -331,6 +337,115 @@ func (e *Engine) journal(ctx context.Context) {
 			e.writeJournal(ctx, rule, plat, selfID, chatType, chatID, history, prefix)
 		}
 	}
+}
+
+// selfState gives each recently-active persona-binding a one-line
+// self-appraisal ("状态·最近我变得…") once per day. It reads the latest
+// journal entries plus the current mood trajectory and asks the persona
+// to notice how she's been changing — the lightest possible self-iteration
+// loop that feeds back into prompts without touching the identity red line.
+func (e *Engine) selfState(ctx context.Context) {
+	if e.deps.Bindings == nil || e.deps.ChatPrefs == nil {
+		return
+	}
+	today := e.deps.Now().Format("01.02")
+	statePrefix := "状态·"
+	for _, rule := range e.deps.Bindings.List() {
+		chatType := rule.ChatType
+		plat := rule.Platform
+		if plat == "" || plat == "*" {
+			plat = e.deps.Platform
+		}
+		for _, chatID := range rule.ChatIDs {
+			selfID := strings.TrimSpace(rule.SelfID)
+			if selfID == "" {
+				continue
+			}
+			// One self-state per chat per day.
+			if e.deps.ChatPrefs.HasFactPrefix(plat, selfID, chatType, chatID, statePrefix+today) {
+				continue
+			}
+			// Need recent activity.
+			if e.deps.Activity != nil {
+				last := e.deps.Activity(chatType, chatID)
+				if last.IsZero() || e.deps.Now().Sub(last) > e.cfg.JournalMaxAge {
+					continue
+				}
+			}
+			// Collect recent diary entries (日记·) as context.
+			allTexts := e.deps.ChatPrefs.FactTexts(plat, selfID, chatType, chatID)
+			var diaries []string
+			for _, t := range allTexts {
+				if strings.HasPrefix(t, "日记·") {
+					diaries = append(diaries, t)
+				}
+			}
+			if len(diaries) == 0 {
+				continue // no diary material to reflect on
+			}
+			// Keep only the latest 5 diary entries.
+			if len(diaries) > 5 {
+				diaries = diaries[len(diaries)-5:]
+			}
+			moodScore := e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())
+			e.writeSelfState(ctx, rule, plat, selfID, chatType, chatID, diaries, moodScore, statePrefix+today)
+		}
+	}
+}
+
+func (e *Engine) writeSelfState(
+	ctx context.Context,
+	rule binding.Rule,
+	platform, selfID, chatType, chatID string,
+	diaries []string, moodScore int,
+	prefix string,
+) {
+	profile, ok := e.persona(rule.Persona)
+	if !ok {
+		return
+	}
+	var b strings.Builder
+	b.WriteString("最近几天的日记：\n")
+	for _, d := range diaries {
+		b.WriteString("· " + d + "\n")
+	}
+	fmt.Fprintf(&b, "\n当前心情指数：%d（-100到100，负=不开心）\n", moodScore)
+
+	system := profile.SystemPrompt +
+		"\n\n（现在你在私下回顾最近自己的变化。根据上面的日记和心情，" +
+		"用一句话描述你最近的状态变化——比如'最近更黏某人了''对XX话题腻了'" +
+		"'心情一直不太好因为…''跟某某关系变好了'。" +
+		"只写一条，自然口语，不要用引号，不要解释，不要写'状态'两个字开头。" +
+		"如果真的没什么变化就回 [[SKIP]]）"
+
+	req := domain.AgentRequest{
+		RequestID: fmt.Sprintf("reflect-state-%s-%s-%d",
+			chatType, chatID, e.deps.Now().Unix()),
+		SessionID:    "reflect-state",
+		Text:         b.String(),
+		Platform:     platform,
+		ChatType:     chatType,
+		ChatID:       chatID,
+		SelfID:       selfID,
+		SystemPrompt: system,
+	}
+	resp, err := e.reply(ctx, rule, req)
+	if err != nil {
+		e.deps.Logger.Warn("reflect self-state failed",
+			"chat", chatType+":"+chatID, "error", err.Error())
+		return
+	}
+	line := strings.TrimSpace(resp.Reply)
+	if line == "" || strings.HasPrefix(line, "[[SKIP]]") {
+		return
+	}
+	// Trim to reasonable length.
+	if runes := []rune(line); len(runes) > 80 {
+		line = string(runes[:80])
+	}
+	_ = e.deps.ChatPrefs.AddFact(platform, selfID, chatType, chatID, prefix+" "+line)
+	e.deps.Logger.Info("reflect self-state written",
+		"chat", chatType+":"+chatID, "state", line)
 }
 
 func (e *Engine) writeJournal(
