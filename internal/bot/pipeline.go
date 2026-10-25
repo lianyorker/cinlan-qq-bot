@@ -1129,7 +1129,8 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			}
 			recalledRunes += len([]rune(f.Text))
 			recalled = append(recalled, fmt.Sprintf(
-				"你突然想起（%s记的）：%s", factAge(now, f.CreatedAt), f.Text,
+				"你突然想起（%s记的）：%s%s",
+				factAge(now, f.CreatedAt), f.Text, factMoodHint(f.Mood),
 			))
 		}
 		if len(recalled) > 0 {
@@ -1813,6 +1814,20 @@ func factAge(now, at time.Time) string {
 		return "刚才"
 	}
 	return at.Format("01-02")
+}
+
+// factMoodHint colors a recalled memory with the emotion stamped on it
+// when it formed — a memory made in a fight still tastes bitter on the
+// way back up, a warm one comes back soft.
+func factMoodHint(m int) string {
+	switch {
+	case m <= -30:
+		return "（想到这事还有点不舒服）"
+	case m >= 30:
+		return "（想到这事心里还有点暖）"
+	default:
+		return ""
+	}
 }
 
 // crisisSignals flags despair-level language in the inbound message —

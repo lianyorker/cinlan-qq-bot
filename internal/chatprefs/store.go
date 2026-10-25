@@ -40,11 +40,16 @@ type imageNote struct {
 // resurfaces in a prompt — stale, never-recalled memories fade first.
 // Weight is memory heat: facts that keep getting recalled score harder,
 // so the lines she actually uses stay reachable. 0 means default 1.
+// Mood is the emotional color a memory carries — the chat mood when it
+// was formed (-100..100). A thing learned mid-fight recalls sour; a
+// warm moment recalls fondly. Re-experiencing it in a new mood drifts
+// the tag toward the present, the way real memory reconsolidates.
 type fact struct {
 	Text       string    `json:"text"`
 	CreatedAt  time.Time `json:"created_at,omitempty"`
 	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
 	Weight     float64   `json:"weight,omitempty"`
+	Mood       int       `json:"mood,omitempty"`
 }
 
 // factWeight normalizes the heat multiplier; stored zero / corrupt
@@ -659,9 +664,14 @@ func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 // addFactLocked does the append/dedupe/prune under the held lock so
 // ReplaceFact can fall back without re-locking.
 func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
+	currentMood := decayedMood(e, now)
 	for i, f := range e.Facts {
 		if f.Text == text {
 			e.Facts[i].LastSeenAt = now
+			// Reconsolidation: re-living a memory in a new mood nudges
+			// its emotional tag toward how she feels now (2:1 toward the
+			// old color so one odd day doesn't repaint it).
+			e.Facts[i].Mood = (f.Mood*2 + currentMood) / 3
 			return s.saveLocked()
 		}
 	}
@@ -675,7 +685,9 @@ func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
 		archiveFactLocked(e, e.Facts[oldest])
 		e.Facts = append(e.Facts[:oldest], e.Facts[oldest+1:]...)
 	}
-	e.Facts = append(e.Facts, fact{Text: text, CreatedAt: now, LastSeenAt: now})
+	e.Facts = append(e.Facts, fact{
+		Text: text, CreatedAt: now, LastSeenAt: now, Mood: currentMood,
+	})
 	return s.saveLocked()
 }
 
