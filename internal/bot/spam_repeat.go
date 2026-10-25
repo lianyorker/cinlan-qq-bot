@@ -167,6 +167,12 @@ func (s *Service) checkMentionFatigue(
 	if count <= 0 || state.chatType != platform.ChatGroup {
 		return false
 	}
+	// Admins/owners are exempt — stonewalling the operators looks
+	// human to everyone else but breaks moderation and testing.
+	role := strings.ToLower(state.event.SenderRole)
+	if role == "admin" || role == "owner" {
+		return false
+	}
 	key := state.platform + ":" + state.chatType + ":" + state.chatID
 	window := s.cfg.MentionFatigueWindow
 	if window <= 0 {
