@@ -56,7 +56,7 @@ const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOI
 
 // singPromptNote is appended only when the chat has singing enabled —
 // it teaches the [[SING]] marker the model otherwise must not emit.
-const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 哼一小段（自己编的歌词小段，不用真实歌词，不超过两段每段200字内）；语速按歌定 [[SING:0.7]] 慢歌、[[SING:1.2]] 快歌；没说清唱什么可以先反问。坦白说自己是电子音念唱、不是真人唱歌也别谦虚过头。`
+const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 唱一小段（自己编的歌词小段，不照抄真实歌词，不超过两段每段200字内，可以带～拖音）；语速按歌定 [[SING:0.7]] 慢歌、[[SING:1.2]] 快歌；没说清唱什么可以先反问。你是用和自己说话一样的声音真唱，被夸好听可以得意，唱得不好就嘴硬说没发挥好。`
 
 // singDisabledNote is appended while singing is off — the model must
 // admit it cannot sing instead of silently emitting a dropped marker.
@@ -404,6 +404,17 @@ func (s *Service) sendVoiceClips(
 		if len(runes) > maxRunes {
 			text = string(runes[:maxRunes])
 		}
+		provider := s.voiceProvider
+		clipVoice := voiceName
+		if clip.Singing && s.singProvider != nil {
+			// Singing rides the dedicated engine (Breeze) with its
+			// own cloned voice — the persona's plain-voice name is
+			// meaningless there and would 404. The (sings) tag is
+			// Breeze's audio-tag contract for vocalized singing.
+			provider = s.singProvider
+			clipVoice = ""
+			text = "(sings) " + text
+		}
 		path := fmt.Sprintf(
 			"%s/%d-%s.mp3",
 			strings.TrimRight(s.cfg.VoiceDir, "/\\"),
@@ -419,18 +430,23 @@ func (s *Service) sendVoiceClips(
 		chain := message.Chain{
 			message.Record("file://" + filepath.ToSlash(absPath)),
 		}
-		err := s.voiceProvider.Synthesize(
-			ctx, text, path, voiceName, rate,
+		err := provider.Synthesize(
+			ctx, text, path, clipVoice, rate,
 		)
-		if err != nil && voiceName != "" {
+		if err != nil && clipVoice != "" {
 			// A broken or expired custom voice shouldn't silence the
 			// feature — retry once with the provider default voice.
 			s.logger.Warn(
 				"voice synthesis failed, retrying default voice",
 				"chat", chatID,
-				"voice", voiceName, "error", err.Error(),
+				"voice", clipVoice, "error", err.Error(),
 			)
-			err = s.voiceProvider.Synthesize(ctx, text, path, "", rate)
+			err = provider.Synthesize(ctx, text, path, "", rate)
+		}
+		if err != nil && provider != s.voiceProvider {
+			// Singing engine down — keep the lyrics audible on the
+			// plain voice rather than losing the clip entirely.
+			err = s.voiceProvider.Synthesize(ctx, clip.Text, path, voiceName, rate)
 		}
 		if err != nil {
 			s.logger.Warn(

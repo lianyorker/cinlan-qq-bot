@@ -423,6 +423,25 @@ func main() {
 			"output_dir", cfg.VoiceDir,
 		)
 	}
+	// [[SING]] clips ride a dedicated engine when SING_API_KEY is set —
+	// the cloned Breeze voice keeps singing in the same timbre as the
+	// plain voice while singing-capable synthesis stays off the
+	// pay-per-character volcano quota.
+	if cfg.SingAPIKey != "" {
+		if singProvider, singErr := tts.New(tts.Config{
+			Mode:    "breeze",
+			APIURL:  cfg.SingAPIURL,
+			APIKey:  cfg.SingAPIKey,
+			Voice:   cfg.SingVoice,
+			Model:   cfg.SingModel,
+			Timeout: cfg.VoiceTimeout,
+		}); singErr != nil {
+			logger.Warn("sing tts unavailable", "error", singErr)
+		} else if singProvider != nil {
+			botService.SetSingProvider(singProvider)
+			logger.Info("sing tts enabled", "voice", cfg.SingVoice)
+		}
+	}
 	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
 		Cooldown:      cfg.MediaToolCooldown,
 		Limit:         cfg.MediaToolLimit,

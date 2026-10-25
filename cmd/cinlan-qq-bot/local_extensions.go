@@ -316,7 +316,7 @@ func registerLocalExtensions(
 				); err != nil {
 					return command.Result{Handled: true, Reply: "设置失败：" + err.Error()}, nil
 				}
-				return command.Result{Handled: true, Reply: "唱歌已开启（目前是电子音念唱，不是真歌声）。"}, nil
+				return command.Result{Handled: true, Reply: "唱歌已开启（用她本人声音的真·歌声）。"}, nil
 			case "关闭", "关", "off":
 				if err := store.SetSingEnabled(
 					c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, false,

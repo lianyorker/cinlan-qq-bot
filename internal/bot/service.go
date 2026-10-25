@@ -144,7 +144,11 @@ type Service struct {
 	atNameCache   map[string]atNameEntry
 	warnStore     *moderation.Store
 	voiceProvider voiceSynth
-	voiceBudget   voiceBudget
+	// singProvider handles [[SING]] clips when a dedicated singing
+	// engine is configured (e.g. Breeze Blue); nil keeps singing on
+	// the plain voice provider.
+	singProvider voiceSynth
+	voiceBudget  voiceBudget
 	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
 	// occasional human reaction instead of a hair-trigger.
 	pokeBudget   voiceBudget
@@ -535,6 +539,12 @@ func (s *Service) SetGroupModerator(moderator GroupModerator) {
 // SetModerationStore wires the persistent spam-warning counter.
 func (s *Service) SetModerationStore(store *moderation.Store) {
 	s.warnStore = store
+}
+
+// SetSingProvider wires the dedicated singing engine; nil keeps
+// [[SING]] clips on the plain voice provider.
+func (s *Service) SetSingProvider(provider voiceSynth) {
+	s.singProvider = provider
 }
 
 // SetVoiceProvider wires the TTS backend for [[VOICE]] reply clips; nil

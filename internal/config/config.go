@@ -183,12 +183,19 @@ type Config struct {
 	VoiceVolcToken      string
 	VoiceVolcResourceID string
 	VoiceVolcEmotion    string
-	VoiceDir            string
-	VoiceMaxRunes       int
-	VoiceCooldown       time.Duration
-	VoiceTimeout        time.Duration
-	VoiceDailyLimit     int
-	ImageEnhance        bool
+	// Sing* fields configure the dedicated [[SING]] engine (Breeze
+	// Blue). SingAPIKey enables the split; SingVoice holds the cloned
+	// voc_ id so singing matches the plain voice's timbre.
+	SingAPIKey      string
+	SingVoice       string
+	SingAPIURL      string
+	SingModel       string
+	VoiceDir        string
+	VoiceMaxRunes   int
+	VoiceCooldown   time.Duration
+	VoiceTimeout    time.Duration
+	VoiceDailyLimit int
+	ImageEnhance    bool
 
 	// Repeat-spam handling: same normalized text N times inside the
 	// window deducts affinity once per streak. SPAM_REPEAT_MODE accepts
@@ -515,6 +522,10 @@ func Load() (Config, error) {
 	cfg.VoiceVolcToken = envOrAllowEmpty("VOICE_VOLC_TOKEN", "")
 	cfg.VoiceVolcResourceID = envOrAllowEmpty("VOICE_VOLC_RESOURCE_ID", "")
 	cfg.VoiceVolcEmotion = envOrAllowEmpty("VOICE_VOLC_EMOTION", "")
+	cfg.SingAPIKey = envOrAllowEmpty("SING_API_KEY", "")
+	cfg.SingVoice = envOrAllowEmpty("SING_VOICE", "")
+	cfg.SingAPIURL = envOrAllowEmpty("SING_API_URL", "")
+	cfg.SingModel = envOrAllowEmpty("SING_MODEL", "breeze-tts-2-multilingual")
 	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
 	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)
 	cfg.VoiceCooldown = parseDuration("VOICE_COOLDOWN", 45*time.Second, true, &errs)
