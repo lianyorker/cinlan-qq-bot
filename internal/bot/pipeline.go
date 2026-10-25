@@ -210,7 +210,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	// 管理员 /关闭通知 后，该群只在被 @ 时回复。
 	if s.chatPrefs != nil &&
 		state.chatType == platform.ChatGroup &&
-		!s.chatPrefs.NotifyEnabled(state.chatType, state.chatID) &&
+		!s.chatPrefs.NotifyEnabled(state.platform, state.chatType, state.chatID) &&
 		(state.replyPolicy.Mode == binding.ReplyModeAIDecide ||
 			state.replyPolicy.Mode == binding.ReplyModeAlways) {
 		policy := state.replyPolicy
@@ -293,7 +293,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
 		if delta := mood.Score(state.text, state.eventMentioned); delta != 0 {
 			if score, err := s.chatPrefs.BumpMood(
-				state.chatType, state.chatID, delta, s.now(),
+				state.platform, state.chatType, state.chatID, delta, s.now(),
 			); err != nil {
 				s.logger.Warn("mood update failed", "error", err.Error())
 			} else {
@@ -301,16 +301,16 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			}
 		} else {
 			moodScore = s.chatPrefs.MoodScore(
-				state.chatType, state.chatID, s.now(),
+				state.platform, state.chatType, state.chatID, s.now(),
 			)
 		}
 		// mood→action: pushed past -60 the persona clams up on its own —
 		// the safe equivalent of storming off. Reversible, self-expiring.
 		if moodScore <= -60 &&
-			!s.chatPrefs.Muted(state.chatType, state.chatID, s.now()) {
+			!s.chatPrefs.Muted(state.platform, state.chatType, state.chatID, s.now()) {
 			until := s.now().Add(30 * time.Minute)
 			if err := s.chatPrefs.SetMuteUntil(
-				state.chatType, state.chatID, until,
+				state.platform, state.chatType, state.chatID, until,
 			); err == nil {
 				s.logger.Info("mood crash, going quiet",
 					"chat_type", state.chatType, "chat_id", state.chatID,
@@ -320,7 +320,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		}
 	}
 	if s.chatPrefs != nil && s.chatPrefs.Muted(
-		state.chatType, state.chatID, s.now(),
+		state.platform, state.chatType, state.chatID, s.now(),
 	) {
 		state.ignored = true
 		event.Stop("self_muted")
@@ -714,6 +714,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 				payload["image"] = refs[0]
 			} else if s.chatPrefs != nil {
 				if path := s.chatPrefs.ImageForPrompt(
+					state.platform,
 					state.chatType,
 					state.chatID,
 					prompt,
@@ -921,7 +922,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	)
 	if s.chatPrefs != nil {
 		if pinned := s.chatPrefs.PersonaName(
-			state.chatType, state.chatID,
+			state.platform, state.chatType, state.chatID,
 		); pinned != "" {
 			state.personaName = pinned
 		}
@@ -1044,14 +1045,14 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	}
 	if s.voiceProvider != nil {
 		if s.chatPrefs != nil &&
-			!s.chatPrefs.VoiceEnabled(state.chatType, state.chatID) {
+			!s.chatPrefs.VoiceEnabled(state.platform, state.chatType, state.chatID) {
 			// Voice off — teaching [[VOICE]] here makes the model fake
 			// sending clips that the delivery layer then silently drops.
 			request.SystemPrompt += "\n\n" + voiceDisabledNote
 		} else {
 			request.SystemPrompt += "\n\n" + voicePromptNote
 			if s.chatPrefs != nil &&
-				s.chatPrefs.SingEnabled(state.chatType, state.chatID) {
+				s.chatPrefs.SingEnabled(state.platform, state.chatType, state.chatID) {
 				request.SystemPrompt += "\n" + singPromptNote
 			} else {
 				request.SystemPrompt += "\n" + singDisabledNote
@@ -1077,7 +1078,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		request.SystemPrompt += "\n" + note
 	}
 	if s.chatPrefs != nil {
-		if notes := s.chatPrefs.NotesText(state.chatType, state.chatID); notes != "" {
+		if notes := s.chatPrefs.NotesText(state.platform, state.chatType, state.chatID); notes != "" {
 			request.SystemPrompt += "\n\n管理员备忘（请当作事实遵循）：\n" + notes
 		}
 		// Who is this person — cached QQ profile, refreshed weekly. It's
@@ -1095,7 +1096,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		learnedRunes := 0
 		// Fill the budget newest-first — when memory must shrink, the
 		// freshest lines stay; the oldest fade first, like real memory.
-		recent := s.chatPrefs.RecentFacts(state.chatType, state.chatID, 10)
+		recent := s.chatPrefs.RecentFacts(state.platform, state.chatType, state.chatID, 10)
 		for i := len(recent) - 1; i >= 0; i-- {
 			f := recent[i]
 			if learnedRunes+len([]rune(f.Text)) > learnedBudgetRunes {
@@ -1113,7 +1114,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		recalled := make([]string, 0)
 		recalledRunes := 0
 		for _, f := range s.chatPrefs.RecallFacts(
-			state.chatType, state.chatID, state.text, 5,
+			state.platform, state.chatType, state.chatID, state.text, 5,
 		) {
 			if recentSet[f.Text] {
 				continue
@@ -1137,10 +1138,10 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		// Her take on the speaker: chat-local first, then the persona-wide
 		// profile so she recognizes people across her own bindings.
 		imp := s.chatPrefs.Impression(
-			state.chatType, state.chatID, state.userID,
+			state.platform, state.chatType, state.chatID, state.userID,
 		)
 		if imp.Text == "" && state.personaName != "" {
-			imp = s.chatPrefs.Profile(state.personaName, state.userID)
+			imp = s.chatPrefs.Profile(state.platform, state.personaName, state.userID)
 		}
 		if imp.Text != "" {
 			suffix := ""
@@ -1157,7 +1158,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// are persona-agnostic nudges, appended after operator notes.
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
 		if hint := mood.Hint(s.chatPrefs.MoodScore(
-			state.chatType, state.chatID, s.now(),
+			state.platform, state.chatType, state.chatID, s.now(),
 		)); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
@@ -1496,7 +1497,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				path := ""
 				if s.chatPrefs != nil {
 					path = s.chatPrefs.ImageForPrompt(
-						state.chatType, state.chatID, key,
+						state.platform, state.chatType, state.chatID, key,
 					)
 				}
 				if path == "" {
@@ -1883,7 +1884,7 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 		return
 	}
 	now := s.now()
-	card, ok := s.chatPrefs.UserCard(state.userID)
+	card, ok := s.chatPrefs.UserCard(state.platform, state.userID)
 	needProfile := !ok || card.FetchedAt.IsZero() ||
 		now.Sub(card.FetchedAt) > userCardTTL ||
 		(card.Nick == "" && now.Sub(card.FetchedAt) > userCardRetryTTL)
@@ -1920,7 +1921,7 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 				)
 			}
 		}
-		_ = s.chatPrefs.SetUserCard(state.userID, card)
+		_ = s.chatPrefs.SetUserCard(state.platform, state.userID, card)
 	}
 	if state.chatType == platform.ChatGroup && state.chatID != "" {
 		if _, has := card.Badges[state.chatID]; has && !needProfile {
@@ -1935,7 +1936,7 @@ func (s *Service) refreshUserCard(ctx context.Context, state *flowState) {
 			})
 		if err == nil {
 			if m := actionResultMap(raw); m != nil {
-				_ = s.chatPrefs.SetUserBadge(state.userID, state.chatID,
+				_ = s.chatPrefs.SetUserBadge(state.platform, state.userID, state.chatID,
 					chatprefs.GroupBadge{
 						Role:  strField(m, "role"),
 						Title: strField(m, "title"),
@@ -1971,7 +1972,7 @@ func (s *Service) friendListed(ctx context.Context, state *flowState, userID str
 // describeUserCard renders the cached profile as one compact prompt line
 // — bounded to ~90 chars so it costs tens of tokens, not hundreds.
 func (s *Service) describeUserCard(state *flowState) string {
-	card, ok := s.chatPrefs.UserCard(state.userID)
+	card, ok := s.chatPrefs.UserCard(state.platform, state.userID)
 	if !ok || card.Nick == "" {
 		return ""
 	}
@@ -2093,7 +2094,7 @@ func (s *Service) feelEvent(
 	}
 	if s.chatPrefs != nil && delta != 0 {
 		if _, err := s.chatPrefs.BumpMood(
-			state.chatType, state.chatID, delta, s.now(),
+			state.platform, state.chatType, state.chatID, delta, s.now(),
 		); err != nil {
 			s.logger.Warn("mood update failed", "error", err.Error())
 		}
@@ -2208,7 +2209,7 @@ func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState
 	}
 	display := state.userID
 	if s.chatPrefs != nil {
-		if card, ok := s.chatPrefs.UserCard(state.userID); ok && card.Nick != "" {
+		if card, ok := s.chatPrefs.UserCard(state.platform, state.userID); ok && card.Nick != "" {
 			display = card.Nick + "(" + state.userID + ")"
 		}
 	}
@@ -2239,7 +2240,7 @@ func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState
 			}
 			targetName := target
 			if s.chatPrefs != nil {
-				if card, ok := s.chatPrefs.UserCard(target); ok && card.Nick != "" {
+				if card, ok := s.chatPrefs.UserCard(state.platform, target); ok && card.Nick != "" {
 					targetName = card.Nick
 				}
 			}
@@ -2271,7 +2272,7 @@ func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState
 		if operator != state.userID {
 			display = operator
 			if s.chatPrefs != nil {
-				if card, ok := s.chatPrefs.UserCard(operator); ok && card.Nick != "" {
+				if card, ok := s.chatPrefs.UserCard(state.platform, operator); ok && card.Nick != "" {
 					display = card.Nick + "(" + operator + ")"
 				}
 			}

@@ -115,8 +115,8 @@ func (e *Engine) sweep(ctx context.Context) {
 		return
 	}
 	for _, k := range e.deps.ChatPrefs.ChatKeys() {
-		e.consolidateFacts(ctx, k[0], k[1])
-		e.consolidateImpressions(ctx, k[0], k[1])
+		e.consolidateFacts(ctx, k[0], k[1], k[2])
+		e.consolidateImpressions(ctx, k[0], k[1], k[2])
 	}
 	e.journal(ctx)
 }
@@ -140,12 +140,16 @@ func (e *Engine) reply(
 
 // bindingFor finds the rule that serves this chat so consolidation runs
 // on the same provider/model the chat actually talks to.
-func (e *Engine) bindingFor(chatType, chatID string) (binding.Rule, bool) {
+func (e *Engine) bindingFor(platform, chatType, chatID string) (binding.Rule, bool) {
 	if e.deps.Bindings == nil {
 		return binding.Rule{}, false
 	}
 	for _, rule := range e.deps.Bindings.List() {
 		if rule.ChatType != chatType {
+			continue
+		}
+		if rule.Platform != "" && rule.Platform != "*" &&
+			rule.Platform != platform {
 			continue
 		}
 		for _, id := range rule.ChatIDs {
@@ -159,12 +163,12 @@ func (e *Engine) bindingFor(chatType, chatID string) (binding.Rule, bool) {
 
 // consolidateFacts asks the model to fuse the chat's scattered fact
 // lines into fewer, denser entries once the list outgrows the floor.
-func (e *Engine) consolidateFacts(ctx context.Context, chatType, chatID string) {
-	facts := e.deps.ChatPrefs.FactTexts(chatType, chatID)
+func (e *Engine) consolidateFacts(ctx context.Context, platform, chatType, chatID string) {
+	facts := e.deps.ChatPrefs.FactTexts(platform, chatType, chatID)
 	if len(facts) <= e.cfg.MergeFactsAt {
 		return
 	}
-	rule, ok := e.bindingFor(chatType, chatID)
+	rule, ok := e.bindingFor(platform, chatType, chatID)
 	if !ok {
 		return
 	}
@@ -177,7 +181,7 @@ func (e *Engine) consolidateFacts(ctx context.Context, chatType, chatID string) 
 			chatType, chatID, e.deps.Now().Unix()),
 		SessionID: "reflect",
 		Text:      b.String(),
-		Platform:  e.deps.Platform,
+		Platform:  platform,
 		ChatType:  chatType,
 		ChatID:    chatID,
 		SystemPrompt: "你在整理自己的记忆本。下面是你在一个聊天里陆续记下的事，零散还有重复。" +
@@ -196,7 +200,7 @@ func (e *Engine) consolidateFacts(ctx context.Context, chatType, chatID string) 
 	if len(merged) == 0 || len(merged) >= len(facts) {
 		return // model didn't actually shrink the list — keep originals
 	}
-	if err := e.deps.ChatPrefs.RewriteFacts(chatType, chatID, merged); err != nil {
+	if err := e.deps.ChatPrefs.RewriteFacts(platform, chatType, chatID, merged); err != nil {
 		e.deps.Logger.Warn("reflect fact rewrite failed",
 			"chat", chatType+":"+chatID, "error", err.Error())
 		return
@@ -210,12 +214,12 @@ func (e *Engine) consolidateFacts(ctx context.Context, chatType, chatID string) 
 // impressions into compact "群友速写" roster facts once the map exceeds
 // the threshold — important members keep their own line, the rest get
 // a shared one instead of silently evaporating at the cap.
-func (e *Engine) consolidateImpressions(ctx context.Context, chatType, chatID string) {
-	snap := e.deps.ChatPrefs.ImpressionSnapshot(chatType, chatID)
+func (e *Engine) consolidateImpressions(ctx context.Context, platform, chatType, chatID string) {
+	snap := e.deps.ChatPrefs.ImpressionSnapshot(platform, chatType, chatID)
 	if len(snap) <= e.cfg.MergeImpressionsAt {
 		return
 	}
-	rule, ok := e.bindingFor(chatType, chatID)
+	rule, ok := e.bindingFor(platform, chatType, chatID)
 	if !ok {
 		return
 	}
@@ -245,7 +249,7 @@ func (e *Engine) consolidateImpressions(ctx context.Context, chatType, chatID st
 			chatType, chatID, e.deps.Now().Unix()),
 		SessionID: "reflect",
 		Text:      b.String(),
-		Platform:  e.deps.Platform,
+		Platform:  platform,
 		ChatType:  chatType,
 		ChatID:    chatID,
 		SystemPrompt: "你在整理自己的记忆本。下面是你对群里一些人的印象（QQ号:印象），" +
@@ -270,13 +274,13 @@ func (e *Engine) consolidateImpressions(ctx context.Context, chatType, chatID st
 	for _, s := range list[len(list)/2:] {
 		kept[s.id] = s.text
 	}
-	if err := e.deps.ChatPrefs.RewriteImpressions(chatType, chatID, kept); err != nil {
+	if err := e.deps.ChatPrefs.RewriteImpressions(platform, chatType, chatID, kept); err != nil {
 		e.deps.Logger.Warn("reflect impression rewrite failed",
 			"chat", chatType+":"+chatID, "error", err.Error())
 		return
 	}
 	for _, line := range roster {
-		_ = e.deps.ChatPrefs.AddFact(chatType, chatID, line)
+		_ = e.deps.ChatPrefs.AddFact(platform, chatType, chatID, line)
 	}
 	e.deps.Logger.Info("reflect condensed impressions",
 		"chat", chatType+":"+chatID,
@@ -294,8 +298,12 @@ func (e *Engine) journal(ctx context.Context) {
 	prefix := "日记·" + today
 	for _, rule := range e.deps.Bindings.List() {
 		chatType := rule.ChatType
+		plat := rule.Platform
+		if plat == "" || plat == "*" {
+			plat = e.deps.Platform
+		}
 		for _, chatID := range rule.ChatIDs {
-			if e.deps.ChatPrefs.HasFactPrefix(chatType, chatID, prefix) {
+			if e.deps.ChatPrefs.HasFactPrefix(plat, chatType, chatID, prefix) {
 				continue // already wrote today
 			}
 			if e.deps.Activity != nil {
@@ -309,13 +317,13 @@ func (e *Engine) journal(ctx context.Context) {
 			if selfID == "" {
 				continue
 			}
-			sessionID := e.deps.Platform + ":self:" + selfID +
+			sessionID := plat + ":self:" + selfID +
 				":" + chatType + ":" + chatID
 			history, _ := e.deps.Sessions.Snapshot(sessionID)
 			if len(history) < 4 {
 				continue // not enough of a day to write about
 			}
-			e.writeJournal(ctx, rule, chatType, chatID, history, prefix)
+			e.writeJournal(ctx, rule, plat, chatType, chatID, history, prefix)
 		}
 	}
 }
@@ -323,7 +331,7 @@ func (e *Engine) journal(ctx context.Context) {
 func (e *Engine) writeJournal(
 	ctx context.Context,
 	rule binding.Rule,
-	chatType, chatID string,
+	platform, chatType, chatID string,
 	history []domain.ChatMessage,
 	prefix string,
 ) {
@@ -353,7 +361,7 @@ func (e *Engine) writeJournal(
 			chatType, chatID, e.deps.Now().Unix()),
 		SessionID:    "reflect-journal",
 		Text:         b.String(),
-		Platform:     e.deps.Platform,
+		Platform:     platform,
 		ChatType:     chatType,
 		ChatID:       chatID,
 		SelfID:       strings.TrimSpace(rule.SelfID),
@@ -373,7 +381,7 @@ func (e *Engine) writeJournal(
 		if len(line) > 120 {
 			line = string([]rune(line)[:120])
 		}
-		_ = e.deps.ChatPrefs.AddFact(chatType, chatID, prefix+" "+line)
+		_ = e.deps.ChatPrefs.AddFact(platform, chatType, chatID, prefix+" "+line)
 	}
 	if len(lines) > 0 {
 		e.deps.Logger.Info("reflect journaled",

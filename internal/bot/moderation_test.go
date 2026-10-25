@@ -79,7 +79,7 @@ func TestPersonaModerationNoticeFallsBackOnError(t *testing.T) {
 }
 
 func TestFeelEventWritesMoodAndObservation(t *testing.T) {
-	prefs, err := chatprefs.Load(filepath.Join(t.TempDir(), "prefs.json"))
+	prefs, err := chatprefs.Load(filepath.Join(t.TempDir(), "prefs.json"), "qq-onebot")
 	if err != nil {
 		t.Fatalf("chatprefs.Load: %v", err)
 	}
@@ -92,11 +92,12 @@ func TestFeelEventWritesMoodAndObservation(t *testing.T) {
 	}
 	state := &flowState{
 		sessionID: "qq:self:1:group:2",
+		platform:  "qq-onebot",
 		chatType:  "group",
 		chatID:    "2",
 	}
 	svc.feelEvent(context.Background(), state, -5, "刚撤了条广告，有点无语")
-	if score := prefs.MoodScore("group", "2", time.Now()); score != -5 {
+	if score := prefs.MoodScore("qq-onebot", "group", "2", time.Now()); score != -5 {
 		t.Fatalf("mood = %d, want -5", score)
 	}
 	found := false

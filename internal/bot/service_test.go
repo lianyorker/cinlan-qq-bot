@@ -523,7 +523,7 @@ func TestSlashCommandSurvivesMentionOnly(t *testing.T) {
 	agentClient := &fakeAgent{}
 	sender := &fakeSender{}
 	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
-	prefs, err := chatprefs.Load("")
+	prefs, err := chatprefs.Load("", "qq-onebot")
 	if err != nil {
 		t.Fatalf("chatprefs.Load() error = %v", err)
 	}

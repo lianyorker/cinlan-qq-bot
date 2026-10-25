@@ -15,13 +15,13 @@ import (
 func TestReferenceImageForFallsThroughToPersonaDefault(t *testing.T) {
 	cfg := testBotConfig(t)
 	service := New(cfg, &fakeAgent{}, &fakeSender{}, session.New(10, time.Hour), testLogger())
-	prefs, err := chatprefs.Load("")
+	prefs, err := chatprefs.Load("", "qq-onebot")
 	if err != nil {
 		t.Fatalf("chatprefs.Load() error = %v", err)
 	}
 	service.SetChatPrefs(prefs)
 	if err := service.PersonaRegistry().Register(persona.Profile{
-		Name:         "gf", SystemPrompt: "p",
+		Name: "gf", SystemPrompt: "p",
 		DefaultImage: "data/chat-images/qiqi-face.png",
 	}); err != nil {
 		t.Fatalf("Register persona: %v", err)
@@ -46,7 +46,7 @@ func TestReferenceImageForFallsThroughToPersonaDefault(t *testing.T) {
 	}
 
 	// A remembered per-chat image must win over the persona default.
-	if err := prefs.AddImageNote("group", "30003", "自定义", "/tmp/chat-note.png"); err != nil {
+	if err := prefs.AddImageNote("qq-onebot", "group", "30003", "自定义", "/tmp/chat-note.png"); err != nil {
 		t.Fatalf("AddImageNote() error = %v", err)
 	}
 	if got := service.ReferenceImageFor(context.Background(), actor); got != "/tmp/chat-note.png" {
@@ -57,7 +57,7 @@ func TestReferenceImageForFallsThroughToPersonaDefault(t *testing.T) {
 func TestReferenceImageForEmptyWithoutDefault(t *testing.T) {
 	cfg := testBotConfig(t)
 	service := New(cfg, &fakeAgent{}, &fakeSender{}, session.New(10, time.Hour), testLogger())
-	prefs, err := chatprefs.Load("")
+	prefs, err := chatprefs.Load("", "qq-onebot")
 	if err != nil {
 		t.Fatalf("chatprefs.Load() error = %v", err)
 	}

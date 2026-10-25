@@ -140,11 +140,11 @@ type Service struct {
 	memberCache    map[string]memberCacheEntry
 	// atNameCache remembers resolved @-mention display names (group card
 	// or nickname) so PlainText reads "@阿茶" instead of "@123456".
-	atNameMu       sync.Mutex
-	atNameCache    map[string]atNameEntry
-	warnStore      *moderation.Store
-	voiceProvider  voiceSynth
-	voiceBudget    voiceBudget
+	atNameMu      sync.Mutex
+	atNameCache   map[string]atNameEntry
+	warnStore     *moderation.Store
+	voiceProvider voiceSynth
+	voiceBudget   voiceBudget
 	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
 	// occasional human reaction instead of a hair-trigger.
 	pokeBudget   voiceBudget
@@ -280,7 +280,7 @@ func NewWithRuntime(
 		maintenance:        make(chan flowState, maintenanceQueueSize),
 		maintenancePending: make(map[string]struct{}),
 		memberCache:        make(map[string]memberCacheEntry),
-		atNameCache:       make(map[string]atNameEntry),
+		atNameCache:        make(map[string]atNameEntry),
 	}
 	if strings.TrimSpace(cfg.AgentSystemPrompt) != "" {
 		_ = service.personas.Register(persona.Profile{
@@ -472,13 +472,13 @@ func (s *Service) RegisterKeywordMeme(pattern *regexp.Regexp) {
 // stops drifting face shapes in chats that never stored a photo.
 func (s *Service) ReferenceImageFor(ctx context.Context, actor tool.Actor) string {
 	if s.chatPrefs != nil {
-		if path := s.chatPrefs.LatestImage(actor.ChatType, actor.ChatID); path != "" {
+		if path := s.chatPrefs.LatestImage(actor.Platform, actor.ChatType, actor.ChatID); path != "" {
 			return path
 		}
 	}
 	personaName := ""
 	if s.chatPrefs != nil {
-		personaName = s.chatPrefs.PersonaName(actor.ChatType, actor.ChatID)
+		personaName = s.chatPrefs.PersonaName(actor.Platform, actor.ChatType, actor.ChatID)
 	}
 	if personaName == "" && s.bindings != nil {
 		var memberOf func(groupID, userID string) bool

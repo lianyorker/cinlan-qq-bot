@@ -164,6 +164,7 @@ func (e *Engine) sweep(ctx context.Context) {
 	}
 	for _, rule := range e.deps.Bindings.List() {
 		chatType := rule.ChatType
+		plat := e.platformOf(rule)
 		if chatType != platform.ChatGroup && chatType != platform.ChatPrivate {
 			continue
 		}
@@ -187,7 +188,7 @@ func (e *Engine) sweep(ctx context.Context) {
 			} else if e.cfg.PrivateAllow == nil || !e.cfg.PrivateAllow(chatID) {
 				continue
 			}
-			if !e.eligible(chatType, chatID) {
+			if !e.eligible(plat, chatType, chatID) {
 				continue
 			}
 			// Mood gates the urge to talk: sulking chats stay silent,
@@ -195,7 +196,7 @@ func (e *Engine) sweep(ctx context.Context) {
 			moodScore := 0
 			if e.deps.ChatPrefs != nil {
 				moodScore = e.deps.ChatPrefs.MoodScore(
-					chatType, chatID, e.deps.Now())
+					plat, chatType, chatID, e.deps.Now())
 				if moodScore <= -30 {
 					continue
 				}
@@ -205,7 +206,7 @@ func (e *Engine) sweep(ctx context.Context) {
 				chance = min(chance*1.5, 0.5)
 			}
 			if e.deps.Rand.Float64() < chance {
-				e.fire(ctx, rule, chatType, chatID)
+				e.fire(ctx, rule, plat, chatType, chatID)
 			}
 		}
 	}
@@ -222,11 +223,20 @@ func (e *Engine) asleep() bool {
 	return hour >= e.cfg.SleepStart || hour < e.cfg.SleepEnd
 }
 
-func (e *Engine) eligible(chatType, chatID string) bool {
+// platformOf resolves a rule's platform, falling back to the engine's
+// own platform when the binding matches every adapter ("*").
+func (e *Engine) platformOf(rule binding.Rule) string {
+	if p := strings.TrimSpace(rule.Platform); p != "" && p != "*" {
+		return p
+	}
+	return e.deps.Platform
+}
+
+func (e *Engine) eligible(plat, chatType, chatID string) bool {
 	now := e.deps.Now()
 	e.mu.Lock()
 	defer e.mu.Unlock()
-	key := chatType + ":" + chatID
+	key := plat + ":" + chatType + ":" + chatID
 	if e.day != now.Format("2006-01-02") {
 		e.day = now.Format("2006-01-02")
 		e.hits = map[string]int{}
@@ -238,10 +248,10 @@ func (e *Engine) eligible(chatType, chatID string) bool {
 		return false
 	}
 	if e.deps.ChatPrefs != nil {
-		if !e.deps.ChatPrefs.NotifyEnabled(chatType, chatID) {
+		if !e.deps.ChatPrefs.NotifyEnabled(plat, chatType, chatID) {
 			return false
 		}
-		if e.deps.ChatPrefs.Muted(chatType, chatID, now) {
+		if e.deps.ChatPrefs.Muted(plat, chatType, chatID, now) {
 			return false
 		}
 	}
@@ -267,10 +277,10 @@ func (e *Engine) eligible(chatType, chatID string) bool {
 func (e *Engine) fire(
 	ctx context.Context,
 	rule binding.Rule,
-	chatType, chatID string,
+	plat, chatType, chatID string,
 ) {
 	e.mu.Lock()
-	key := chatType + ":" + chatID
+	key := plat + ":" + chatType + ":" + chatID
 	e.sent[key] = e.deps.Now()
 	e.hits[key]++
 	e.mu.Unlock()
@@ -286,7 +296,7 @@ func (e *Engine) fire(
 	if selfID == "" {
 		selfID = e.deps.DefaultSelfID
 	}
-	sessionID := e.deps.Platform + ":self:" + selfID +
+	sessionID := plat + ":self:" + selfID +
 		":" + chatType + ":" + chatID
 	var history []domain.ChatMessage
 	if e.deps.Sessions != nil {
@@ -325,7 +335,7 @@ func (e *Engine) fire(
 	if e.deps.ChatPrefs != nil {
 		// Ground the opener in what she actually remembers — “想你了”
 		// lands, generic filler doesn't.
-		if facts := e.deps.ChatPrefs.RecentFacts(chatType, chatID, 8); len(facts) > 0 {
+		if facts := e.deps.ChatPrefs.RecentFacts(plat, chatType, chatID, 8); len(facts) > 0 {
 			lines := make([]string, 0, len(facts))
 			for _, f := range facts {
 				lines = append(lines, "· "+f.Text)
@@ -335,12 +345,12 @@ func (e *Engine) fire(
 		}
 		if chatType == platform.ChatPrivate {
 			if imp := e.deps.ChatPrefs.Impression(
-				chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
+				plat, chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
 				system += "\n你对他的感觉：" + imp.Text
 			}
 		}
 		if hint := mood.Hint(e.deps.ChatPrefs.MoodScore(
-			chatType, chatID, e.deps.Now())); hint != "" {
+			plat, chatType, chatID, e.deps.Now())); hint != "" {
 			system += "\n" + hint
 		}
 	}
@@ -390,7 +400,7 @@ func (e *Engine) fire(
 	// [[SELFIE:tag]] / [[MEME:query]] / [[IMG:key]] each become their own
 	// image send; everything else joins into one text bubble.
 	sent, logged := e.sendProactive(
-		ctx, chatType, chatID, selfID, rule.Persona, replyText,
+		ctx, plat, chatType, chatID, selfID, rule.Persona, replyText,
 	)
 	if !sent {
 		return
@@ -424,7 +434,7 @@ var proactiveLeftoverMarker = regexp.MustCompile(
 // Returns whether anything was sent plus the history-safe log text.
 func (e *Engine) sendProactive(
 	ctx context.Context,
-	chatType, chatID, selfID, personaName, reply string,
+	plat, chatType, chatID, selfID, personaName, reply string,
 ) (bool, string) {
 	type sendPart struct {
 		text string
@@ -475,7 +485,7 @@ func (e *Engine) sendProactive(
 				}
 			default: // IMG/IMAGE/PHOTO remembered images
 				if e.deps.ChatPrefs != nil {
-					file = e.deps.ChatPrefs.ImageForPrompt(chatType, chatID, key)
+					file = e.deps.ChatPrefs.ImageForPrompt(plat, chatType, chatID, key)
 				}
 			}
 			if file != "" {

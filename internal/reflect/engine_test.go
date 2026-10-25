@@ -31,7 +31,7 @@ func (f *fakeAgent) Reply(
 
 func newEngine(t *testing.T, agent *fakeAgent) (*Engine, *chatprefs.Store) {
 	t.Helper()
-	store, err := chatprefs.Load(t.TempDir() + "/prefs.json")
+	store, err := chatprefs.Load(t.TempDir()+"/prefs.json", "qq-onebot")
 	if err != nil {
 		t.Fatalf("load prefs: %v", err)
 	}
@@ -77,13 +77,13 @@ func TestConsolidateFactsShrinks(t *testing.T) {
 	agent := &fakeAgent{reply: "他胃不好还爱冰美式\n最近在赶工"}
 	e, store := newEngine(t, agent)
 	for i := 0; i < 8; i++ {
-		if err := store.AddFact("private", "u1",
+		if err := store.AddFact("qq-onebot", "private", "u1",
 			fmt.Sprintf("零散记忆%d", i)); err != nil {
 			t.Fatalf("seed: %v", err)
 		}
 	}
-	e.consolidateFacts(context.Background(), "private", "u1")
-	facts := store.FactsSnapshot("private", "u1")
+	e.consolidateFacts(context.Background(), "qq-onebot", "private", "u1")
+	facts := store.FactsSnapshot("qq-onebot", "private", "u1")
 	if len(facts) != 2 || facts[0].Text != "他胃不好还爱冰美式" {
 		t.Fatalf("facts = %#v", facts)
 	}
@@ -92,8 +92,8 @@ func TestConsolidateFactsShrinks(t *testing.T) {
 func TestConsolidateFactsSkipsWhenSmall(t *testing.T) {
 	agent := &fakeAgent{reply: "x"}
 	e, store := newEngine(t, agent)
-	_ = store.AddFact("private", "u1", "一条")
-	e.consolidateFacts(context.Background(), "private", "u1")
+	_ = store.AddFact("qq-onebot", "private", "u1", "一条")
+	e.consolidateFacts(context.Background(), "qq-onebot", "private", "u1")
 	if len(agent.seen) != 0 {
 		t.Fatal("below threshold should not call the model")
 	}
@@ -103,10 +103,10 @@ func TestConsolidateFactsKeepsOnNoShrink(t *testing.T) {
 	agent := &fakeAgent{reply: "1\n2\n3\n4\n5\n6\n7\n8"}
 	e, store := newEngine(t, agent)
 	for i := 0; i < 8; i++ {
-		_ = store.AddFact("private", "u1", fmt.Sprintf("m%d", i))
+		_ = store.AddFact("qq-onebot", "private", "u1", fmt.Sprintf("m%d", i))
 	}
-	e.consolidateFacts(context.Background(), "private", "u1")
-	if got := store.FactsSnapshot("private", "u1"); len(got) != 8 {
+	e.consolidateFacts(context.Background(), "qq-onebot", "private", "u1")
+	if got := store.FactsSnapshot("qq-onebot", "private", "u1"); len(got) != 8 {
 		t.Fatalf("no-shrink should keep originals, got %d", len(got))
 	}
 }
@@ -115,15 +115,15 @@ func TestConsolidateImpressionsRoster(t *testing.T) {
 	agent := &fakeAgent{reply: "群友速写：爱抬杠的甲、半夜冒泡的乙"}
 	e, store := newEngine(t, agent)
 	for i := 0; i < 6; i++ {
-		_ = store.SetImpression("private", "u1",
+		_ = store.SetImpression("qq-onebot", "private", "u1",
 			fmt.Sprintf("u%d", i), fmt.Sprintf("印象%d", i))
 	}
-	e.consolidateImpressions(context.Background(), "private", "u1")
-	imps := store.ImpressionTexts("private", "u1")
+	e.consolidateImpressions(context.Background(), "qq-onebot", "private", "u1")
+	imps := store.ImpressionTexts("qq-onebot", "private", "u1")
 	if len(imps) != 3 {
 		t.Fatalf("fresh half kept = %d, want 3", len(imps))
 	}
-	facts := store.FactsSnapshot("private", "u1")
+	facts := store.FactsSnapshot("qq-onebot", "private", "u1")
 	found := false
 	for _, f := range facts {
 		if f.Text == "群友速写：爱抬杠的甲、半夜冒泡的乙" {
@@ -151,7 +151,7 @@ func TestJournalOncePerDay(t *testing.T) {
 		e.deps.Sessions.AddExchange(sess, "hi", "yo")
 	}
 	e.journal(context.Background())
-	facts := store.FactsSnapshot("private", "u1")
+	facts := store.FactsSnapshot("qq-onebot", "private", "u1")
 	if len(facts) != 1 ||
 		facts[0].Text != "日记·"+e.deps.Now().Format("01.02")+
 			" 他今天赶工到很晚，情绪不太好" {
@@ -159,7 +159,7 @@ func TestJournalOncePerDay(t *testing.T) {
 	}
 	// Second sweep same day: already written, no second call.
 	e.journal(context.Background())
-	if got := store.FactsSnapshot("private", "u1"); len(got) != 1 {
+	if got := store.FactsSnapshot("qq-onebot", "private", "u1"); len(got) != 1 {
 		t.Fatalf("journal re-fires, got %d facts", len(got))
 	}
 }

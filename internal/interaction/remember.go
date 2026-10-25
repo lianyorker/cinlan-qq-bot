@@ -85,7 +85,7 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 				}
 				if about != "" {
 					if err := prefs.ForgetImpression(
-						call.Actor.ChatType, call.Actor.ChatID, about,
+						call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID, about,
 					); err != nil {
 						return tool.Result{Error: err.Error()}, nil
 					}
@@ -93,7 +93,7 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 						"对 %s 的印象忘了", about)}, nil
 				}
 				if err := prefs.ForgetFact(
-					call.Actor.ChatType, call.Actor.ChatID, target,
+					call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID, target,
 				); err != nil {
 					return tool.Result{Error: err.Error()}, nil
 				}
@@ -116,7 +116,7 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 					}
 				}
 				if err := prefs.ReplaceFact(
-					call.Actor.ChatType, call.Actor.ChatID, old, content,
+					call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID, old, content,
 				); err != nil {
 					return tool.Result{Error: "没改成：" + err.Error()}, nil
 				}
@@ -139,7 +139,7 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 						"记下了对 %s 的印象", about)}, nil
 				}
 				if err := prefs.AddFact(
-					call.Actor.ChatType, call.Actor.ChatID, content,
+					call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID, content,
 				); err != nil {
 					return tool.Result{Error: "没记住：" + err.Error()}, nil
 				}
@@ -168,13 +168,13 @@ func writeImpression(
 	about, content string,
 ) error {
 	if err := prefs.SetImpression(
-		call.Actor.ChatType, call.Actor.ChatID, about, content,
+		call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID, about, content,
 	); err != nil {
 		return err
 	}
-	persona := prefs.PersonaName(call.Actor.ChatType, call.Actor.ChatID)
+	persona := prefs.PersonaName(call.Actor.Platform, call.Actor.ChatType, call.Actor.ChatID)
 	if persona == "" {
 		return nil
 	}
-	return prefs.SetProfile(persona, about, content)
+	return prefs.SetProfile(call.Actor.Platform, persona, about, content)
 }
