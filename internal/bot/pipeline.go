@@ -63,6 +63,10 @@ type flowState struct {
 	allowedSkills  []string
 	knowledgeBases []string
 	mcpServers     []string
+	// extraPrompt carries the matched binding's prompt_file content —
+	// business rules stay scoped to their domain instead of leaking
+	// via the shared base prompt.
+	extraPrompt    string
 	replyPolicy    binding.ReplyPolicy
 	moderation     *binding.ModerationPolicy
 	learning       bool
@@ -190,6 +194,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			current.KnowledgeBases...,
 		)
 		state.mcpServers = append([]string(nil), current.MCPServers...)
+		state.extraPrompt = current.Prompt
 		event.Values["scope.binding_name"] = current.Name
 		event.Values["scope.allowed_tools"] = append(
 			[]string(nil),
@@ -949,6 +954,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n\n"
 		}
 		request.SystemPrompt += s.basePrompt
+	}
+	// Binding-scoped rules (storefront pointers, card-shop URLs) go
+	// after the shared base so only the matched domain hears them.
+	if state.extraPrompt != "" {
+		request.SystemPrompt += "\n\n" + state.extraPrompt
 	}
 	// The model has no clock — inject wall time so "现在几点" and
 	// "睡醒了/刚起床" style messages get grounded, honest answers.

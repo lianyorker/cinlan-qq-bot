@@ -178,6 +178,11 @@ type Rule struct {
 	ReplyPolicy     *ReplyPolicy      `json:"reply_policy,omitempty"`
 	LearningEnabled *bool             `json:"learning_enabled,omitempty"`
 	AllowLinks      *bool             `json:"allow_links,omitempty"`
+	// PromptFile names a binding-scoped prompt fragment loaded at
+	// startup (cinlan storefront rules stay inside cinlan chats, etc.);
+	// Prompt carries the resolved file content.
+	PromptFile string `json:"prompt_file,omitempty"`
+	Prompt     string `json:"-"`
 }
 
 type Registry struct {

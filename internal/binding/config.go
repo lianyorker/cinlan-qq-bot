@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -39,6 +40,10 @@ type rawRule struct {
 	LearningEnabled *bool        `json:"learning_enabled"`
 	AllowLinks      *bool        `json:"allow_links"`
 	Enabled         *bool        `json:"enabled"`
+	// PromptFile scopes a business/persona prompt fragment to this
+	// binding only — e.g. cinlan storefront rules must not leak into
+	// zkmall chats. Relative paths resolve against the config dir.
+	PromptFile string `json:"prompt_file"`
 }
 
 func LoadFile(path string) (*Registry, error) {
@@ -78,6 +83,20 @@ func LoadFile(path string) (*Registry, error) {
 		if raw.Enabled != nil && !*raw.Enabled {
 			continue
 		}
+		prompt := ""
+		if name := strings.TrimSpace(raw.PromptFile); name != "" {
+			// Relative paths sit next to the bindings file so deploys
+			// keep prompts and scoping in one data directory.
+			resolved := name
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(filepath.Dir(path), name)
+			}
+			body, readErr := os.ReadFile(resolved)
+			if readErr != nil {
+				return nil, fmt.Errorf("binding %q prompt_file %s: %w", raw.Name, name, readErr)
+			}
+			prompt = strings.TrimSpace(string(body))
+		}
 		rules = append(rules, Rule{
 			Name:            raw.Name,
 			Platform:        raw.Platform,
@@ -98,6 +117,8 @@ func LoadFile(path string) (*Registry, error) {
 			ReplyPolicy:     raw.ReplyPolicy,
 			LearningEnabled: raw.LearningEnabled,
 			AllowLinks:      raw.AllowLinks,
+			PromptFile:      raw.PromptFile,
+			Prompt:          prompt,
 		})
 	}
 	if len(rules) == 0 {
