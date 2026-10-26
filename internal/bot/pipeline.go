@@ -23,6 +23,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
+	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
 )
 
@@ -1118,6 +1119,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 				recentSet[f.Text] = true
 				continue
 			}
+			if !security.TextSafeForPrompt(f.Text) {
+				// Stored but never echoed — a quoted injection stays harmless
+				// data instead of becoming an instruction in her prompt.
+				s.logger.Warn("memory poisoning blocked at injection",
+					"platform", state.platform, "chat_type", state.chatType,
+					"chat_id", state.chatID)
+				recentSet[f.Text] = true
+				continue
+			}
 			if learnedRunes+len([]rune(f.Text)) > learnedBudgetRunes {
 				continue
 			}
@@ -1142,6 +1152,12 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			if recentSet[f.Text] {
 				continue
 			}
+			if !security.TextSafeForPrompt(f.Text) {
+				s.logger.Warn("memory poisoning blocked at injection",
+					"platform", state.platform, "chat_type", state.chatType,
+					"chat_id", state.chatID)
+				continue
+			}
 			if recalledRunes+len([]rune(f.Text)) > recalledBudgetRunes {
 				continue
 			}
@@ -1160,7 +1176,8 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if promises := s.chatPrefs.PromiseFacts(state.platform, state.selfID, state.chatType, state.chatID); len(promises) > 0 {
 			lines := make([]string, 0, 3)
 			for _, p := range promises {
-				if recentSet[p.Text] || len(lines) >= 3 {
+				if recentSet[p.Text] || len(lines) >= 3 ||
+					!security.TextSafeForPrompt(p.Text) {
 					continue
 				}
 				line := "· " + strings.TrimPrefix(p.Text, "承诺·")
@@ -1186,7 +1203,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if imp.Text == "" && state.personaName != "" {
 			imp = s.chatPrefs.Profile(state.platform, state.personaName, state.userID)
 		}
-		if imp.Text != "" {
+		if imp.Text != "" && security.TextSafeForPrompt(imp.Text) {
 			suffix := ""
 			if !imp.CreatedAt.IsZero() {
 				suffix = fmt.Sprintf("（%s前记的）", humanizeGap(now.Sub(imp.CreatedAt)))
@@ -1554,6 +1571,37 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 						"platform", state.platform,
 						"chat_type", state.chatType,
 						"chat_id", state.chatID,
+					)
+				}
+				if strings.TrimSpace(cleaned) == "" {
+					continue
+				}
+				filtered = append(filtered, cleaned)
+			}
+			parts = filtered
+			if len(parts) == 0 {
+				return nil
+			}
+		}
+		{
+			// Platform-level banned words: drop the offending sentences, not
+			// the whole part — same shape as removeLinks. Filtered lines are
+			// logged with a short snippet for the audit trail.
+			banned := s.bannedWords.patternLive()
+			filtered := parts[:0]
+			for _, part := range parts {
+				cleaned, removed := removeOutboundBanned(part, banned)
+				if removed {
+					snippet := []rune(part)
+					if len(snippet) > 20 {
+						snippet = snippet[:20]
+					}
+					s.logger.Warn(
+						"outbound banned words filtered",
+						"platform", state.platform,
+						"chat_type", state.chatType,
+						"chat_id", state.chatID,
+						"snippet", string(snippet),
 					)
 				}
 				if strings.TrimSpace(cleaned) == "" {

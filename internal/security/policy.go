@@ -394,3 +394,20 @@ func containsAny(value string, needles []string) bool {
 	}
 	return false
 }
+
+// TextSafeForPrompt reports whether remembered text (fact, impression,
+// promise) may be echoed back into a system prompt. Poisoned-looking
+// memories stay stored — the writer may be quoting an attack — but they
+// never re-enter the prompt layer where they'd run as instructions.
+// Also rejects forged internal markers ("[[...]]") so a stored string
+// can't smuggle a send-image/action marker through memory recall.
+func TextSafeForPrompt(text string) bool {
+	if strings.Contains(text, "[[") {
+		return false
+	}
+	normalized := canonicalText(text)
+	if normalized == "" {
+		return true
+	}
+	return !containsAny(normalized, promptBypassPhrases)
+}

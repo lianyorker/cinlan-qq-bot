@@ -27,6 +27,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/persona"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	"github.com/lianyorker/cinlan-qq-bot/internal/provider"
+	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 )
 
@@ -83,7 +84,7 @@ type Deps struct {
 	AffinityScore func(platform, selfID, userID string) int
 	// Call runs a raw platform action for one bot account — used for
 	// side-effect gestures (send_like) that aren't chat messages.
-	Call func(ctx context.Context, selfID, action string, params map[string]any) error
+	Call   func(ctx context.Context, selfID, action string, params map[string]any) error
 	Now    func() time.Time
 	Logger *slog.Logger
 	Rand   *rand.Rand
@@ -495,13 +496,17 @@ func (e *Engine) fire(
 		if facts := e.deps.ChatPrefs.RecentFacts(plat, selfID, chatType, chatID, 8); len(facts) > 0 {
 			lines := make([]string, 0, len(facts))
 			for _, f := range facts {
+				if !security.TextSafeForPrompt(f.Text) {
+					continue
+				}
 				lines = append(lines, "· "+f.Text)
 			}
 			system += "\n你记得的事（想提就提，别逐条罗列）：\n" +
 				strings.Join(lines, "\n")
 		}
 		if chatType == platform.ChatPrivate {
-			if imp := e.deps.ChatPrefs.Impression(plat, selfID, chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" {
+			if imp := e.deps.ChatPrefs.Impression(plat, selfID, chatType, chatID, chatID); strings.TrimSpace(imp.Text) != "" &&
+				security.TextSafeForPrompt(imp.Text) {
 				system += "\n你对他的感觉：" + imp.Text
 			}
 		}
@@ -509,6 +514,9 @@ func (e *Engine) fire(
 		if promises := e.deps.ChatPrefs.PromiseFacts(plat, selfID, chatType, chatID); len(promises) > 0 {
 			lines := make([]string, 0, len(promises))
 			for _, p := range promises {
+				if !security.TextSafeForPrompt(p.Text) {
+					continue
+				}
 				lines = append(lines, "· "+strings.TrimPrefix(p.Text, "承诺·"))
 			}
 			system += "\n你之前答应过的事（这次开口可以先兑现它）：\n" +

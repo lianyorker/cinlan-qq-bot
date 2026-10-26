@@ -104,6 +104,11 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 					return tool.Result{Error: "改口要同时给旧内容和新内容"}, nil
 				}
 				if about != "" {
+					if review != nil {
+						if err := screenContent(ctx, review, content); err != nil {
+							return tool.Result{Error: err.Error()}, nil
+						}
+					}
 					if err := writeImpression(prefs, call, about, content); err != nil {
 						return tool.Result{Error: "没改成：" + err.Error()}, nil
 					}

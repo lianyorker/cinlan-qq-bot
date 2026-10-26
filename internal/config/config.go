@@ -127,6 +127,9 @@ type Config struct {
 	// BasePromptFile holds the shared human-like behavior rules injected
 	// into every persona prompt, so personas only carry their own voice.
 	BasePromptFile string
+	// OutboundBannedWordsFile is an optional line-per-word list layered
+	// on top of the built-in outbound ban list; hot-reloads on mtime.
+	OutboundBannedWordsFile string
 	// PeerBotIDs are bot accounts run by other deployments in the same
 	// groups. Their messages are observed but never answered, so two
 	// personas never argue with each other in public.
@@ -373,26 +376,27 @@ func Load() (Config, error) {
 		QQNTIPCListenAddr:    envOr("QQNT_IPC_LISTEN_ADDR", "127.0.0.1:18081"),
 		QQNTIPCToken:         strings.TrimSpace(os.Getenv("QQNT_IPC_TOKEN")),
 
-		OneBotWSURL:        envOr("ONEBOT_WS_URL", "ws://127.0.0.1:3001"),
-		OneBotHTTPURL:      envOr("ONEBOT_HTTP_URL", "http://127.0.0.1:3000"),
-		OneBotAccessToken:  os.Getenv("ONEBOT_ACCESS_TOKEN"),
-		OneBotTransport:    oneBotTransport,
-		OneBotListenAddr:   envOr("ONEBOT_REVERSE_LISTEN_ADDR", "127.0.0.1:3002"),
-		OneBotReversePath:  envOr("ONEBOT_REVERSE_PATH", reversePathDefault),
-		OneBotAccountsFile: envOrAllowEmpty("ONEBOT_ACCOUNTS_FILE", ""),
-		OneBotAutoAccept:   parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
-		FriendWelcomeText:  envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
-		FriendFilePath:     envOrAllowEmpty("FRIEND_FILE_PATH", ""),
-		BotPublicUIN:       envOrAllowEmpty("BOT_PUBLIC_UIN", ""),
-		FriendFileGroups:   parseList(os.Getenv("FRIEND_FILE_GROUPS")),
-		GroupWelcomeImage:  envOrAllowEmpty("GROUP_WELCOME_IMAGE", ""),
-		GroupWelcomeText:   envOrAllowEmpty("GROUP_WELCOME_TEXT", ""),
-		GroupWelcomeGroups: parseList(envOrAllowEmpty("GROUP_WELCOME_GROUPS", "")),
-		WelcomeFile:        envOrAllowEmpty("WELCOME_FILE", "data/welcome.json"),
-		BasePromptFile:     envOrAllowEmpty("BASE_PROMPT_FILE", "data/prompts/base-human.md"),
-		PeerBotIDs:         parseList(envOrAllowEmpty("PEER_BOT_IDS", "")),
-		ChatPrefsFile:      envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
-		AffinityFile:       envOr("AFFINITY_FILE", "data/affinity.json"),
+		OneBotWSURL:             envOr("ONEBOT_WS_URL", "ws://127.0.0.1:3001"),
+		OneBotHTTPURL:           envOr("ONEBOT_HTTP_URL", "http://127.0.0.1:3000"),
+		OneBotAccessToken:       os.Getenv("ONEBOT_ACCESS_TOKEN"),
+		OneBotTransport:         oneBotTransport,
+		OneBotListenAddr:        envOr("ONEBOT_REVERSE_LISTEN_ADDR", "127.0.0.1:3002"),
+		OneBotReversePath:       envOr("ONEBOT_REVERSE_PATH", reversePathDefault),
+		OneBotAccountsFile:      envOrAllowEmpty("ONEBOT_ACCOUNTS_FILE", ""),
+		OneBotAutoAccept:        parseBool("ONEBOT_AUTO_ACCEPT_FRIEND", false, &errs),
+		FriendWelcomeText:       envOrAllowEmpty("FRIEND_WELCOME_TEXT", ""),
+		FriendFilePath:          envOrAllowEmpty("FRIEND_FILE_PATH", ""),
+		BotPublicUIN:            envOrAllowEmpty("BOT_PUBLIC_UIN", ""),
+		FriendFileGroups:        parseList(os.Getenv("FRIEND_FILE_GROUPS")),
+		GroupWelcomeImage:       envOrAllowEmpty("GROUP_WELCOME_IMAGE", ""),
+		GroupWelcomeText:        envOrAllowEmpty("GROUP_WELCOME_TEXT", ""),
+		GroupWelcomeGroups:      parseList(envOrAllowEmpty("GROUP_WELCOME_GROUPS", "")),
+		WelcomeFile:             envOrAllowEmpty("WELCOME_FILE", "data/welcome.json"),
+		BasePromptFile:          envOrAllowEmpty("BASE_PROMPT_FILE", "data/prompts/base-human.md"),
+		OutboundBannedWordsFile: envOrAllowEmpty("OUTBOUND_BANNED_WORDS_FILE", "data/outbound-banned-words.txt"),
+		PeerBotIDs:              parseList(envOrAllowEmpty("PEER_BOT_IDS", "")),
+		ChatPrefsFile:           envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
+		AffinityFile:            envOr("AFFINITY_FILE", "data/affinity.json"),
 		IQChartAPIBase: envOr(
 			"IQ_CHART_API_BASE",
 			"https://codexradar.com/api/radar-bench-score",

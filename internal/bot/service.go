@@ -175,6 +175,9 @@ type Service struct {
 	// basePrompt is the shared human-like behavior block loaded from
 	// cfg.BasePromptFile and appended to every persona prompt.
 	basePrompt string
+	// bannedWords is the platform-level outbound hard block — base list
+	// plus optional hot-reloading file (data/outbound-banned-words.txt).
+	bannedWords *outboundBannedWords
 	// peerSelfIDs are our own other bot accounts. Their group messages are
 	// observed as [同伴账号] but never answered — two personas replying to
 	// each other read as one bot contradicting itself.
@@ -303,6 +306,7 @@ func NewWithRuntime(
 			logger.Warn("failed to read base prompt file", "path", path, "error", err.Error())
 		}
 	}
+	service.bannedWords = newOutboundBannedWords(strings.TrimSpace(cfg.OutboundBannedWordsFile))
 	service.flow = service.newPipeline()
 	return service
 }
