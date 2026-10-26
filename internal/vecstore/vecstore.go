@@ -61,6 +61,11 @@ type Engine struct {
 	mu    sync.RWMutex
 	cache map[string][]float32
 	dirty int
+	// cacheDim records the vector dimension the cache was built with.
+	// A model swap that changes dims silently invalidates stored
+	// vectors — comparing against cacheDim catches that and purges
+	// instead of blending mismatched spaces.
+	cacheDim int
 }
 
 // ScoredItem represents a ranked item returned by TopK search.
@@ -126,6 +131,25 @@ func (e *Engine) Similarity(ctx context.Context, a, b string) float64 {
 	// Blend remote dense cosine with local concept cosine so explicit
 	// synonym hits and deep embeddings reinforce each other.
 	return 0.7*remoteSim + 0.3*localSim
+}
+
+// CachedSimilarity blends remote dense cosine ONLY when both texts
+// already have cached embeddings — it never touches the network, so it
+// is safe on hot paths like fact recall. Falls back to pure local
+// similarity whenever either side is a cache miss.
+func (e *Engine) CachedSimilarity(a, b string) float64 {
+	localSim := LocalSimilarity(a, b)
+	if e == nil || !e.RemoteEnabled() {
+		return localSim
+	}
+	e.mu.RLock()
+	ra, okA := e.cache[hashKey(e.cfg.Model, a)]
+	rb, okB := e.cache[hashKey(e.cfg.Model, b)]
+	e.mu.RUnlock()
+	if !okA || !okB || len(ra) == 0 || len(ra) != len(rb) {
+		return localSim
+	}
+	return 0.7*Cosine(ra, rb) + 0.3*localSim
 }
 
 // LocalSimilarity returns the fast, zero-IO semantic similarity in [0, 1]
@@ -223,6 +247,16 @@ func (e *Engine) RemoteVector(ctx context.Context, text string) ([]float32, erro
 	normalizeL2(vec)
 
 	e.mu.Lock()
+	if e.cacheDim == 0 {
+		e.cacheDim = len(vec)
+	} else if len(vec) != e.cacheDim {
+		// The remote model started returning a different dimension
+		// (silent model swap) — every stored vector is now in a foreign
+		// space, so purge rather than blend garbage.
+		e.cache = make(map[string][]float32)
+		e.cacheDim = len(vec)
+		e.dirty++
+	}
 	if len(e.cache) >= maxCacheItems {
 		// Evict ~10% random entries when full.
 		victim := maxCacheItems / 10
@@ -355,7 +389,22 @@ func (e *Engine) loadCache() error {
 		return nil
 	}
 	if p.Vectors != nil {
+		// Keep only vectors that share one consistent dimension — a
+		// mixed-dim cache means the model changed under us.
+		dim := 0
+		for _, v := range p.Vectors {
+			if len(v) > 0 {
+				dim = len(v)
+				break
+			}
+		}
+		for k, v := range p.Vectors {
+			if dim > 0 && len(v) != dim {
+				delete(p.Vectors, k)
+			}
+		}
 		e.cache = p.Vectors
+		e.cacheDim = dim
 	}
 	return nil
 }

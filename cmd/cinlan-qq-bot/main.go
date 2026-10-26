@@ -392,10 +392,12 @@ func main() {
 	} else {
 		botService.SetModerationStore(warnStore)
 	}
-	if affinityStore, affinityErr := affinity.Load(
+	var affinityStore *affinity.Store
+	if loaded, affinityErr := affinity.Load(
 		cfg.AffinityFile, platform.PlatformQQOneBot); affinityErr != nil {
 		logger.Warn("affinity store unavailable", "error", affinityErr)
 	} else {
+		affinityStore = loaded
 		botService.SetAffinity(affinityStore)
 		logger.Info("affinity tracking enabled", "file", cfg.AffinityFile)
 	}
@@ -619,6 +621,19 @@ func main() {
 			ResolveMeme: botService.MemeFile,
 			Platform:    platformName,
 			Logger:      logger,
+			AffinityScore: func(plat, selfID, userID string) int {
+				if affinityStore == nil {
+					return 0
+				}
+				return affinityStore.Score(plat, selfID, userID)
+			},
+			Call: func(callCtx context.Context, selfID, action string, params map[string]any) error {
+				if actionCaller == nil {
+					return nil
+				}
+				_, err := actionCaller.CallFor(callCtx, selfID, action, params)
+				return err
+			},
 		},
 	).Run(ctx)
 	// Memory-keeping: periodically merges bloated fact/impression
@@ -776,6 +791,7 @@ func main() {
 	defer func() { _ = vecEngine.Flush() }()
 	if botService.ChatPrefs() != nil {
 		botService.ChatPrefs().SetVecEngine(vecEngine)
+		defer func() { _ = botService.ChatPrefs().Close() }()
 	}
 	var knowledgeStore *knowledge.Store
 	if cfg.KnowledgeDir != "" {

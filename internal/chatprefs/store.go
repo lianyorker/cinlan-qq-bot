@@ -4,7 +4,6 @@
 package chatprefs
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"os"
@@ -169,6 +168,15 @@ type Store struct {
 	cards    map[string]UserCard
 	now      func() time.Time
 	vec      *vecstore.Engine
+
+	// Debounced persistence: saveLocked only marks the store dirty and
+	// nudges saveCh; a background loop coalesces bursts and flushLocked
+	// does the real disk write. Close/Flush force the pending write out.
+	dirty     bool
+	saveCh    chan struct{}
+	closeCh   chan struct{}
+	closeOnce sync.Once
+	flushWG   sync.WaitGroup
 }
 
 // SetVecEngine attaches an optional dual-mode vector engine for semantic recall.
@@ -185,6 +193,8 @@ func Load(path, legacyPlatform string) (*Store, error) {
 		profiles: map[string]fact{},
 		cards:    map[string]UserCard{},
 		now:      time.Now,
+		saveCh:   make(chan struct{}, 1),
+		closeCh:  make(chan struct{}),
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -221,11 +231,80 @@ func Load(path, legacyPlatform string) (*Store, error) {
 	if store.migrateLegacy(legacyPlatform) {
 		// Rewrite the file in the new layout right away — otherwise the
 		// migration only lives in memory until the next coincidental save.
-		if saveErr := store.saveLocked(); saveErr != nil {
+		store.dirty = true
+		if saveErr := store.flushLocked(); saveErr != nil {
 			return store, saveErr
 		}
 	}
+	if path != "" {
+		store.flushWG.Add(1)
+		go store.flushLoop()
+	}
 	return store, nil
+}
+
+// flushLoop coalesces bursts of writes: every saveLocked drops one
+// signal into saveCh, and a short debounce window lets a burst of
+// mood/fact updates land in a single disk rewrite instead of one
+// full-file marshal per message.
+func (s *Store) flushLoop() {
+	defer s.flushWG.Done()
+	for {
+		select {
+		case <-s.saveCh:
+			timer := time.NewTimer(2 * time.Second)
+			select {
+			case <-timer.C:
+			case <-s.closeCh:
+				timer.Stop()
+				s.mu.Lock()
+				if s.dirty {
+					_ = s.flushLocked()
+				}
+				s.mu.Unlock()
+				return
+			}
+			s.mu.Lock()
+			if s.dirty {
+				_ = s.flushLocked()
+			}
+			s.mu.Unlock()
+		case <-s.closeCh:
+			s.mu.Lock()
+			if s.dirty {
+				_ = s.flushLocked()
+			}
+			s.mu.Unlock()
+			return
+		}
+	}
+}
+
+// Flush forces any pending debounced write to disk immediately.
+func (s *Store) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.dirty {
+		return nil
+	}
+	return s.flushLocked()
+}
+
+// Close stops the background flusher and writes out any pending state —
+// call it on shutdown so the debounce window never swallows the last
+// seconds of mood/fact updates on a normal exit.
+func (s *Store) Close() error {
+	var err error
+	s.closeOnce.Do(func() {
+		close(s.closeCh)
+		s.flushWG.Wait()
+		s.mu.Lock()
+		if s.dirty {
+			err = s.flushLocked()
+		}
+		s.mu.Unlock()
+	})
+	return err
 }
 
 // migrateLegacy rewrites keys saved before the platform scope existed
@@ -611,11 +690,12 @@ func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.
 	if concepts := vecstore.ConceptOverlap(f.Text, query); concepts > 0 {
 		score += concepts * 2
 	}
+	// Dense similarity reads ONLY the disk-backed cache — never the
+	// network — so the recall hot path stays zero-IO even when a remote
+	// embedding endpoint is configured. Cold-cache facts simply score
+	// on bigram + concept alone until a background warm-up fills them.
 	if vec != nil && vec.RemoteEnabled() {
-		ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-		sim := vec.Similarity(ctx, f.Text, query)
-		cancel()
-		if sim >= 0.45 {
+		if sim := vec.CachedSimilarity(f.Text, query); sim >= 0.45 {
 			score += int(sim * 6)
 		}
 	}
@@ -885,34 +965,41 @@ func (s *Store) ForgetFact(platform, selfID, chatType, chatID, target string) er
 // Searches both active Facts and long-term Archive via hybrid lexical +
 // semantic concept/vector scoring.
 func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, limit int) []fact {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	e := s.entry(platform, selfID, chatType, chatID)
+	grams := textBigrams(query)
+
+	// Phase 1: snapshot candidates under a read lock. lookup (not
+	// entry) so recall never creates or claims a chat entry.
+	s.mu.RLock()
+	e := s.lookup(platform, selfID, chatType, chatID)
 	if e == nil {
+		s.mu.RUnlock()
 		return nil
 	}
-	grams := textBigrams(query)
-	now := s.now()
+	facts := append([]fact(nil), e.Facts...)
+	archive := append([]fact(nil), e.Archive...)
+	vec := s.vec
+	s.mu.RUnlock()
+
+	// Phase 2: score and rank with no lock held — pure CPU, zero IO.
 	type scored struct {
 		f        fact
 		score    int
-		idx      int
 		archived bool
 	}
-	seenText := make(map[string]bool, len(e.Facts))
-	hits := make([]scored, 0, len(e.Facts)+len(e.Archive))
-	for i, f := range e.Facts {
+	seenText := make(map[string]bool, len(facts))
+	hits := make([]scored, 0, len(facts)+len(archive))
+	for _, f := range facts {
 		seenText[f.Text] = true
-		if sc := scoreFactHybrid(f, query, grams, s.vec); sc >= recallMinScore {
-			hits = append(hits, scored{f: f, score: sc, idx: i})
+		if sc := scoreFactHybrid(f, query, grams, vec); sc >= recallMinScore {
+			hits = append(hits, scored{f: f, score: sc})
 		}
 	}
-	for i, f := range e.Archive {
+	for _, f := range archive {
 		if seenText[f.Text] {
 			continue
 		}
-		if sc := scoreFactHybrid(f, query, grams, s.vec); sc >= recallMinScore {
-			hits = append(hits, scored{f: f, score: sc, idx: i, archived: true})
+		if sc := scoreFactHybrid(f, query, grams, vec); sc >= recallMinScore {
+			hits = append(hits, scored{f: f, score: sc, archived: true})
 		}
 	}
 	sort.Slice(hits, func(i, j int) bool {
@@ -921,24 +1008,52 @@ func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, li
 		}
 		return factAnchor(hits[i].f).After(factAnchor(hits[j].f))
 	})
-	out := make([]fact, 0, limit)
-	for _, h := range hits {
-		if len(out) >= limit {
-			break
-		}
-		out = append(out, h.f)
-		// Recalled memories stay fresh — LastSeenAt is her "used it
-		// recently" signal for later pruning, and Weight creeps up so
-		// lines she actually leans on recall harder next time.
-		if h.archived {
-			e.Archive[h.idx].LastSeenAt = now
-			e.Archive[h.idx].Weight = factWeight(e.Archive[h.idx]) + 0.25
-		} else {
-			e.Facts[h.idx].LastSeenAt = now
-			e.Facts[h.idx].Weight = factWeight(e.Facts[h.idx]) + 0.25
-		}
+	selected := hits
+	if len(selected) > limit {
+		selected = selected[:limit]
 	}
-	if len(out) > 0 {
+	if len(selected) == 0 {
+		return nil
+	}
+	out := make([]fact, 0, len(selected))
+	for _, h := range selected {
+		out = append(out, h.f)
+	}
+
+	// Phase 3: short write lock to bump LastSeenAt/Weight on the lines
+	// that actually surfaced. Facts may have shifted since the
+	// snapshot, so re-locate by Text instead of trusting old indexes;
+	// a line that vanished simply skips its heat bump.
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if e := s.lookup(platform, selfID, chatType, chatID); e != nil {
+		now := s.now()
+		bumpIn := func(list []fact, text string) bool {
+			for i := range list {
+				if list[i].Text == text {
+					list[i].LastSeenAt = now
+					list[i].Weight = factWeight(list[i]) + 0.25
+					return true
+				}
+			}
+			return false
+		}
+		for _, h := range selected {
+			// Recalled memories stay fresh — LastSeenAt is her "used
+			// it recently" signal for later pruning, and Weight creeps
+			// up so lines she leans on recall harder next time. The
+			// expected list is tried first, the other as fallback in
+			// case the line rotated between snapshot and write-back.
+			if h.archived {
+				if !bumpIn(e.Archive, h.f.Text) {
+					bumpIn(e.Facts, h.f.Text)
+				}
+			} else {
+				if !bumpIn(e.Facts, h.f.Text) {
+					bumpIn(e.Archive, h.f.Text)
+				}
+			}
+		}
 		_ = s.saveLocked()
 	}
 	return out
@@ -1368,7 +1483,24 @@ func (s *Store) RewriteImpressions(platform, selfID, chatType, chatID string, te
 	return s.saveLocked()
 }
 
+// saveLocked marks the store dirty and nudges the background flusher —
+// the real disk write is debounced in flushLoop so hot-path callers no
+// longer pay a full-file marshal per update.
 func (s *Store) saveLocked() error {
+	if s.path == "" {
+		return nil
+	}
+	s.dirty = true
+	select {
+	case s.saveCh <- struct{}{}:
+	default:
+	}
+	return nil
+}
+
+// flushLocked performs the atomic full-file rewrite. Caller must hold
+// s.mu (write side).
+func (s *Store) flushLocked() error {
 	if s.path == "" {
 		return nil
 	}
@@ -1387,5 +1519,9 @@ func (s *Store) saveLocked() error {
 	if err := os.WriteFile(tmp, raw, 0o600); err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	s.dirty = false
+	return nil
 }
