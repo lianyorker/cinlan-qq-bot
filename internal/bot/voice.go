@@ -233,12 +233,12 @@ func (s *Service) voiceClipSafe(ctx context.Context, clip string) bool {
 	if voiceObviousEroticPattern.MatchString(clip) {
 		return false
 	}
-	if s.agent == nil {
+	if s.providers == nil && s.agent == nil {
 		return true
 	}
 	decisionCtx, cancel := context.WithTimeout(ctx, s.cfg.AttentionTimeout)
 	defer cancel()
-	response, err := s.agent.Reply(decisionCtx, domain.AgentRequest{
+	response, err := s.judgeReply(decisionCtx, "", domain.AgentRequest{
 		RequestID:     "voice-safety:" + opaqueAttentionID(clip),
 		SessionID:     "maintenance:voice-safety",
 		Text:          clip,

@@ -247,7 +247,7 @@ func (s *Service) classifySpam(
 		SystemPrompt:  spamJudgeSystemPrompt,
 		Chain:         state.event.Chain.Clone(),
 	}
-	response, err := s.agent.Reply(decisionCtx, request)
+	response, err := s.judgeReply(decisionCtx, "", request)
 	if err != nil {
 		return false, "", err
 	}
@@ -292,19 +292,7 @@ func (s *Service) personaModerationNotice(
 		SystemPrompt:  profile.SystemPrompt + "\n\n" + moderationVoicePrompt,
 		RestrictTools: true,
 	}
-	var response domain.AgentResponse
-	var err error
-	if s.providers != nil {
-		if state.providerName != "" {
-			response, err = s.providers.ReplyWith(callCtx, state.providerName, request)
-		} else {
-			response, err = s.providers.Reply(callCtx, request)
-		}
-	} else if s.agent != nil {
-		response, err = s.agent.Reply(callCtx, request)
-	} else {
-		return template
-	}
+	response, err := s.judgeReply(callCtx, state.providerName, request)
 	if err != nil {
 		s.logger.Warn("moderation notice voice failed", "error", err.Error())
 		return template

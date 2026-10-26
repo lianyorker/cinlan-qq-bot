@@ -43,13 +43,7 @@ func (s *Service) ReviewNote(ctx context.Context, text string) (bool, string, er
 		// The note text is data under review, not instructions.
 		RestrictTools: true,
 	}
-	var response domain.AgentResponse
-	var err error
-	if s.providers != nil {
-		response, err = s.providers.Reply(decisionCtx, request)
-	} else {
-		response, err = s.agent.Reply(decisionCtx, request)
-	}
+	response, err := s.judgeReply(decisionCtx, "", request)
 	if err != nil {
 		return false, "", err
 	}

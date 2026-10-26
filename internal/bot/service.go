@@ -2,6 +2,7 @@ package bot
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log/slog"
@@ -21,6 +22,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
 	"github.com/lianyorker/cinlan-qq-bot/internal/command"
 	"github.com/lianyorker/cinlan-qq-bot/internal/config"
+	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/moderation"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
@@ -151,24 +153,28 @@ type Service struct {
 	voiceBudget  voiceBudget
 	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
 	// occasional human reaction instead of a hair-trigger.
-	pokeBudget   voiceBudget
-	feelBudget   voiceBudget
-	voiceQuota   *voiceQuota
-	sessions     *session.Store
-	logger       *slog.Logger
-	stats        counters
-	now          func() time.Time
-	providers    *provider.Registry
-	plugins      *plugin.Registry
-	messageGuard plugin.BeforeHook
-	commands     *command.Registry
-	tools        *tool.Registry
-	personas     *persona.Registry
-	bindings     *binding.Registry
-	chatPrefs    *chatprefs.Store
-	affinity     *affinity.Store
-	memeDir      string
-	stickerDir   string
+	pokeBudget voiceBudget
+	feelBudget voiceBudget
+	voiceQuota *voiceQuota
+	sessions   *session.Store
+	logger     *slog.Logger
+	stats      counters
+	now        func() time.Time
+	providers  *provider.Registry
+	// judgeProvider names the cheap decision model (JUDGE_PROVIDER). All
+	// classifier/judge calls — attention, spam, voice safety, note review —
+	// route through it instead of burning the conversation model.
+	judgeProvider string
+	plugins       *plugin.Registry
+	messageGuard  plugin.BeforeHook
+	commands      *command.Registry
+	tools         *tool.Registry
+	personas      *persona.Registry
+	bindings      *binding.Registry
+	chatPrefs     *chatprefs.Store
+	affinity      *affinity.Store
+	memeDir       string
+	stickerDir    string
 	// transcriber turns inbound voice clips into text (opt-in ASR).
 	transcriber  voiceTranscriber
 	keywordTools []keywordTool
@@ -307,6 +313,7 @@ func NewWithRuntime(
 		}
 	}
 	service.bannedWords = newOutboundBannedWords(strings.TrimSpace(cfg.OutboundBannedWordsFile))
+	service.judgeProvider = strings.TrimSpace(cfg.JudgeProvider)
 	service.flow = service.newPipeline()
 	return service
 }
@@ -1391,7 +1398,44 @@ func (s *Service) allowRequest(key string) bool {
 }
 
 func (s *Service) allowAttentionDecision(key string) bool {
-	if s.cfg.AttentionRateLimit <= 0 {
+	return s.allowAttentionLimited(key, s.cfg.AttentionRateLimit)
+}
+
+// judgeReply sends a classification/judge call to the cheap model named by
+// JUDGE_PROVIDER. When the judge provider is unset or fails mid-call it
+// falls back to the caller's preferred provider, then the registry
+// default, then the legacy agent client — a judge that costs nothing but
+// silently dies would quietly reopen the token firehose.
+func (s *Service) judgeReply(
+	ctx context.Context, preferred string, request domain.AgentRequest,
+) (domain.AgentResponse, error) {
+	if s.providers != nil {
+		if s.judgeProvider != "" {
+			if response, err := s.providers.ReplyWith(ctx, s.judgeProvider, request); err == nil {
+				return response, nil
+			} else {
+				s.logger.Warn("judge provider failed, falling back",
+					"provider", s.judgeProvider, "error", err.Error())
+			}
+		}
+		if preferred != "" {
+			if response, err := s.providers.ReplyWith(ctx, preferred, request); err == nil {
+				return response, nil
+			}
+		}
+		return s.providers.Reply(ctx, request)
+	}
+	if s.agent != nil {
+		return s.agent.Reply(ctx, request)
+	}
+	return domain.AgentResponse{}, errors.New("no judge provider is available")
+}
+
+// allowAttentionLimited is the per-key sliding-window check — reused for
+// the per-actor cap and the per-chat cap so a flooding room and a
+// flooding user hit independent budgets.
+func (s *Service) allowAttentionLimited(key string, limit int) bool {
+	if limit <= 0 {
 		return true
 	}
 	s.stateMu.Lock()
@@ -1406,7 +1450,7 @@ func (s *Service) allowAttentionDecision(key string) bool {
 	if first > 0 {
 		requests = append([]time.Time(nil), requests[first:]...)
 	}
-	if len(requests) >= s.cfg.AttentionRateLimit {
+	if len(requests) >= limit {
 		s.attentionTimes[key] = requests
 		return false
 	}

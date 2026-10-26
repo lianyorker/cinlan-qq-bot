@@ -231,38 +231,45 @@ type Config struct {
 	WebScreenshotHeight       int
 	WebScreenshotWait         time.Duration
 
-	MaxHistory           int
-	SessionTTL           time.Duration
-	SessionStorePath     string
-	SessionLegacyPath    string
-	SessionKey           string
-	SessionCompressAt    int
-	SessionRetain        int
-	SessionSemanticTTL   time.Duration
-	SessionLearning      bool
-	CronStorePath        string
-	KnowledgeDir         string
-	KnowledgeTopK        int
-	MCPServersFile       string
-	SkillsDir            string
-	SubagentsFile        string
-	PluginsFile          string
-	ProvidersFile        string
-	PersonasFile         string
-	PersonaPacksDir      string
-	ChatBindingsFile     string
-	FileCatalogPath      string
-	FileMaxBytes         int64
-	FileSendTimeout      time.Duration
-	BotAllowedRoot       string
-	SecurityStorePath    string
-	MaxConcurrency       int
-	UserCooldown         time.Duration
-	UserRateLimit        int
-	UserRateWindow       time.Duration
-	AttentionTimeout     time.Duration
-	AttentionRateLimit   int
-	AttentionRateWindow  time.Duration
+	MaxHistory         int
+	SessionTTL         time.Duration
+	SessionStorePath   string
+	SessionLegacyPath  string
+	SessionKey         string
+	SessionCompressAt  int
+	SessionRetain      int
+	SessionSemanticTTL time.Duration
+	SessionLearning    bool
+	CronStorePath      string
+	KnowledgeDir       string
+	KnowledgeTopK      int
+	MCPServersFile     string
+	SkillsDir          string
+	SubagentsFile      string
+	PluginsFile        string
+	ProvidersFile      string
+	PersonasFile       string
+	PersonaPacksDir    string
+	ChatBindingsFile   string
+	FileCatalogPath    string
+	FileMaxBytes       int64
+	FileSendTimeout    time.Duration
+	BotAllowedRoot     string
+	SecurityStorePath  string
+	MaxConcurrency     int
+	UserCooldown       time.Duration
+	UserRateLimit      int
+	UserRateWindow     time.Duration
+	AttentionTimeout   time.Duration
+	AttentionRateLimit int
+	// AttentionChatRateLimit caps judge calls per chat per window — the
+	// per-actor limit above stops one spammer; this one stops a flooding
+	// room. Shares AttentionRateWindow.
+	AttentionChatRateLimit int
+	AttentionRateWindow    time.Duration
+	// JudgeProvider names the cheap decision provider from providers.json
+	// (e.g. "jev" → deepseek). Empty = judge calls stay on the default.
+	JudgeProvider        string
 	MediaToolCooldown    time.Duration
 	MediaToolLimit       int
 	MediaToolWindow      time.Duration
@@ -640,6 +647,8 @@ func Load() (Config, error) {
 	)
 	cfg.AttentionTimeout = parseDuration("BOT_ATTENTION_TIMEOUT", 5*time.Second, true, &errs)
 	cfg.AttentionRateLimit = parseInt("BOT_ATTENTION_RATE_LIMIT", 20, 0, &errs)
+	cfg.AttentionChatRateLimit = parseInt("BOT_ATTENTION_CHAT_RATE_LIMIT", 10, 0, &errs)
+	cfg.JudgeProvider = envOrAllowEmpty("JUDGE_PROVIDER", "")
 	cfg.AttentionRateWindow = parseDuration(
 		"BOT_ATTENTION_RATE_WINDOW",
 		time.Minute,

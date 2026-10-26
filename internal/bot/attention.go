@@ -89,6 +89,16 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		s.stats.attentionIgnored.Add(1)
 		return ignoreForAttention(event, state, "attention_rate_limit")
 	}
+	// Per-chat budget on top of the per-actor one — a flooding room burns
+	// judge calls even when every single sender is under their own cap.
+	if !s.allowAttentionLimited(
+		state.platform+":self:"+state.selfID+":chat:"+state.chatType+":"+state.chatID,
+		s.cfg.AttentionChatRateLimit,
+	) {
+		s.stats.attentionRateLimited.Add(1)
+		s.stats.attentionIgnored.Add(1)
+		return ignoreForAttention(event, state, "attention_chat_rate_limit")
+	}
 
 	s.stats.attentionDecisions.Add(1)
 	decision, err := s.classifyAttention(ctx, state)
@@ -168,22 +178,11 @@ ignore：纯闲聊/致谢/复读、明确发给其他人、超出业务范围、
 		SystemPrompt:  systemPrompt,
 		RestrictTools: true,
 	}
-	providerName := state.replyPolicy.Provider
-	if providerName == "" {
-		providerName = state.providerName
+	preferred := state.replyPolicy.Provider
+	if preferred == "" {
+		preferred = state.providerName
 	}
-	var response domain.AgentResponse
-	if s.providers != nil {
-		if providerName != "" {
-			response, err = s.providers.ReplyWith(decisionCtx, providerName, request)
-		} else {
-			response, err = s.providers.Reply(decisionCtx, request)
-		}
-	} else if s.agent != nil {
-		response, err = s.agent.Reply(decisionCtx, request)
-	} else {
-		err = errors.New("no provider is available for attention classification")
-	}
+	response, err := s.judgeReply(decisionCtx, preferred, request)
 	if err != nil {
 		return attentionDecision{}, err
 	}
