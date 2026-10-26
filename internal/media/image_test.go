@@ -96,6 +96,56 @@ func TestImageGeneratorOpenAISavesAndReturnsImageChain(t *testing.T) {
 	}
 }
 
+func TestImageGeneratorDownloadFallsBackToAPIHost(t *testing.T) {
+	imageData := testPNG(t)
+	var gotAuth string
+	var gotPath string
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter, request *http.Request,
+	) {
+		gotAuth = request.Header.Get("Authorization")
+		gotPath = request.URL.Path
+		writer.Header().Set("Content-Type", "image/png")
+		_, _ = writer.Write(imageData)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	generator, err := NewImageGenerator(ImageGeneratorConfig{
+		Mode:        "openai",
+		APIURL:      server.URL + "/v1/images/generations",
+		APIKey:      "test-key",
+		Model:       "image-test",
+		OutputDir:   "generated",
+		AllowedRoot: root,
+		MaxBytes:    1 << 20,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Plain client so the unreachable CDN fails fast on DNS while the
+	// httptest fallback still works.
+	generator.downloadClient = &http.Client{Timeout: 5 * time.Second}
+
+	data, err := generator.download(
+		context.Background(),
+		"https://cdn.invalid/cdn-path/shot.png",
+	)
+	if err != nil {
+		t.Fatalf("download() = %v, want fallback success", err)
+	}
+	if !bytes.Equal(data, imageData) {
+		t.Fatal("downloaded image differs from fallback response")
+	}
+	if gotPath != "/cdn-path/shot.png" {
+		t.Fatalf("fallback path = %q", gotPath)
+	}
+	if gotAuth != "Bearer test-key" {
+		t.Fatalf("fallback auth header = %q", gotAuth)
+	}
+}
+
 func TestImageGeneratorRejectsOutputOutsideAllowedRoot(t *testing.T) {
 	root := t.TempDir()
 	_, err := NewImageGenerator(ImageGeneratorConfig{

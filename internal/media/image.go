@@ -640,14 +640,44 @@ func (g *ImageGenerator) download(ctx context.Context, value string) ([]byte, er
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" {
 		return nil, errors.New("image generation provider returned an unsafe image URL")
 	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodGet, parsed.String(), nil)
+	data, cdnErr := g.downloadURL(ctx, parsed.String(), false)
+	if cdnErr == nil {
+		return data, nil
+	}
+	// The CDN behind some image gateways is unreachable from the host
+	// (poisoned DNS / region blocks) while the API host itself fronts the
+	// same asset path — retry the identical path on the API endpoint
+	// before failing the generation.
+	fallback := &url.URL{
+		Scheme:   g.endpoint.Scheme,
+		Host:     g.endpoint.Host,
+		Path:     parsed.Path,
+		RawQuery: parsed.RawQuery,
+	}
+	data, err = g.downloadURL(ctx, fallback.String(), true)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"generated image download failed (cdn: %v; via api host: %w)",
+			cdnErr, err,
+		)
+	}
+	return data, nil
+}
+
+func (g *ImageGenerator) downloadURL(
+	ctx context.Context, value string, withAuth bool,
+) ([]byte, error) {
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, value, nil)
 	if err != nil {
 		return nil, errors.New("build generated image download request")
 	}
 	request.Header.Set("Accept", "image/*")
+	if withAuth && g.apiKey != "" {
+		request.Header.Set("Authorization", "Bearer "+g.apiKey)
+	}
 	response, err := g.downloadClient.Do(request)
 	if err != nil {
-		return nil, errors.New("generated image download failed")
+		return nil, err
 	}
 	defer response.Body.Close()
 	if response.StatusCode < http.StatusOK || response.StatusCode >= http.StatusMultipleChoices {
