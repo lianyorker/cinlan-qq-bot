@@ -1219,8 +1219,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	}
 	// Humanization hints: current mood tier + circadian rhythm — both
 	// gated by MoodEnabled so formal bindings can opt out of both.
+	// moodScore stays in scope for the burst steering below; -1 means
+	// "no mood signal" so the low-mood branch can't fire on missing data.
+	moodScore := -1
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
-		moodScore := s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())
+		moodScore = s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())
 		if hint := mood.Hint(moodScore); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
@@ -1242,10 +1245,24 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now()) < 40) {
 		request.SystemPrompt += "\n\n（你们已经聊了好一会儿了——如果话题到段落了，你可以像真人一样主动收尾，比如「先这样我去忙了」，不用硬聊）"
 	}
-	// Permission to be lazy — ~10% of turns she may answer with a single
-	// short burst. Real people don't write a paragraph for everything.
-	if rand.Float64() < 0.10 {
-		request.SystemPrompt += "\n\n（这条随便回就行——一两个字、一个表情，甚至只回个梗，熟了不用讲客气）"
+	// Burst steering rides her state the way real bursts do — chatty
+	// when she's up, terse when she's down, nothing special when flat.
+	// A flat random roll would leave her bubble count stateless, which
+	// reads as a bot tell; asleep already gets its own sleepy note below.
+	roll := rand.Float64()
+	var burstHint string
+	switch {
+	case s.cfg.Asleep(s.now()):
+		// Covered by the drowsy note — don't stack hints.
+	case moodScore >= 70 && roll < 0.35:
+		burstHint = "（这会儿你兴致挺高的——想多说就多发几泡，四五条连着发也行）"
+	case moodScore >= 0 && moodScore < 30 && roll < 0.5:
+		burstHint = "（没什么精神——回一句打发就行，敷衍点也像人）"
+	case roll < 0.10:
+		burstHint = "（这条随便回就行——一两个字、一个表情，甚至只回个梗，熟了不用讲客气）"
+	}
+	if burstHint != "" {
+		request.SystemPrompt += "\n\n" + burstHint
 	}
 	// The mood tier says HOW she feels; the freshest [心情] note says
 	// WHY. Injecting it keeps feelings attached to their cause instead
@@ -1672,8 +1689,23 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		if filtered := filterSelfEcho(
 			parts, recentAssistantTexts(state.history, 8),
 		); len(filtered) > 0 {
+			if !slices.Equal(filtered, parts) {
+				s.logger.Info(
+					"self echo trimmed from reply",
+					"chat_type", state.chatType,
+					"chat_id", state.chatID,
+					"before", len(parts),
+					"after", len(filtered),
+				)
+			}
 			parts = filtered
 		}
+		s.logger.Debug(
+			"reply burst planned",
+			"chat_type", state.chatType,
+			"chat_id", state.chatID,
+			"parts", len(parts),
+		)
 		chains := make([]message.Chain, 0, len(parts))
 		cleaned := make([]string, 0, len(parts))
 		skippedMarkers := 0
