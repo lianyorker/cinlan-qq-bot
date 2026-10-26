@@ -1239,6 +1239,25 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 					strings.Join(lines, "\n")
 			}
 		}
+		// The other side of the ledger — what THEY promised her. She can
+		// tease, nag or collect when the time comes, the way a person does.
+		if owed := s.chatPrefs.OwedFacts(state.platform, state.selfID, state.chatType, state.chatID); len(owed) > 0 {
+			lines := make([]string, 0, 3)
+			for _, p := range owed {
+				if len(lines) >= 3 || !security.TextSafeForPrompt(p.Text) {
+					continue
+				}
+				line := "· " + strings.TrimPrefix(p.Text, "他答应·")
+				if now.Sub(p.CreatedAt) > 24*time.Hour {
+					line += "（" + p.CreatedAt.Format("01-02") + "说的）"
+				}
+				lines = append(lines, line)
+			}
+			if len(lines) > 0 {
+				request.SystemPrompt += "\n\n他答应过你的（到时候可以讨账或调侃）：\n" +
+					strings.Join(lines, "\n")
+			}
+		}
 		// Upstream prevention beats post-send scrubbing: tell her which
 		// phrases the chat banned so she never produces them at all.
 		if bans := s.chatPrefs.ToneBans(state.platform, state.selfID, state.chatType, state.chatID); len(bans) > 0 {
@@ -1467,6 +1486,7 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 	// self-corrections apply to every reply path, plugins included.
 	s.learnToneBan(state)
 	s.noteCorrection(state)
+	s.noteTheirPromise(state)
 
 	if state.pluginHandled {
 		state.reply = strings.TrimSpace(state.reply)
@@ -2309,6 +2329,35 @@ func (s *Service) applyToneGuard(state *flowState) {
 var promisePattern = regexp.MustCompile(
 	`[^\n。！？!?；;]{0,12}(?:我到时(?:候)?|我回头|我待会|我待会儿|我明天|我下次|我保证|我帮你|我给你发|我到时候提醒|说话算话|说定了)[^\n。！？!?；;]{0,30}`,
 )
+
+// theirPromisePattern spots commitment-shaped sentences in the USER's
+// message — "我明天给你带" "回头帮你" — so a promise made TO her
+// becomes a fact she can collect on. Same shape as her own pledge
+// detector, different ledger.
+var theirPromisePattern = regexp.MustCompile(
+	`[^\n。！？!?；;]{0,12}(?:我回头|我待会|我待会儿|我明天|我下次|我改天|我到时候|我保证|到时候我|回头我|下次我|明天我|改天我)[^\n。！？!?；;]{0,30}`,
+)
+
+// noteTheirPromise stores user-side commitments as 他答应· facts,
+// namespaced by sender name so a group can owe her several things.
+func (s *Service) noteTheirPromise(state *flowState) {
+	if s.chatPrefs == nil || state.text == "" {
+		return
+	}
+	who := strings.TrimSpace(state.event.SenderName)
+	if who == "" {
+		who = "他"
+	}
+	for _, m := range theirPromisePattern.FindAllString(state.text, 2) {
+		snippet := strings.TrimSpace(strings.Trim(m,
+			"「」\"'‘’“”、，。！？!?,；;~～ "))
+		if n := len([]rune(snippet)); n < 6 || n > 40 {
+			continue
+		}
+		_ = s.chatPrefs.AddFact(state.platform, state.selfID, state.chatType, state.chatID,
+			"他答应·"+who+"："+snippet)
+	}
+}
 
 // notePromise stores commitment-shaped outbound sentences as 承诺· facts.
 func (s *Service) notePromise(state *flowState) {

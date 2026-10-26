@@ -897,6 +897,29 @@ func (s *Store) PromiseFacts(platform, selfID, chatType, chatID string) []fact {
 	return out
 }
 
+// OwedFacts returns the "他答应·…" lines — things THEY said they'd do
+// for her. A person remembers being promised something; the pair with
+// PromiseFacts keeps both sides of the ledger.
+func (s *Store) OwedFacts(platform, selfID, chatType, chatID string) []fact {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil {
+		return nil
+	}
+	var out []fact
+	collect := func(list []fact) {
+		for _, f := range list {
+			if strings.HasPrefix(f.Text, owedPromisePrefix) {
+				out = append(out, f)
+			}
+		}
+	}
+	collect(e.Facts)
+	collect(e.Archive)
+	return out
+}
+
 // HasThoughtMaterial reports whether this chat holds anything worth
 // spontaneously bringing up — open promises or memories still warm.
 // Permanent fields (ToneBans, Impressions) deliberately do NOT count:
@@ -911,7 +934,9 @@ func (s *Store) HasThoughtMaterial(platform, selfID, chatType, chatID string, no
 	}
 	recent := now.Add(-14 * 24 * time.Hour)
 	for _, f := range e.Facts {
-		if strings.HasPrefix(f.Text, promisePrefix) || factAnchor(f).After(recent) {
+		if strings.HasPrefix(f.Text, promisePrefix) ||
+			strings.HasPrefix(f.Text, owedPromisePrefix) ||
+			factAnchor(f).After(recent) {
 			return true
 		}
 	}
@@ -920,6 +945,10 @@ func (s *Store) HasThoughtMaterial(platform, selfID, chatType, chatID string, no
 
 // promisePrefix marks facts that record something she offered to do.
 const promisePrefix = "承诺·"
+
+// owedPromisePrefix marks facts that record something THEY offered to
+// do for her — the other side of the promise ledger.
+const owedPromisePrefix = "他答应·"
 
 // ReplaceFact updates the closest existing fact with new text — the
 // "she corrected herself" path; falls back to AddFact when no match.
