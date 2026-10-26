@@ -8,7 +8,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"time"
@@ -16,10 +15,8 @@ import (
 )
 
 const (
-	AgentModeCustom  = "custom"
-	AgentModeOpenAI  = "openai"
-	QQPlatformNative = "native"
-	QQPlatformOneBot = "onebot"
+	AgentModeCustom = "custom"
+	AgentModeOpenAI = "openai"
 )
 
 type Allowlist struct {
@@ -78,23 +75,8 @@ type Config struct {
 	LogLevel       string
 	AdminAPIToken  string
 
-	QQPlatform string
-
-	QQNTPath              string
-	QQNTAutoLaunch        bool
-	QQNTAllowRunning      bool
-	QQNTLoaderPath        string
-	QQNTHookPath          string
-	QQNTLoadPath          string
-	QQNTRuntimePath       string
-	QQNTPatchPackagePath  string
-	QQNTIPCListenAddr     string
-	QQNTIPCToken          string
-	QQNTActionTTL         time.Duration
-	QQNTHandshakeTTL      time.Duration
-	QQNTMaxFrameBytes     int
-	QQNTAutoAcceptFriend  bool
-	QQNTHeadless          bool
+	// QQNT image roots stay: NapCat still hands us sender-side nt_data cache
+	// paths for inbound images, so the local-image policy remains meaningful.
 	QQNTImageAllowedRoots []string
 	QQNTImageMaxBytes     int64
 
@@ -392,16 +374,6 @@ func Load() (Config, error) {
 		LogLevel:       strings.ToLower(envOr("LOG_LEVEL", "info")),
 		AdminAPIToken:  os.Getenv("ADMIN_API_TOKEN"),
 
-		QQPlatform:           normalizeQQPlatform(envOr("QQ_PLATFORM", defaultQQPlatform())),
-		QQNTPath:             envOrAllowEmpty("QQNT_PATH", ""),
-		QQNTLoaderPath:       envOr("QQNT_LOADER_PATH", "bin/cinlan-qq-loader.exe"),
-		QQNTHookPath:         envOr("QQNT_HOOK_PATH", "bin/cinlan-qq-hook.dll"),
-		QQNTLoadPath:         envOr("QQNT_LOAD_PATH", "runtime/qqnt/load-cinlan.cjs"),
-		QQNTRuntimePath:      envOr("QQNT_RUNTIME_PATH", "runtime/qqnt/runtime.cjs"),
-		QQNTPatchPackagePath: envOr("QQNT_PATCH_PACKAGE_PATH", "data/runtime/qqnt-package.json"),
-		QQNTIPCListenAddr:    envOr("QQNT_IPC_LISTEN_ADDR", "127.0.0.1:18081"),
-		QQNTIPCToken:         strings.TrimSpace(os.Getenv("QQNT_IPC_TOKEN")),
-
 		OneBotWSURL:             envOr("ONEBOT_WS_URL", "ws://127.0.0.1:3001"),
 		OneBotHTTPURL:           envOr("ONEBOT_HTTP_URL", "http://127.0.0.1:3000"),
 		OneBotAccessToken:       os.Getenv("ONEBOT_ACCESS_TOKEN"),
@@ -475,18 +447,6 @@ func Load() (Config, error) {
 		"QQ_REPLY_PART_DELAY",
 		350*time.Millisecond,
 		false,
-		&errs,
-	)
-	cfg.QQNTAutoLaunch = parseBool("QQNT_AUTO_LAUNCH", true, &errs)
-	cfg.QQNTAllowRunning = parseBool("QQNT_ALLOW_RUNNING", false, &errs)
-	cfg.QQNTAutoAcceptFriend = parseBool("QQNT_AUTO_ACCEPT_FRIEND", false, &errs)
-	cfg.QQNTHeadless = parseBool("QQNT_HEADLESS", false, &errs)
-	cfg.QQNTActionTTL = parseDuration("QQNT_ACTION_TIMEOUT", 10*time.Second, true, &errs)
-	cfg.QQNTHandshakeTTL = parseDuration("QQNT_HANDSHAKE_TIMEOUT", 10*time.Second, true, &errs)
-	cfg.QQNTMaxFrameBytes = parseInt(
-		"QQNT_MAX_FRAME_BYTES",
-		1024*1024,
-		4096,
 		&errs,
 	)
 	cfg.QQNTImageAllowedRoots = parsePathList(envOrAllowEmpty(
@@ -756,18 +716,6 @@ func (c Config) Validate() error {
 	if !contains([]string{"debug", "info", "warn", "error"}, c.LogLevel) {
 		errs = append(errs, fmt.Errorf("LOG_LEVEL must be debug, info, warn, or error; got %q", c.LogLevel))
 	}
-	if !contains([]string{QQPlatformNative, QQPlatformOneBot}, c.QQPlatform) {
-		errs = append(errs, fmt.Errorf(
-			"QQ_PLATFORM must be native or onebot; got %q",
-			c.QQPlatform,
-		))
-	}
-	if c.QQPlatform == QQPlatformNative && runtime.GOOS != "windows" {
-		errs = append(errs, fmt.Errorf(
-			"QQ_PLATFORM=native is supported only on Windows; use QQ_PLATFORM=onebot on %s",
-			runtime.GOOS,
-		))
-	}
 	if c.SessionStorePath != "" && strings.TrimSpace(c.SessionKey) == "" {
 		errs = append(errs, errors.New(
 			"SESSION_ENCRYPTION_KEY is required when SESSION_STORE_PATH is configured",
@@ -788,36 +736,15 @@ func (c Config) Validate() error {
 			"SESSION_COMPRESSION_RETAIN must be even to preserve complete exchanges",
 		))
 	}
-	if c.QQPlatform == QQPlatformNative {
-		if c.QQNTHeadless && strings.TrimSpace(c.AdminAPIToken) == "" {
-			errs = append(errs, errors.New("ADMIN_API_TOKEN is required for QQNT_HEADLESS login API"))
-		}
-		if err := validateLoopbackAddress(c.QQNTIPCListenAddr, "QQNT_IPC_LISTEN_ADDR"); err != nil {
-			errs = append(errs, err)
-		}
-		for _, root := range c.QQNTImageAllowedRoots {
-			if !filepath.IsAbs(root) {
-				errs = append(errs, fmt.Errorf(
-					"QQNT_IMAGE_ALLOWED_ROOTS must contain absolute paths; got %q",
-					root,
-				))
-			}
-		}
-		if c.QQNTAutoLaunch {
-			for key, value := range map[string]string{
-				"QQNT_LOADER_PATH":        c.QQNTLoaderPath,
-				"QQNT_HOOK_PATH":          c.QQNTHookPath,
-				"QQNT_LOAD_PATH":          c.QQNTLoadPath,
-				"QQNT_RUNTIME_PATH":       c.QQNTRuntimePath,
-				"QQNT_PATCH_PACKAGE_PATH": c.QQNTPatchPackagePath,
-			} {
-				if strings.TrimSpace(value) == "" {
-					errs = append(errs, fmt.Errorf("%s must not be empty", key))
-				}
-			}
+	for _, root := range c.QQNTImageAllowedRoots {
+		if !filepath.IsAbs(root) {
+			errs = append(errs, fmt.Errorf(
+				"QQNT_IMAGE_ALLOWED_ROOTS must contain absolute paths; got %q",
+				root,
+			))
 		}
 	}
-	if c.QQPlatform == QQPlatformOneBot && strings.TrimSpace(c.OneBotAccountsFile) == "" {
+	if strings.TrimSpace(c.OneBotAccountsFile) == "" {
 		switch c.OneBotTransport {
 		case "forward_ws":
 			if err := validateURL(c.OneBotWSURL, "ONEBOT_WS_URL", "ws", "wss"); err != nil {
@@ -974,13 +901,6 @@ func parsePathList(value string) []string {
 	return paths
 }
 
-func defaultQQPlatform() string {
-	if runtime.GOOS == "windows" {
-		return QQPlatformNative
-	}
-	return QQPlatformOneBot
-}
-
 func validateListenAddress(value, key string) error {
 	host, port, err := net.SplitHostPort(strings.TrimSpace(value))
 	if err != nil {
@@ -1093,22 +1013,6 @@ func validateURL(value, key string, schemes ...string) error {
 	return nil
 }
 
-func validateLoopbackAddress(value, key string) error {
-	host, _, err := net.SplitHostPort(strings.TrimSpace(value))
-	if err != nil {
-		return fmt.Errorf("%s must be host:port: %w", key, err)
-	}
-	host = strings.Trim(host, "[]")
-	if strings.EqualFold(host, "localhost") {
-		return nil
-	}
-	ip := net.ParseIP(host)
-	if ip == nil || !ip.IsLoopback() {
-		return fmt.Errorf("%s must bind to loopback", key)
-	}
-	return nil
-}
-
 func contains(values []string, target string) bool {
 	for _, value := range values {
 		if value == target {
@@ -1128,17 +1032,6 @@ func normalizeOneBotTransport(value string) string {
 		return "http_sse"
 	case "reverse_http", "reverse-http", "http_client", "http-client":
 		return "reverse_http"
-	default:
-		return strings.ToLower(strings.TrimSpace(value))
-	}
-}
-
-func normalizeQQPlatform(value string) string {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "native", "qqnt", "qq-native":
-		return QQPlatformNative
-	case "onebot", "onebot11", "ob11", "qq-onebot":
-		return QQPlatformOneBot
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}

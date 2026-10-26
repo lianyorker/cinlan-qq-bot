@@ -22,8 +22,7 @@ COPY --from=build /out/cinlan-qq-bot /usr/local/bin/cinlan-qq-bot
 RUN mkdir -p /app/data \
     && chown -R app:app /app
 
-ENV QQ_PLATFORM=onebot \
-    HTTP_LISTEN_ADDR=:8080
+ENV HTTP_LISTEN_ADDR=:8080
 
 USER app
 EXPOSE 8080

@@ -1,34 +1,32 @@
 # Cinlan QQ Bot
 
-`cinlan-qq-bot` 是面向个人 QQ 账号的拟人化群聊/私聊运行时：按绑定挂人格（persona）、长期记忆、知识库和工具，可扮演陪伴、客服等多种角色。默认主链直接加载到官方 QQNT，不要求安装、启动或运行 NapCat/AstrBot。
+`cinlan-qq-bot` 是面向个人 QQ 账号的拟人化群聊/私聊运行时：按绑定挂人格（persona）、长期记忆、知识库和工具，可扮演陪伴、客服等多种角色。QQ 通道经由外部 OneBot 11 服务（如 NapCat）接入。
 
 ```text
-Official QQNT
-  -> Cinlan loader + hook
-  -> Cinlan QQNT runtime (runtime.cjs)
-  <-> authenticated loopback IPC
+OneBot 11 服务 (NapCat / Lagrange / ...)
+  <-> forward_ws / http_sse / reverse_ws / reverse_http
   -> Cinlan Go Agent runtime
   -> plugin / session / RAG / MCP / subagent / provider
 ```
 
-loader、hook、IPC、QQNT adapter 和 Agent runtime 均位于本目录。NapCatQQ/AstrBot 只用于功能调研和公开接口行为对照，其源码不会被打包或作为运行依赖。
+OneBot adapter 和 Agent runtime 均位于本目录，QQ 协议栈由外部 OneBot 服务负责。
+
+> 曾有的 `qq-native` 通道（注入官方 QQNT 客户端 + Rust loader + JS runtime）已退役移除：维护成本高且功能覆盖不完整。历史上依赖它的配置（`QQ_PLATFORM=native`、`QQNT_*`）不再生效。
 
 ## 架构
 
 ### 运行链路
 
 ```text
-┌────────────────────────── Windows ──────────────────────────┐
-│  官方 QQNT (QQ.exe)                                          │
-│    └─ cinlan-qq-loader.exe 以 suspended 启动 QQ，注入 hook    │
-│         └─ wrapper.node -> runtime/qqnt/runtime.cjs          │
-│              └─ QQNT adapter：消息事件/发送动作转统一协议      │
-│                   └─ loopback IPC (token 鉴权, 127.0.0.1)    │
-│                        └─ Go Agent runtime (cinlan-qq-bot)   │
-└──────────────────────────────────────────────────────────────┘
+┌──────────────────── 任意 OS ────────────────────┐
+│  NapCat / 其它 OneBot 11 实现                    │
+│    └─ WebSocket / HTTP 连接                      │
+│         └─ Go Agent runtime (cinlan-qq-bot)      │
+│              └─ 消息事件/发送动作统一协议          │
+└──────────────────────────────────────────────────┘
 ```
 
-OneBot 兼容模式下，Go runtime 直接连接外部 OneBot 11 服务，不经过 loader/hook。
+Go runtime 直接连接外部 OneBot 11 服务（默认 forward_ws，也支持 reverse_ws / http_sse / reverse_http 和多账号）。
 
 ### 目录结构
 
@@ -36,7 +34,7 @@ OneBot 兼容模式下，Go runtime 直接连接外部 OneBot 11 服务，不经
 cinlan-qq-bot/
 ├─ cmd/                  # 入口 main
 ├─ internal/             # Go 核心代码
-│  ├─ platform/          # 平台适配层：native QQNT adapter + OneBot adapter
+│  ├─ platform/          # 平台适配层：OneBot adapter
 │  ├─ message/           # 统一 MessageChain 与组件转换
 │  ├─ pipeline/          # 有序消息流水线编排
 │  ├─ bot/               # 业务编排、白名单、唤醒与回复策略
@@ -54,9 +52,6 @@ cinlan-qq-bot/
 │  ├─ cron/              # 定时通知任务
 │  ├─ security/          # 危险请求指纹与防护
 │  └─ config/ status/    # 配置加载与健康状态
-├─ runtime/
-│  ├─ loader/            # Rust：QQ 启动与 hook 注入
-│  └─ qqnt/              # JS：QQNT main process 内的 runtime.cjs
 ├─ scripts/              # 构建、启动、发布与检查脚本
 ├─ examples/             # Binding、Persona、插件等示例配置
 └─ docs/                 # 功能与部署文档
@@ -69,24 +64,17 @@ wake -> security -> command -> session -> attention
      -> rate limit -> plugin -> agent -> decorate -> respond
 ```
 
-各阶段职责见 [docs/原生运行时.md](docs/原生运行时.md)，内部核查记录见
+各阶段职责见 [docs/OneBot传输.md](docs/OneBot传输.md)，内部核查记录见
 [docs/dev/完整性审计.md](docs/dev/完整性审计.md)。
 
-## Native Runtime
+## QQ 通道（OneBot 11）
 
-当前 `qq-native` v1 已实现：
-
-- 自动发现 Windows QQNT 安装目录和最高 `buildVersion`。
-- suspended launch + Cinlan 自有 hook，不改写 QQ 安装目录。
-- 在 QQNT main process 中加载 `wrapper.node`，复用官方 UI 的登录会话。
-- QQNT runtime 与 Go 进程之间的协议版本、token 鉴权、帧上限、握手超时和 action correlation。
-- QQ 登录历史同步过滤，以及 wrapper/session attach 错误回传。
+- 四种 transport：forward_ws（默认）、reverse_ws、http_sse、reverse_http。
+- 多账号聚合：`ONEBOT_ACCOUNTS_FILE` 声明多个 OneBot 连接，消息按账号路由。
 - 群聊/私聊消息事件、文本和常见富消息的统一 `MessageChain` 转换。
-- 群聊/私聊文本和本地图片发送，以及对当前 runtime 消息缓存中消息的引用回复。
-- AVSDK 只读事件观测；通话事件与客服消息隔离，不会触发 Agent 回复。
+- 群聊/私聊文本、图片、语音、文件发送，引用回复、表情回应、戳一戳、撤回。
+- 进退群/私聊 notice、好友/群欢迎、好友请求自动通过等会话事件。
 - `/healthz`、`/readyz`、`/status` 和 Admin API。
-
-OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_PLATFORM=onebot` 才会启用。
 
 ## Agent Runtime
 
@@ -124,19 +112,18 @@ OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_
 要求：
 
 - 可访问的 Agent API。
-- Windows 10/11 x64 原生模式需要已安装官方 QQNT。
-- 首次构建 Windows native 包需要 Go 和 Rust；Linux/macOS OneBot 包只需要 Go。
+- 一个已登录的 OneBot 11 服务（推荐 NapCat）。
+- 构建需要 Go（无其它原生依赖）。
 
 ### 平台支持
 
-| 平台 | 核心 Go bot | QQNT native | OneBot | 发布包 |
-|---|---|---|---|---|
-| Windows 10/11 x64 | 支持 | 支持，唯一 native 平台 | 支持 | `windows-amd64` |
-| Linux amd64/arm64 | 支持 | 不支持 | 支持，需外部 OneBot 11 服务 | `linux-amd64` / `linux-arm64` |
-| macOS amd64/arm64 | 支持 | 不支持 | 支持，需外部 OneBot 11 服务 | `darwin-amd64` / `darwin-arm64` |
+| 平台 | 核心 Go bot | OneBot | 发布包 |
+|---|---|---|---|
+| Windows 10/11 x64 | 支持 | 支持，需外部 OneBot 11 服务 | `windows-amd64` |
+| Linux amd64/arm64 | 支持 | 支持，需外部 OneBot 11 服务 | `linux-amd64` / `linux-arm64` |
+| macOS amd64/arm64 | 支持 | 支持，需外部 OneBot 11 服务 | `darwin-amd64` / `darwin-arm64` |
 
-Linux 和 macOS 包只包含核心 Go bot，不包含 QQNT loader、hook 或自动登录能力，
-必须设置 `QQ_PLATFORM=onebot`。Linux 解压后可直接执行 `chmod +x cinlan-qq-bot && ./cinlan-qq-bot`；
+所有平台均通过外部 OneBot 11 服务接入 QQ。Linux 解压后可直接执行 `chmod +x cinlan-qq-bot && ./cinlan-qq-bot`；
 Docker 镜像默认使用 OneBot 模式并监听 `:8080`，可通过环境变量覆盖配置。
 
 准备配置：
@@ -150,18 +137,13 @@ notepad .env
 至少修改：
 
 ```dotenv
-QQ_PLATFORM=native
 QQ_GROUP_ALLOWLIST=123456789
 QQ_PRIVATE_ALLOWLIST=123456789
 AGENT_API_MODE=custom
 AGENT_API_URL=http://127.0.0.1:9000/v1/qq/reply
 ADMIN_API_TOKEN=<strong-random-value>
-```
-
-如果自动发现不到 QQ，显式设置：
-
-```dotenv
-QQNT_PATH=D:\SoftWare\Tencent\QQNT\QQ.exe
+ONEBOT_WS_URL=ws://127.0.0.1:3001
+ONEBOT_ACCESS_TOKEN=<token>
 ```
 
 首次构建：
@@ -170,7 +152,7 @@ QQNT_PATH=D:\SoftWare\Tencent\QQNT\QQ.exe
 .\scripts\build.ps1
 ```
 
-启动前必须从托盘完全退出现有 QQ。随后双击 [start.cmd](start.cmd)，或执行：
+启动 NapCat 并确认 QQ 已登录后，双击 [start.cmd](start.cmd)，或执行：
 
 ```powershell
 .\start.cmd
@@ -190,18 +172,8 @@ cmd.exe /k powershell -NoProfile -ExecutionPolicy Bypass -File .\scripts\start.p
 
 1. 读取 `.env`。
 2. 缺少二进制时自动构建。
-3. 检测已运行但未加载 Cinlan runtime 的 QQ。
-4. 启动 Go runtime，再由它启动官方 QQ。
-5. 保留窗口显示错误和日志，不会立即闪退。
-
-QQ 界面出现后按正常方式登录。以下日志表示主链完成：
-
-```text
-QQNT IPC listener ready
-QQNT process launched
-QQNT runtime authenticated
-QQNT runtime status changed state=ready
-```
+3. 启动 Go runtime 并连接配置的 OneBot 11 服务。
+4. 保留窗口显示错误和日志，不会立即闪退。
 
 ## 验证
 
@@ -214,9 +186,9 @@ Invoke-RestMethod http://127.0.0.1:18080/status
 预期：
 
 - `/healthz` 始终返回 `status: ok`。
-- QQNT runtime 登录并附加消息服务后，`/readyz` 返回 `status: ready` 和 `platform_connected: true`。
-- 未登录时 `/readyz` 返回 HTTP 503，这是实际状态，不会伪装为 ready。
-- native 模式下兼容字段 `onebot_connected` 为 `false`，实际适配器名称见 `platform: qq-native`。
+- OneBot 连接建立并登录后，`/readyz` 返回 `status: ready` 和 `platform_connected: true`。
+- 未连接时 `/readyz` 返回 HTTP 503，这是实际状态，不会伪装为 ready。
+- 实际适配器名称见 `platform: qq-onebot`。
 
 然后在白名单群发送：
 
@@ -268,14 +240,13 @@ AGENT_MAX_TOOL_ROUNDS=4
 
 | Variable | Default | Meaning |
 |---|---:|---|
-| `QQ_PLATFORM` | `native` | `native` 或 `onebot` |
-| `QQNT_PATH` | auto | 官方 `QQ.exe` 路径 |
-| `QQNT_AUTO_LAUNCH` | `true` | 由 Cinlan loader 启动 QQ |
-| `QQNT_ALLOW_RUNNING` | `false` | 是否允许 QQ 已运行时再启动隔离实例 |
-| `QQNT_IPC_LISTEN_ADDR` | `127.0.0.1:18081` | native runtime loopback IPC |
-| `QQNT_IPC_TOKEN` | generated | 显式 token；留空则每次随机生成 |
-| `QQNT_ACTION_TIMEOUT` | `10s` | native action 超时 |
-| `QQNT_MAX_FRAME_BYTES` | `1048576` | IPC 单帧上限 |
+| `ONEBOT_TRANSPORT` | `forward_ws` | `forward_ws` / `reverse_ws` / `http_sse` / `reverse_http` |
+| `ONEBOT_WS_URL` / `ONEBOT_HTTP_URL` | `ws://127.0.0.1:3001` / `http://127.0.0.1:3000` | OneBot 服务地址 |
+| `ONEBOT_ACCESS_TOKEN` | empty | OneBot 服务访问令牌 |
+| `ONEBOT_ACCOUNTS_FILE` | empty | 多账号声明 JSON；设置后忽略单连接配置 |
+| `QQNT_LOGIN_UIN` | empty | 用于推断本机 QQNT 图片缓存根目录（发送者本地图片路径映射） |
+| `QQNT_IMAGE_ALLOWED_ROOTS` | auto | 允许映射到本地的 QQNT 缓存图片根目录（分号分隔） |
+| `QQNT_IMAGE_MAX_BYTES` | `20971520` | 单张本地图片最大字节数 |
 | `QQ_GROUP_ALLOWLIST` | required | 逗号分隔群号；`*` 表示所有群 |
 | `QQ_PRIVATE_ALLOWLIST` | empty | 逗号分隔私聊 QQ 号；空值禁用私聊，`*` 表示所有私聊 |
 | `QQ_REQUIRE_MENTION` | `true` | 是否必须 `@机器人` |
@@ -330,7 +301,7 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `GROUP_WELCOME_GROUPS` / `GROUP_WELCOME_IMAGE` | empty | 群欢迎生效群号与配图 |
 | `WELCOME_FILE` | `data/welcome.json` | JSON 欢迎语配置，优先于 env（非空才生效） |
 
-完整默认值见 [.env.example](.env.example)，native 协议和启动细节见 [docs/原生运行时.md](docs/原生运行时.md)。
+完整默认值见 [.env.example](.env.example)，OneBot 网络组合见 [docs/OneBot传输.md](docs/OneBot传输.md)。
 群聊与私聊可在 Chat Binding 中选择 `disabled`、`mention_only`、`always` 或 `ai_decide`；
 结构化路由范围、隐私默认值和兼容规则见 [docs/会话隔离.md](docs/会话隔离.md)。
 自然但不冒充真人的 Persona 模板见 [docs/人格模板.md](docs/人格模板.md)。
@@ -348,18 +319,9 @@ AGENT_MAX_TOOL_ROUNDS=4
   [docs/dev/上游迁移矩阵.md](docs/dev/上游迁移矩阵.md)：
   NapCatQQ/AstrBot clean-room 对照记录（无运行时依赖）。
 
-## OneBot 兼容模式
+## OneBot 连接
 
-已有 OneBot 服务时：
-
-```dotenv
-QQ_PLATFORM=onebot
-ONEBOT_TRANSPORT=forward_ws
-ONEBOT_WS_URL=ws://127.0.0.1:3001
-ONEBOT_ACCESS_TOKEN=<token>
-```
-
-四种网络组合和多账号配置见 [docs/OneBot传输.md](docs/OneBot传输.md)。`compose.yaml` 也是 OneBot 兼容部署，不属于默认 native 主链。
+四种网络组合和多账号配置见 [docs/OneBot传输.md](docs/OneBot传输.md)。`compose.yaml` 是 OneBot 部署示例。
 
 ## 本地构建
 
@@ -372,17 +334,12 @@ ONEBOT_ACCESS_TOKEN=<token>
 ```powershell
 go test ./...
 go vet ./...
-cargo test --manifest-path runtime/loader/Cargo.toml
-node --check runtime/qqnt/load-cinlan.cjs
-node --check runtime/qqnt/runtime.cjs
 ```
 
 产物：
 
 ```text
 bin/cinlan-qq-bot.exe
-bin/cinlan-qq-loader.exe
-bin/cinlan-qq-hook.dll
 ```
 
 ## 发布打包
@@ -405,23 +362,19 @@ dist/cinlan-qq-bot-0.3.0-darwin-arm64.zip
 dist/SHA256SUMS-0.3.0.txt
 ```
 
-Windows 包包含 Go runtime、QQNT loader、hook 和 `runtime/qqnt`。Linux 和 macOS 包
-是纯 Go OneBot 包，不包含 Windows 原生组件。解压后执行 `chmod +x cinlan-qq-bot`，
-将 `.env` 的 `QQ_PLATFORM` 改为 `onebot`，配置外部 OneBot 11 服务后运行：
+所有发布包均为纯 Go + OneBot 接入，不包含原生组件。Linux 和 macOS 解压后执行 `chmod +x cinlan-qq-bot`，
+配置外部 OneBot 11 服务后运行：
 
 ```sh
 ./cinlan-qq-bot
 ```
 
 打包脚本固定使用公开默认构建，不读取本地业务 build tag；执行前会运行
-`check-public-release.ps1`、Go tests、`go vet` 和 QQNT runtime tests。
+`check-public-release.ps1`、Go tests 和 `go vet`。
 
 ## 当前边界
 
-- native v1 支持文本、群成员 `@`、即时引用回复、私聊普通文件上传、本地 JPEG/PNG/GIF 主动发送，以及把收到的图片交给支持视觉的 OpenAI-compatible 模型。
-- AVSDK listener 只上报固定格式摘要：回调名、动作码候选、参数类型、长度和 SHA256；不转发原始 Buffer，事件不进入普通消息流水线。
-- QQ 视频接听、拒绝、挂断和媒体收发尚未开放；动作码必须通过白名单私聊实机采样确认后才能实现，模型永远不能主动拨号。
-- 主动语音、视频及群文件发送尚未开放；收到的视频目前只保留消息组件，不做视频理解。
-- QQNT 更新可能改变 native interface；runtime 会保持 `/readyz` 为 503 并输出实际错误，需按版本做兼容验证。
-- 已经普通方式启动的 QQ 无法补做启动期 package redirect。默认要求先退出 QQ，再运行 `start.cmd`。
-- 官方 QQ 登录、账号风控和协议实现仍由官方 QQNT 提供；Cinlan 不复制 QQ 协议栈。
+- 通过 OneBot 11 支持文本、群成员 `@`、即时引用回复、图片/语音/文件收发、表情回应、戳一戳与撤回等能力（取决于 OneBot 实现）。
+- 收到的图片可交给支持视觉的 OpenAI-compatible 模型；发送者侧 QQNT 缓存路径按 `QQNT_IMAGE_*` 白名单策略映射到本地。
+- 收到的视频目前只保留消息组件，不做视频理解；红包收发不支持。
+- QQ 登录、账号风控和协议实现由外部 OneBot 服务提供；Cinlan 不复制 QQ 协议栈。

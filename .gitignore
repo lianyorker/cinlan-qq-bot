@@ -20,7 +20,6 @@
 /cinlan-qq-bot.exe
 /cinlan-qq-bot-linux
 coverage.out
-runtime/loader/target/
 /notes/
 
 /_*
@@ -37,5 +36,5 @@ affinity-prompts-patch.json
 /cinlan-qq-bot-windows-amd64.exe
 cinlan-qq-bot-*-amd64
 
-# ÄÚ²¿¿ª·¢ÎÄµµ£¨agent ÌáÊ¾´Ê/ÊµÊ©·½°¸/Éó¼Æ£¬²»½ø¹«¿ª²Ö¿â£©
+# ï¿½Ú²ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Äµï¿½ï¿½ï¿½agent ï¿½ï¿½Ê¾ï¿½ï¿½/ÊµÊ©ï¿½ï¿½ï¿½ï¿½/ï¿½ï¿½Æ£ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½ï¿½Ö¿â£©
 docs/dev/

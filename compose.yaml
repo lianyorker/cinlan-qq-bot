@@ -29,7 +29,6 @@ services:
     env_file:
       - .env
     environment:
-      QQ_PLATFORM: onebot
       ONEBOT_WS_URL: "ws://napcat:3001"
       HTTP_LISTEN_ADDR: ":8080"
     depends_on:

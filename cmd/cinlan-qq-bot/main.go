@@ -30,7 +30,6 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	onebotplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/onebot"
-	qqntplatform "github.com/lianyorker/cinlan-qq-bot/internal/platform/qqnt"
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
 	"github.com/lianyorker/cinlan-qq-bot/internal/proactive"
 	"github.com/lianyorker/cinlan-qq-bot/internal/provider"
@@ -179,37 +178,7 @@ func main() {
 		platform.Adapter
 		bot.Sender
 	}
-	switch cfg.QQPlatform {
-	case config.QQPlatformNative:
-		var imageSendRoots []string
-		if imageGenerator != nil {
-			imageSendRoots = []string{imageGenerator.OutputDir()}
-		}
-		nativeAdapter, openErr := qqntplatform.NewAdapter(qqntplatform.Config{
-			ListenAddr:       cfg.QQNTIPCListenAddr,
-			Token:            cfg.QQNTIPCToken,
-			ActionTimeout:    cfg.QQNTActionTTL,
-			HandshakeTimeout: cfg.QQNTHandshakeTTL,
-			MaxFrameBytes:    cfg.QQNTMaxFrameBytes,
-			AutoLaunch:       cfg.QQNTAutoLaunch,
-			AllowRunning:     cfg.QQNTAllowRunning,
-			AutoAcceptFriend: cfg.QQNTAutoAcceptFriend,
-			Headless:         cfg.QQNTHeadless,
-			QQExecutable:     cfg.QQNTPath,
-			LoaderPath:       cfg.QQNTLoaderPath,
-			HookPath:         cfg.QQNTHookPath,
-			LoadPath:         cfg.QQNTLoadPath,
-			RuntimePath:      cfg.QQNTRuntimePath,
-			PatchPackagePath: cfg.QQNTPatchPackagePath,
-			ImageSendRoots:   imageSendRoots,
-			ImageMaxBytes:    cfg.ImageMaxBytes,
-		}, logger)
-		if openErr != nil {
-			logger.Error("failed to configure QQNT runtime", "error", openErr)
-			os.Exit(2)
-		}
-		qqAdapter = nativeAdapter
-	case config.QQPlatformOneBot:
+	{
 		if cfg.OneBotAccountsFile != "" {
 			multiAdapter, openErr := onebotplatform.OpenMulti(
 				cfg.OneBotAccountsFile,
@@ -251,9 +220,6 @@ func main() {
 			}
 			qqAdapter = oneBotAdapter
 		}
-	default:
-		logger.Error("unsupported QQ platform", "platform", cfg.QQPlatform)
-		os.Exit(2)
 	}
 	scheduler, err := cron.Open(qqAdapter, logger, cfg.CronStorePath)
 	if err != nil {
@@ -545,9 +511,6 @@ func main() {
 	// Ambient opener: the free-range piece — persona may speak first in a
 	// quiet group. Gates: QQ_PROACTIVE, notify switch, mute, sleep window.
 	platformName := platform.PlatformQQOneBot
-	if cfg.QQPlatform == "qqnt" {
-		platformName = platform.PlatformQQNative
-	}
 	// QQ_PROACTIVE_GROUPS (optional) hard-limits which bound groups get
 	// proactive openers; unset means every bound group may.
 	var proactiveAllow func(string) bool
@@ -811,7 +774,6 @@ func main() {
 	logger.Info(
 		"cinlan qq bot starting",
 		"agent_mode", cfg.AgentMode,
-		"qq_platform", cfg.QQPlatform,
 		"onebot_transport", cfg.OneBotTransport,
 		"onebot_accounts_file", cfg.OneBotAccountsFile,
 		"group_allowlist_size", cfg.GroupAllowlist.Size(),
@@ -831,8 +793,7 @@ func main() {
 		"providers_file", cfg.ProvidersFile,
 		"admin_api_configured", cfg.AdminAPIToken != "",
 	)
-	if cfg.QQPlatform == config.QQPlatformOneBot &&
-		cfg.OneBotAccountsFile == "" &&
+	if cfg.OneBotAccountsFile == "" &&
 		cfg.OneBotAccessToken == "" {
 		logger.Warn("ONEBOT_ACCESS_TOKEN is empty; use a token unless OneBot is strictly isolated")
 	}

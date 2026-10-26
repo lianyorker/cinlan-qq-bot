@@ -56,7 +56,7 @@ func TestDeliverFileRoutesGroupRequestToPrivateAndSendsConfiguredFile(t *testing
 	groupResult, err := definition.Handler(context.Background(), tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"SQL"}`),
 		Actor: tool.Actor{
-			Platform:  "qq-native",
+			Platform:  "qq-onebot",
 			ChatType:  platform.ChatGroup,
 			ChatID:    "20000001",
 			SelfID:    "10000001",
@@ -84,7 +84,7 @@ func TestDeliverFileRoutesGroupRequestToPrivateAndSendsConfiguredFile(t *testing
 	privateCall := tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"数据库脚本"}`),
 		Actor: tool.Actor{
-			Platform:  "qq-native",
+			Platform:  "qq-onebot",
 			ChatType:  platform.ChatPrivate,
 			ChatID:    "10000002",
 			SelfID:    "10000001",
@@ -135,7 +135,7 @@ func TestDeliverFileGuidesGroupWhenPrivateSendFails(t *testing.T) {
 	result, err := definition.Handler(context.Background(), tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql"}`),
 		Actor: tool.Actor{
-			Platform:  platform.PlatformQQNative,
+			Platform:  platform.PlatformQQOneBot,
 			ChatType:  platform.ChatGroup,
 			ChatID:    "20000001",
 			SelfID:    "10000001",
@@ -161,7 +161,7 @@ func TestDeliverFileGroupGuideWithoutUserIDCanRetry(t *testing.T) {
 	call := tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql"}`),
 		Actor: tool.Actor{
-			Platform:  platform.PlatformQQNative,
+			Platform:  platform.PlatformQQOneBot,
 			ChatType:  platform.ChatGroup,
 			ChatID:    "20000001",
 			SelfID:    "10000001",
@@ -188,7 +188,7 @@ func TestDeliverFileRestrictsGroupRequestToConfiguredGroup(t *testing.T) {
 	allowed := tool.Call{
 		Arguments: json.RawMessage(`{"file_id":"sql"}`),
 		Actor: tool.Actor{
-			Platform:  platform.PlatformQQNative,
+			Platform:  platform.PlatformQQOneBot,
 			ChatType:  platform.ChatGroup,
 			ChatID:    "20000001",
 			UserID:    "10000002",
@@ -276,7 +276,7 @@ func TestDeliverFileChecksPrivateUserGroupMembership(t *testing.T) {
 			_, err := definition.Handler(context.Background(), tool.Call{
 				Arguments: json.RawMessage(`{"file_id":"sql"}`),
 				Actor: tool.Actor{
-					Platform:  platform.PlatformQQNative,
+					Platform:  platform.PlatformQQOneBot,
 					ChatType:  platform.ChatPrivate,
 					ChatID:    "10000002",
 					UserID:    "10000002",

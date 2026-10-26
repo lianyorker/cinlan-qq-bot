@@ -1,6 +1,6 @@
 # OneBot 传输层
 
-这是可选兼容层。先设置 `QQ_PLATFORM=onebot`；默认 `QQ_PLATFORM=native` 不使用任何 OneBot 服务。
+OneBot 11 是 QQ 接入的唯一通道，连接外部服务（如 NapCat）。
 
 `cinlan-qq-bot` 支持四种 OneBot 11 网络组合。单账号使用环境变量，多账号使用
 [`examples/onebot-accounts.json`](../examples/onebot-accounts.json)。

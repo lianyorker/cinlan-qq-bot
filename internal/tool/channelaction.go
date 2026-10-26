@@ -74,8 +74,7 @@ var safeChannelActions = map[string]bool{
 	"api_live_rank": true, "api_live_ticket_rank": true,
 	"live_status": true,
 	// harmless writes
-	"send_like":      true, // profile page like — no content side-effects
-	"runtime_status": true,
+	"send_like": true, // profile page like — no content side-effects
 }
 
 // selfChannelActions mutate ONLY the bot's own account — profile fields

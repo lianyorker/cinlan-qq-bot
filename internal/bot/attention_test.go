@@ -341,8 +341,8 @@ func TestMentionedImageReachesMultimodalAgentRequest(t *testing.T) {
 	sender := &fakeSender{}
 	service := smartAttentionService(t, agentClient, sender)
 	event := platform.Event{
-		ID:          "qq-native:image",
-		Platform:    platform.PlatformQQNative,
+		ID:          "qq-onebot:image",
+		Platform:    platform.PlatformQQOneBot,
 		PostType:    "message",
 		MessageType: platform.ChatGroup,
 		MessageID:   "image",
@@ -491,8 +491,8 @@ func platformEvent(messageID, text string, mentioned bool) platform.Event {
 	}
 	chain = append(chain, message.Text(text))
 	return platform.Event{
-		ID:          "qq-native:" + messageID,
-		Platform:    platform.PlatformQQNative,
+		ID:          "qq-onebot:" + messageID,
+		Platform:    platform.PlatformQQOneBot,
 		PostType:    "message",
 		MessageType: platform.ChatGroup,
 		MessageID:   messageID,

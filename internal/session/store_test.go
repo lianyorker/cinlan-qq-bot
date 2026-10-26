@@ -41,7 +41,7 @@ func TestEncryptedSQLitePersistsWithoutPlaintext(t *testing.T) {
 	if err != nil {
 		t.Fatalf("OpenEncryptedSQLite() error = %v", err)
 	}
-	scope := "qq-native:self:10001:group:30003"
+	scope := "qq-onebot:self:10001:group:30003"
 	store.AddExchange(scope, "sensitive question", "private answer")
 	store.ApplyCompression(scope, "encrypted summary", "learned preference", 0)
 	persona := "private-persona"
@@ -92,7 +92,7 @@ func TestEncryptedSQLiteMigratesAndArchivesLegacyJSON(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Open() legacy error = %v", err)
 	}
-	legacy.AddExchange("qq-native:self:1:group:2", "legacy question", "legacy answer")
+	legacy.AddExchange("qq-onebot:self:1:group:2", "legacy question", "legacy answer")
 	if err := legacy.PersistenceError(); err != nil {
 		t.Fatalf("legacy PersistenceError() = %v", err)
 	}
@@ -109,7 +109,7 @@ func TestEncryptedSQLiteMigratesAndArchivesLegacyJSON(t *testing.T) {
 		t.Fatalf("OpenEncryptedSQLite() migration error = %v", err)
 	}
 	defer store.Close()
-	history, _ := store.Snapshot("qq-native:self:1:group:2")
+	history, _ := store.Snapshot("qq-onebot:self:1:group:2")
 	if len(history) != 2 || !strings.HasSuffix(history[1].Content, "legacy answer") {
 		t.Fatalf("migrated history = %#v", history)
 	}

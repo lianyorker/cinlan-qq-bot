@@ -24,14 +24,14 @@ func TestBindingResourcesAreNormalizedAndIsolated(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewRegistry() error = %v", err)
 	}
-	rule, ok := registry.Match("qq-native", "1", "group", "2")
+	rule, ok := registry.Match("qq-onebot", "1", "group", "2")
 	if !ok || len(rule.Tools) != 1 || rule.Tools[0] != "lookup" ||
 		len(rule.KnowledgeBases) != 1 || !*rule.LearningEnabled ||
 		rule.SmartAttention == nil || !*rule.SmartAttention ||
 		rule.AllowLinks == nil || *rule.AllowLinks {
 		t.Fatalf("matched rule = %#v", rule)
 	}
-	if _, ok := registry.Match("qq-native", "1", "group", "3"); ok {
+	if _, ok := registry.Match("qq-onebot", "1", "group", "3"); ok {
 		t.Fatal("binding leaked into another group")
 	}
 }
@@ -50,14 +50,14 @@ func TestBindingMatchesMultipleChatsAndOptionalUsers(t *testing.T) {
 		t.Fatal(err)
 	}
 	for _, chatID := range []string{"10", "20"} {
-		if _, ok := registry.MatchActor("qq-native", "1", "group", chatID, "100", nil); !ok {
+		if _, ok := registry.MatchActor("qq-onebot", "1", "group", chatID, "100", nil); !ok {
 			t.Fatalf("chat %s did not match", chatID)
 		}
 	}
-	if _, ok := registry.MatchActor("qq-native", "1", "group", "30", "100", nil); ok {
+	if _, ok := registry.MatchActor("qq-onebot", "1", "group", "30", "100", nil); ok {
 		t.Fatal("binding leaked into an unbound chat")
 	}
-	if _, ok := registry.MatchActor("qq-native", "1", "group", "10", "300", nil); ok {
+	if _, ok := registry.MatchActor("qq-onebot", "1", "group", "10", "300", nil); ok {
 		t.Fatal("binding ignored user_ids")
 	}
 	listed := registry.List()
@@ -82,7 +82,7 @@ func TestBindingMatchesAllUsersInConfiguredChats(t *testing.T) {
 	}
 	for _, userID := range []string{"100", "200"} {
 		if _, ok := registry.MatchActor(
-			"qq-native",
+			"qq-onebot",
 			"1",
 			"group",
 			"20",
@@ -107,7 +107,7 @@ func TestBindingSupportsDirectUserSelector(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, ok := registry.MatchActor(
-		"qq-native",
+		"qq-onebot",
 		"1",
 		"private",
 		"arbitrary-chat",
@@ -117,7 +117,7 @@ func TestBindingSupportsDirectUserSelector(t *testing.T) {
 		t.Fatal("direct user binding did not match")
 	}
 	if _, ok := registry.MatchActor(
-		"qq-native",
+		"qq-onebot",
 		"1",
 		"private",
 		"arbitrary-chat",
@@ -140,7 +140,7 @@ func TestReplyPolicyNormalizesAndSupportsPrivateAIDecision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	rule, ok := registry.Match("qq-native", "1", "private", "2")
+	rule, ok := registry.Match("qq-onebot", "1", "private", "2")
 	if !ok || rule.ReplyPolicy == nil ||
 		rule.ReplyPolicy.Mode != ReplyModeAIDecide ||
 		rule.ReplyPolicy.OnError != ReplyOnErrorIgnore ||

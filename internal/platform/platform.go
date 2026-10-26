@@ -8,7 +8,6 @@ import (
 
 const (
 	PlatformQQOneBot = "qq-onebot"
-	PlatformQQNative = "qq-native"
 	ChatGroup        = "group"
 	ChatPrivate      = "private"
 )

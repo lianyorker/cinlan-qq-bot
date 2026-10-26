@@ -26,7 +26,7 @@ func TestLoadFilePreservesSmartAttention(t *testing.T) {
 	if err != nil {
 		t.Fatalf("LoadFile: %v", err)
 	}
-	rule, ok := registry.Match("qq-native", "1", "group", "2")
+	rule, ok := registry.Match("qq-onebot", "1", "group", "2")
 	if !ok || rule.SmartAttention == nil || !*rule.SmartAttention {
 		t.Fatalf("loaded rule = %#v", rule)
 	}
@@ -51,7 +51,7 @@ func TestLoadFileSupportsMultipleChatAndUserSelectors(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, ok := registry.MatchActor("qq-native", "1", "group", "3", "9", nil); !ok {
+	if _, ok := registry.MatchActor("qq-onebot", "1", "group", "3", "9", nil); !ok {
 		t.Fatal("multi-selector binding did not match")
 	}
 }

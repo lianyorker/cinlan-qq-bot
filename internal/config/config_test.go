@@ -136,43 +136,11 @@ func TestLoadCustomAgentConfig(t *testing.T) {
 			cfg.SecurityStorePath,
 		)
 	}
-	if cfg.QQPlatform != QQPlatformNative {
-		t.Fatalf("QQPlatform = %q, want native", cfg.QQPlatform)
-	}
 	if cfg.HTTPListenAddr != "127.0.0.1:18080" {
 		t.Fatalf("HTTPListenAddr = %q, want loopback default", cfg.HTTPListenAddr)
 	}
 	if !cfg.GroupAtSender {
 		t.Fatal("GroupAtSender = false, want true")
-	}
-}
-
-func TestNativeHeadlessFlags(t *testing.T) {
-	clearConfigEnvironment(t)
-	t.Setenv("QQ_GROUP_ALLOWLIST", "123")
-	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
-	base, err := Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if base.QQNTHeadless || base.QQNTAutoAcceptFriend {
-		t.Fatal("unsafe enabled default")
-	}
-	t.Setenv("QQNT_HEADLESS", "true")
-	t.Setenv("QQNT_AUTO_ACCEPT_FRIEND", "true")
-	t.Setenv("ADMIN_API_TOKEN", "test-token")
-	cfg, err := Load()
-	if err != nil || !cfg.QQNTHeadless || !cfg.QQNTAutoAcceptFriend {
-		t.Fatalf("flags = %#v, %v", cfg, err)
-	}
-	t.Setenv("QQNT_HEADLESS", "invalid")
-	if _, err := Load(); err == nil {
-		t.Fatal("accepted invalid bool")
-	}
-	cfg.AdminAPIToken = ""
-	cfg.QQPlatform = QQPlatformNative
-	if err := cfg.Validate(); err == nil || !strings.Contains(err.Error(), "ADMIN_API_TOKEN") {
-		t.Fatalf("headless without admin token = %v", err)
 	}
 }
 
@@ -248,7 +216,6 @@ func TestLoadReverseWebSocketDoesNotRequireForwardURL(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Setenv("QQ_GROUP_ALLOWLIST", "*")
 	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
-	t.Setenv("QQ_PLATFORM", "onebot")
 	t.Setenv("ONEBOT_TRANSPORT", "reverse_ws")
 	t.Setenv("ONEBOT_WS_URL", "not-used")
 	t.Setenv("ONEBOT_REVERSE_LISTEN_ADDR", "127.0.0.1:3100")
@@ -267,7 +234,6 @@ func TestLoadHTTPSSEUsesHTTPURL(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Setenv("QQ_GROUP_ALLOWLIST", "*")
 	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
-	t.Setenv("QQ_PLATFORM", "onebot")
 	t.Setenv("ONEBOT_TRANSPORT", "http_sse")
 	t.Setenv("ONEBOT_WS_URL", "not-used")
 	t.Setenv("ONEBOT_HTTP_URL", "http://127.0.0.1:3000")
@@ -285,7 +251,6 @@ func TestLoadReverseHTTPUsesHTTPURLAndListener(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Setenv("QQ_GROUP_ALLOWLIST", "*")
 	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
-	t.Setenv("QQ_PLATFORM", "onebot")
 	t.Setenv("ONEBOT_TRANSPORT", "reverse_http")
 	t.Setenv("ONEBOT_HTTP_URL", "http://127.0.0.1:3000")
 	t.Setenv("ONEBOT_REVERSE_LISTEN_ADDR", "127.0.0.1:3100")
@@ -315,40 +280,12 @@ func TestLoadProviderFileDoesNotRequireSingleAgentURL(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsNonLoopbackNativeIPC(t *testing.T) {
-	clearConfigEnvironment(t)
-	t.Setenv("QQ_GROUP_ALLOWLIST", "*")
-	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
-	t.Setenv("QQNT_IPC_LISTEN_ADDR", "0.0.0.0:18081")
-
-	_, err := Load()
-	if err == nil || !strings.Contains(err.Error(), "loopback") {
-		t.Fatalf("Load() error = %v, want loopback error", err)
-	}
-}
-
 func clearConfigEnvironment(t *testing.T) {
 	t.Helper()
 	keys := []string{
 		"HTTP_LISTEN_ADDR",
 		"LOG_LEVEL",
 		"ADMIN_API_TOKEN",
-		"QQ_PLATFORM",
-		"QQNT_PATH",
-		"QQNT_AUTO_LAUNCH",
-		"QQNT_ALLOW_RUNNING",
-		"QQNT_AUTO_ACCEPT_FRIEND",
-		"QQNT_HEADLESS",
-		"QQNT_LOADER_PATH",
-		"QQNT_HOOK_PATH",
-		"QQNT_LOAD_PATH",
-		"QQNT_RUNTIME_PATH",
-		"QQNT_PATCH_PACKAGE_PATH",
-		"QQNT_IPC_LISTEN_ADDR",
-		"QQNT_IPC_TOKEN",
-		"QQNT_ACTION_TIMEOUT",
-		"QQNT_HANDSHAKE_TIMEOUT",
-		"QQNT_MAX_FRAME_BYTES",
 		"QQNT_IMAGE_ALLOWED_ROOTS",
 		"QQNT_IMAGE_MAX_BYTES",
 		"ONEBOT_WS_URL",

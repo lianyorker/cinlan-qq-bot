@@ -10,7 +10,6 @@ $root = Split-Path -Parent $PSScriptRoot
 $dist = Join-Path $root "dist"
 $stageRoot = Join-Path $root ".tmp\release-packages"
 $go = Get-Command go -ErrorAction SilentlyContinue
-$cargo = Get-Command cargo -ErrorAction SilentlyContinue
 $git = Get-Command git -ErrorAction SilentlyContinue
 if (-not $git) {
     $git = @(
@@ -27,9 +26,6 @@ if ($Version -notmatch '^[0-9A-Za-z][0-9A-Za-z._-]{0,63}$') {
 }
 if (-not $go) {
     throw "Go is required to package cinlan-qq-bot."
-}
-if (-not $cargo) {
-    throw "Rust/Cargo is required to package the Windows QQNT loader."
 }
 if (-not $git) {
     throw "Git is required to select public package files."
@@ -101,12 +97,6 @@ try {
         if ($LASTEXITCODE -ne 0) {
             throw "Go vet failed with exit code $LASTEXITCODE."
         }
-        if (Get-Command node -ErrorAction SilentlyContinue) {
-            & node --test runtime\qqnt\runtime.test.cjs
-            if ($LASTEXITCODE -ne 0) {
-                throw "QQNT runtime tests failed with exit code $LASTEXITCODE."
-            }
-        }
     }
 
     New-Item -ItemType Directory -Force -Path $dist | Out-Null
@@ -123,27 +113,11 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 
-    $previousEAP = $ErrorActionPreference
-    $ErrorActionPreference = 'Continue'
-    try {
-        & $cargo.Source build --release --manifest-path runtime\loader\Cargo.toml
-    } finally {
-        $ErrorActionPreference = $previousEAP
-    }
-    if ($LASTEXITCODE -ne 0) {
-        throw "Windows loader build failed with exit code $LASTEXITCODE."
-    }
-
     $windowsName = "cinlan-qq-bot-$Version-windows-amd64"
     $windowsStage = Join-Path $stageRoot $windowsName
     New-Item -ItemType Directory -Force -Path $windowsStage | Out-Null
     Build-GoBinary "windows" "amd64" (Join-Path $windowsStage "cinlan-qq-bot.exe")
-    Copy-Item -LiteralPath runtime\loader\target\release\cinlan-qq-loader.exe `
-        -Destination $windowsStage
-    Copy-Item -LiteralPath runtime\loader\target\release\cinlan_qq_hook.dll `
-        -Destination (Join-Path $windowsStage "cinlan-qq-hook.dll")
     Copy-TrackedFiles $windowsStage @(
-        "runtime/qqnt",
         "start.cmd",
         "scripts/start.ps1"
     )

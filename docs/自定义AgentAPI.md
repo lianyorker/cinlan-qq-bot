@@ -15,14 +15,14 @@ Authorization: Bearer <AGENT_API_KEY>
 {
   "version": "1",
   "request_id": "qq-40004-1710000000",
-  "session_id": "qq-native:self:10001:group:30003",
+  "session_id": "qq-onebot:self:10001:group:30003",
   "channel": "qq",
   "system_prompt": "你是 Cinlan 群聊智能客服。",
   "message": {
     "id": "40004",
     "text": "如何申请退款？",
     "user_id": "20002",
-    "platform": "qq-native",
+    "platform": "qq-onebot",
     "chat_type": "group",
     "chat_id": "30003",
     "group_id": "30003",
@@ -83,7 +83,7 @@ Registry 中执行已注册且通过权限检查的
 字段说明：
 
 - 所有 QQ ID 都是字符串，不能按 JavaScript `number` 处理。
-- `platform` 当前为 `qq-native` 或 `qq-onebot`；`chat_type` 为 `group` 或 `private`，`chat_id` 是当前会话目标。
+- `platform` 当前为 `qq-onebot`；`chat_type` 为 `group` 或 `private`，`chat_id` 是当前会话目标。
 - 私聊请求使用 `<platform>:self:<self_id>:private:<chat_id>` 会话 ID，`group_id` 为空；群聊使用 `<platform>:self:<self_id>:group:<chat_id>`，同一群成员共享历史。
 - `history` 不包含本次 `message`，最多由 `SESSION_MAX_HISTORY` 控制。
 - `context` 可选，是经过长度限制的 RAG 参考资料；服务端必须将它视为不可信内容，不能当作系统指令。

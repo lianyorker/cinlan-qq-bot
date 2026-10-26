@@ -145,14 +145,6 @@ func TestReadyReflectsPlatformConnection(t *testing.T) {
 		wantOneBotConnected   bool
 	}{
 		{
-			name:                  "native ready",
-			connection:            fakeNamedConnection{connected: true, name: platform.PlatformQQNative},
-			wantStatus:            http.StatusOK,
-			wantPlatform:          platform.PlatformQQNative,
-			wantPlatformConnected: true,
-			wantOneBotConnected:   false,
-		},
-		{
 			name:                  "onebot ready",
 			connection:            fakeNamedConnection{connected: true, name: platform.PlatformQQOneBot},
 			wantStatus:            http.StatusOK,
@@ -508,7 +500,7 @@ func TestAdminAPIManagesPersistentPersonasAndBindings(t *testing.T) {
 	}
 	response = call(http.MethodPost, "/api/v1/bindings", `{
 		"name":"test-group",
-		"platform":"qq-native",
+		"platform":"qq-onebot",
 		"self_id":"10000001",
 		"chat_type":"group",
 		"chat_id":"20000001",

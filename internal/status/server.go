@@ -293,8 +293,6 @@ func (s *Server) adminAPI(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, http.StatusOK, s.admin.Accounts.Accounts())
 	case path == "actions":
 		s.callAction(writer, request)
-	case path == "login/qr" || path == "login/status":
-		s.loginAPI(writer, request, path)
 	case path == "tools":
 		if !allowReadMethod(writer, request) {
 			return
