@@ -532,10 +532,11 @@ func stripSpeakerPrefix(text, name string) string {
 // softSplitReply breaks a long single-bubble reply into 1–3 parts at
 // sentence boundaries when the model forgot [[NEXT]]. Most replies must
 // stay whole — a predictable multi-bubble cadence on every reply is the
-// exact tell that makes her read like a bot — so the split chance is
-// length-weighted: short-to-mid replies rarely split, a third bubble is
-// reserved for real essays, and replies under 80 runes never split.
-func softSplitReply(reply string, roll float64) []string {
+// exact tell that makes her read like a bot — so the odds ride her mood
+// (moodAdj, roughly ±0.33 at mood ±100): happy she babbles, sulky she
+// clips it short. Length only sets the loose base band; replies under
+// 80 runes never split and a third bubble is reserved for real essays.
+func softSplitReply(reply string, roll, moodAdj float64) []string {
 	runes := []rune(reply)
 	if len(runes) < 80 {
 		return []string{reply}
@@ -543,11 +544,17 @@ func softSplitReply(reply string, roll float64) []string {
 	var chance float64
 	switch {
 	case len(runes) < 160:
-		chance = 0.35
+		chance = 0.30
 	case len(runes) < 240:
-		chance = 0.60
+		chance = 0.55
 	default:
-		chance = 0.85
+		chance = 0.80
+	}
+	chance += moodAdj
+	if chance < 0.05 {
+		chance = 0.05
+	} else if chance > 0.95 {
+		chance = 0.95
 	}
 	if roll >= chance {
 		return []string{reply}

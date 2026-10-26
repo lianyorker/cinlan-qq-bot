@@ -1611,7 +1611,17 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		} else {
 			planned := planReplyParts(state.reply, s.cfg.MaxReplyChunks)
 			if len(planned) <= 1 {
-				planned = softSplitReply(state.reply, rand.Float64())
+				// Bubble-splitting rides her mood — happy babbles, sulky
+				// clips — so the cadence drifts instead of repeating a
+				// fixed schedule anyone could clock.
+				moodAdj := 0.0
+				if s.cfg.MoodEnabled && s.chatPrefs != nil {
+					moodAdj = float64(s.chatPrefs.MoodScore(
+						state.platform, state.selfID,
+						state.chatType, state.chatID, s.now(),
+					)) / 300.0
+				}
+				planned = softSplitReply(state.reply, rand.Float64(), moodAdj)
 			}
 			var truncated bool
 			parts, truncated = expandReplyParts(

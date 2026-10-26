@@ -105,7 +105,8 @@ OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_
   整理记忆——会经 `feelEvent`/`feelAmbient` 触发人格化内心独白（`[心情]`），
   记入会话历史并注入「你刚刚的真实感受」，使情绪始终依附于亲历事件。
 - 群管理链：Binding 级 `moderation` 配置（patterns 硬匹配 + `llm_check` 模型
-  判官）按阶梯执行撤回/警告/禁言/移出；管理员、群主与白名单豁免。
+  判官）按阶梯执行撤回/警告/禁言/移出；仅白名单（`allowed_users` ∪
+  `BOT_ADMIN_USER_IDS`）豁免，群主/管理员头衔不放权。
   前提是 bot 账号拥有群管理员权限。
 - 群事件静默感知：进退群、戳一戳、撤回、群文件、管理员变动、群名片、
   精华消息等 notice 写入 `[群事件]` 观察，不回复但被问起能对得上。
@@ -114,6 +115,9 @@ OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_
 - 语音往返：OpenAI-compatible `/audio/transcriptions` 入站转写（`ASR_*`），
   Edge/OpenAI/火山 TTS 出站语音回复（`VOICE_*`）。
 - 记忆维护引擎（`QQ_REFLECT_*`）：定期合并事实、折叠印象、写当日日记。
+
+真人化全貌（可塑记忆/情绪/好感度/粘性上下文/主动开口/出站防AI特征）
+见 [docs/真人化技术方案.md](docs/真人化技术方案.md)。
 
 ## 快速启动
 

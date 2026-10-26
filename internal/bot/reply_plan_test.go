@@ -35,7 +35,7 @@ func TestSoftSplitReplySplitsLongAtSentenceBoundary(t *testing.T) {
 	if l := len([]rune(reply)); l < 80 {
 		t.Skipf("test text must reach the split band, got %d runes", l)
 	}
-	parts := softSplitReply(reply, 0.1)
+	parts := softSplitReply(reply, 0.1, 0)
 	if len(parts) != 2 {
 		t.Fatalf("softSplitReply() = %#v, want 2 parts", parts)
 	}
@@ -54,17 +54,17 @@ func TestSoftSplitReplyDoesNotSplitAtCommas(t *testing.T) {
 	// Prompt dumps and list-style text are comma-heavy with no sentence
 	// terminators — cutting at a comma splits the content mid-clause.
 	reply := "提示词给你：蓝发微卷披散的年轻女孩，坐在卧室床边，套着一件宽松微垮的米白色针织毛衣，衣领倾斜露出锁骨"
-	if got := softSplitReply(reply, 0.9); len(got) != 1 {
+	if got := softSplitReply(reply, 0.9, 0); len(got) != 1 {
 		t.Fatalf("comma-only reply should stay whole, got %#v", got)
 	}
 }
 
 func TestSoftSplitReplyKeepsShortAndBoundaryFree(t *testing.T) {
-	if got := softSplitReply("好的知道啦", 0.9); len(got) != 1 {
+	if got := softSplitReply("好的知道啦", 0.9, 0); len(got) != 1 {
 		t.Fatalf("short reply should stay whole, got %#v", got)
 	}
 	long := strings.Repeat("无标点流水", 15)
-	if got := softSplitReply(long, 0.9); len(got) != 1 {
+	if got := softSplitReply(long, 0.9, 0); len(got) != 1 {
 		t.Fatalf("no-boundary reply should stay whole, got %#v", got)
 	}
 }
@@ -74,10 +74,10 @@ func TestSoftSplitReplyJitterKeepsMidWhole(t *testing.T) {
 	if l := len([]rune(reply)); l < 80 || l >= 160 {
 		t.Skipf("test text must stay in the mid band, got %d runes", l)
 	}
-	if got := softSplitReply(reply, 0.9); len(got) != 1 {
+	if got := softSplitReply(reply, 0.9, 0); len(got) != 1 {
 		t.Fatalf("high roll should keep mid reply whole, got %#v", got)
 	}
-	if got := softSplitReply(reply, 0.2); len(got) < 2 {
+	if got := softSplitReply(reply, 0.2, 0); len(got) < 2 {
 		t.Fatalf("low roll should split mid reply, got %#v", got)
 	}
 }
@@ -91,7 +91,7 @@ func TestSoftSplitReplyThirdPartOnLongTail(t *testing.T) {
 	if l := len([]rune(reply)); l < 240 {
 		t.Skipf("test text must reach the third-bubble band, got %d runes", l)
 	}
-	got := softSplitReply(reply, 0.5)
+	got := softSplitReply(reply, 0.5, 0)
 	if len(got) != 3 {
 		t.Fatalf("long tail should reach 3 parts, got %#v", got)
 	}
