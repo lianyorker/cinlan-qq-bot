@@ -203,12 +203,18 @@ type Service struct {
 	spamRepeats      map[string]spamRepeatEntry
 	fatigueMu        sync.Mutex
 	chatFatigue      map[string]fatigueEntry
-	gameMu           sync.Mutex
-	gameInvites      map[string]time.Time
-	chatMu           sync.Mutex
-	chatLocks        map[string]*sync.Mutex
-	recentMu         sync.Mutex
-	recentImages     map[string]recentImage
+	// socialMu guards the neglect tracker: lastSpoke is when she last
+	// said something in the chat, lastNeglect the last time being
+	// ignored cost her mood — a sting per quiet stretch, not per snub.
+	socialMu     sync.Mutex
+	lastSpoke    map[string]time.Time
+	lastNeglect  map[string]time.Time
+	gameMu       sync.Mutex
+	gameInvites  map[string]time.Time
+	chatMu       sync.Mutex
+	chatLocks    map[string]*sync.Mutex
+	recentMu     sync.Mutex
+	recentImages map[string]recentImage
 	// recallText remembers recent inbound texts by sessionID+messageID
 	// so observeGroupMemberNotice can quote what a recall erased.
 	recallText *recallSnippets
@@ -290,6 +296,8 @@ func NewWithRuntime(
 		attentionTimes:     make(map[string][]time.Time),
 		seenMessages:       make(map[string]time.Time),
 		lastActivity:       make(map[string]time.Time),
+		lastSpoke:          make(map[string]time.Time),
+		lastNeglect:        make(map[string]time.Time),
 		providers:          providers,
 		plugins:            plugins,
 		commands:           command.NewRegistry(),
@@ -1155,7 +1163,38 @@ func (s *Service) sendChains(
 			return false
 		}
 		s.stats.replied.Add(1)
+		if index == 0 {
+			s.noteSpoke(chatType, chatID)
+		}
 	}
+	return true
+}
+
+// noteSpoke stamps when she last actually said something in a chat —
+// the neglect check compares inbound traffic against this, not the
+// pipeline's decision to reply (an ignored reply still counts as spoke).
+func (s *Service) noteSpoke(chatType, chatID string) {
+	s.socialMu.Lock()
+	s.lastSpoke[chatType+":"+chatID] = s.now()
+	s.socialMu.Unlock()
+}
+
+// neglected reports whether she spoke recently and this inbound group
+// message — not directed at her — means the room talked past her. Rate-
+// limited: the sting lands once per 45 minutes, not per ignored line.
+func (s *Service) neglected(chatType, chatID string) bool {
+	key := chatType + ":" + chatID
+	now := s.now()
+	s.socialMu.Lock()
+	defer s.socialMu.Unlock()
+	spoke, ok := s.lastSpoke[key]
+	if !ok || now.Sub(spoke) > 20*time.Minute {
+		return false
+	}
+	if dip, ok := s.lastNeglect[key]; ok && now.Sub(dip) < 45*time.Minute {
+		return false
+	}
+	s.lastNeglect[key] = now
 	return true
 }
 

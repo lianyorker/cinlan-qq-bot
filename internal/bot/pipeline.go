@@ -327,6 +327,18 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		} else {
 			moodScore = s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())
 		}
+		// Neglect stings: she spoke moments ago and the room rolled on
+		// without acknowledging it. Small dip, once per quiet stretch —
+		// a person notices being left on read, a bot doesn't.
+		if state.chatType == platform.ChatGroup &&
+			!state.eventMentioned && !s.isPeerSelf(state.userID) &&
+			s.neglected(state.chatType, state.chatID) {
+			if _, err := s.chatPrefs.BumpMood(
+				state.platform, state.selfID, state.chatType, state.chatID, -2, s.now(),
+			); err == nil {
+				s.feelEvent(ctx, state, 0, "刚才说的话好像没人接")
+			}
+		}
 		// mood→action: pushed past -60 the persona clams up on its own —
 		// the safe equivalent of storming off. Reversible, self-expiring.
 		if moodScore <= -60 &&
@@ -1076,6 +1088,12 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			level, percent, hint,
 		)
 		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
+		// Strangers get stranger treatment: warm but brief. Familiarity
+		// earned the rambling; someone she barely knows gets the polite
+		// short version a person actually gives a near-stranger.
+		if state.chatType == platform.ChatGroup && level == affinity.LevelStranger {
+			request.SystemPrompt += "\n\n（和他还不太熟——话短一点、客气一点，别自来熟，也别掏心窝子聊私事）"
+		}
 	}
 	if state.spamPenalty > 0 {
 		request.SystemPrompt += fmt.Sprintf(
