@@ -268,7 +268,7 @@ func QzoneTool(caller ActionCaller, now func() time.Time) tool.Definition {
 					"刚发过说说，%d 分钟后再发", int(wait.Minutes())+1)}, nil
 			}
 			mu.Unlock()
-			_, err := caller.CallFor(ctx, selfID, "send_qzone", map[string]any{
+			_, err := caller.CallFor(ctx, selfID, "send_qzone_msg", map[string]any{
 				"content": content,
 			})
 			if err != nil {

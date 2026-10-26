@@ -26,7 +26,7 @@ import (
 func ChannelActionTool(platforms *platform.Registry, allowedRoot ...string) Definition {
 	return Definition{
 		Name: "channel_action",
-		Description: "调用当前频道平台动作。QQ(OneBot): send_like 点赞、set_qq_profile 改签名、send_qzone 发空间、set_group_ban/kick/admin 群管理、get_login_info/get_stranger_info/get_group_info 查询、upload_group_file 传文件等；douyin: api_user_profile/api_search_*/api_publish_comment/api_dm_send 等。" +
+		Description: "调用当前频道平台动作。QQ(OneBot): send_like 点赞、set_qq_profile 改签名、send_qzone_msg 发空间、set_group_ban/kick/admin 群管理、get_login_info/get_stranger_info/get_group_info 查询、upload_group_file 传文件等；douyin: api_user_profile/api_search_*/api_publish_comment/api_dm_send 等。" +
 			"action=动作名，params=动作参数对象。只读动作对所有人开放，写/管动作仅管理员可用。",
 		Parameters: map[string]any{
 			"type": "object",
@@ -83,8 +83,8 @@ var safeChannelActions = map[string]bool{
 // persona may use them herself without admin rights. Actions that touch
 // a group or another member stay behind the admin gate below.
 var selfChannelActions = map[string]bool{
-	"set_qq_profile": true, // own nickname / signature
-	"send_qzone":     true, // own feed post
+	"set_qq_profile":  true, // own nickname / signature
+	"send_qzone_msg": true, // own feed post
 }
 
 func channelActionHandler(platforms *platform.Registry, allowedRoot []string) Handler {
