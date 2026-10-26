@@ -36,3 +36,6 @@ affinity-prompts-patch.json
 
 /cinlan-qq-bot-windows-amd64.exe
 cinlan-qq-bot-*-amd64
+
+# 内部开发文档（agent 提示词/实施方案/审计，不进公开仓库）
+docs/dev/
