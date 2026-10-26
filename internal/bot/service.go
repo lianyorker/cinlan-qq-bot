@@ -209,6 +209,9 @@ type Service struct {
 	chatLocks        map[string]*sync.Mutex
 	recentMu         sync.Mutex
 	recentImages     map[string]recentImage
+	// recallText remembers recent inbound texts by sessionID+messageID
+	// so observeGroupMemberNotice can quote what a recall erased.
+	recallText *recallSnippets
 
 	flow *pipeline.Pipeline
 
@@ -296,6 +299,7 @@ func NewWithRuntime(
 		maintenancePending: make(map[string]struct{}),
 		memberCache:        make(map[string]memberCacheEntry),
 		atNameCache:        make(map[string]atNameEntry),
+		recallText:         newRecallSnippets(300),
 	}
 	if strings.TrimSpace(cfg.AgentSystemPrompt) != "" {
 		_ = service.personas.Register(persona.Profile{

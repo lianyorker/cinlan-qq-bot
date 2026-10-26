@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/affinity"
@@ -282,6 +283,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		} else {
 			state.sessionID = state.platform + ":self:" + state.selfID + ":group:" + state.chatID
 		}
+		s.recallText.put(state.sessionID+":"+state.messageID, truncateRunes(state.text, 40))
 		s.sessions.AddObservation(state.sessionID, "[其他机器人 "+state.userID+"] "+state.text)
 		state.ignored = true
 		event.Stop("peer_account")
@@ -352,6 +354,12 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.promptText = groupPromptText(state.event.SenderName, state.userID, state.text)
 	}
 	state.rateLimitID = state.platform + ":self:" + state.selfID + ":actor:" + state.userID
+	// Stash the raw text under its message ID — if this message gets
+	// recalled later, the notice handler can quote what disappeared.
+	s.recallText.put(
+		state.sessionID+":"+state.messageID,
+		truncateRunes(state.text, 40),
+	)
 	if state.pokeEvent {
 		// A poke is a tap on the shoulder — mildly pleasant, and she
 		// should remember it happened TO her, not just that it happened.
@@ -1980,6 +1988,46 @@ func factAge(now, at time.Time) string {
 	return at.Format("01-02")
 }
 
+// recallSnippets keeps a bounded window of recent inbound texts keyed
+// by sessionID+messageID so a recall notice can log WHAT was withdrawn
+// instead of only that something was. Global FIFO cap — the window only
+// needs to outlive the typical send→regret→recall gap.
+type recallSnippets struct {
+	mu    sync.Mutex
+	order []string
+	texts map[string]string
+	limit int
+}
+
+func newRecallSnippets(limit int) *recallSnippets {
+	return &recallSnippets{limit: limit, texts: map[string]string{}}
+}
+
+func (c *recallSnippets) put(key, text string) {
+	if c == nil || key == "" || text == "" {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if _, ok := c.texts[key]; !ok {
+		c.order = append(c.order, key)
+	}
+	c.texts[key] = text
+	for len(c.order) > c.limit {
+		delete(c.texts, c.order[0])
+		c.order = c.order[1:]
+	}
+}
+
+func (c *recallSnippets) get(key string) string {
+	if c == nil {
+		return ""
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.texts[key]
+}
+
 // factMoodHint colors a recalled memory with the emotion stamped on it
 // when it formed — a memory made in a fight still tastes bitter on the
 // way back up, a warm one comes back soft.
@@ -2790,10 +2838,18 @@ func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState
 				}
 			}
 		}
+		// state.messageID on a recall notice IS the withdrawn message's
+		// id — the snippet cache still has what it said.
+		snippet := ""
+		if sessionID != "" && state.messageID != "" {
+			if s := s.recallText.get(sessionID + ":" + state.messageID); s != "" {
+				snippet = "（原文：" + s + "）"
+			}
+		}
 		if noticeType == "friend_recall" {
-			s.sessions.AddObservation(sessionID, "[私聊事件] 对方撤回了一条消息")
+			s.sessions.AddObservation(sessionID, "[私聊事件] 对方撤回了一条消息"+snippet)
 		} else {
-			s.sessions.AddObservation(sessionID, "[群事件] "+display+" 撤回了一条消息")
+			s.sessions.AddObservation(sessionID, "[群事件] "+display+" 撤回了一条消息"+snippet)
 		}
 	case "group_upload":
 		// Someone dropped a file into the group library — a person
