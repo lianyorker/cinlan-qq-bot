@@ -46,6 +46,7 @@ type rawProviderConfig struct {
 	AuthScheme   string `json:"auth_scheme"`
 	Timeout      string `json:"timeout"`
 	MaxRetries   *int   `json:"max_retries"`
+	MaxTokens    *int   `json:"max_tokens"`
 	RetryBase    string `json:"retry_base"`
 	RetryMax     string `json:"retry_max"`
 	Enabled      *bool  `json:"enabled"`
@@ -194,6 +195,13 @@ func resolveProviderConfig(raw rawProviderConfig) (Config, error) {
 			return Config{}, fmt.Errorf("provider %q max_retries must be between 0 and 10", name)
 		}
 	}
+	maxTokens := 0
+	if raw.MaxTokens != nil {
+		maxTokens = *raw.MaxTokens
+		if maxTokens < 0 || maxTokens > 128000 {
+			return Config{}, fmt.Errorf("provider %q max_tokens must be between 0 and 128000", name)
+		}
+	}
 	authHeader := strings.TrimSpace(raw.AuthHeader)
 	if authHeader == "" {
 		authHeader = "Authorization"
@@ -225,6 +233,7 @@ func resolveProviderConfig(raw rawProviderConfig) (Config, error) {
 			MaxRetries:   maxRetries,
 			RetryBase:    retryBase,
 			RetryMax:     retryMax,
+			MaxTokens:    maxTokens,
 		},
 	}, nil
 }

@@ -51,6 +51,10 @@ type Config struct {
 	MaxRetries   int
 	RetryBase    time.Duration
 	RetryMax     time.Duration
+	// MaxTokens caps completion length in openai mode when >0. Relays
+	// that default to a small budget get an explicit room for replies;
+	// thinking models otherwise burn the cap and cut mid-sentence.
+	MaxTokens int
 }
 
 type HTTPClient struct {
@@ -116,10 +120,11 @@ type customToolResult struct {
 }
 
 type openAIRequest struct {
-	Model    string           `json:"model"`
-	Messages []openAIMessage  `json:"messages"`
-	Stream   bool             `json:"stream"`
-	Tools    []map[string]any `json:"tools,omitempty"`
+	Model     string           `json:"model"`
+	Messages  []openAIMessage  `json:"messages"`
+	Stream    bool             `json:"stream"`
+	MaxTokens int              `json:"max_tokens,omitempty"`
+	Tools     []map[string]any `json:"tools,omitempty"`
 }
 
 type openAIMessage struct {
@@ -151,7 +156,8 @@ type openAIToolCall struct {
 
 type openAIResponse struct {
 	Choices []struct {
-		Message openAIMessage `json:"message"`
+		Message      openAIMessage `json:"message"`
+		FinishReason string        `json:"finish_reason"`
 	} `json:"choices"`
 }
 
@@ -252,9 +258,10 @@ func (c *HTTPClient) Stream(
 		return err
 	}
 	payload, err := json.Marshal(openAIRequest{
-		Model:    c.cfg.Model,
-		Messages: messages,
-		Stream:   true,
+		Model:     c.cfg.Model,
+		Messages:  messages,
+		Stream:    true,
+		MaxTokens: c.cfg.MaxTokens,
 	})
 	if err != nil {
 		return fmt.Errorf("encode streaming request: %w", err)
@@ -369,10 +376,11 @@ func (c *HTTPClient) replyWithTools(
 			)
 		}
 		payload, err := json.Marshal(openAIRequest{
-			Model:    c.cfg.Model,
-			Messages: requestMessages,
-			Stream:   false,
-			Tools:    availableTools,
+			Model:     c.cfg.Model,
+			Messages:  requestMessages,
+			Stream:    false,
+			MaxTokens: c.cfg.MaxTokens,
+			Tools:     availableTools,
 		})
 		if err != nil {
 			return domain.AgentResponse{}, fmt.Errorf("encode OpenAI tool request: %w", err)
@@ -668,9 +676,10 @@ func (c *HTTPClient) buildPayload(input domain.AgentRequest) ([]byte, error) {
 			return nil, err
 		}
 		return json.Marshal(openAIRequest{
-			Model:    c.cfg.Model,
-			Messages: messages,
-			Stream:   false,
+			Model:     c.cfg.Model,
+			Messages:  messages,
+			Stream:    false,
+			MaxTokens: c.cfg.MaxTokens,
 		})
 	default:
 		return nil, fmt.Errorf("unsupported agent mode %q", c.cfg.Mode)
@@ -951,6 +960,12 @@ func (c *HTTPClient) parseResponse(body []byte) (domain.AgentResponse, error) {
 		decoded, err := decodeOpenAIResponse(body)
 		if err != nil {
 			return domain.AgentResponse{}, err
+		}
+		// A "length" finish means upstream cut the reply mid-generation —
+		// it still parses as a normal reply, so surface it in the log
+		// instead of letting the mid-sentence cut pass silently.
+		if finish := decoded.Choices[0].FinishReason; finish != "" && finish != "stop" {
+			c.logger.Warn("provider truncated reply", "finish_reason", finish, "model", c.cfg.Model)
 		}
 		reply := strings.TrimSpace(openAIContentText(decoded.Choices[0].Message.Content))
 		if reply == "" {

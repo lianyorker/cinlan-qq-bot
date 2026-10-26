@@ -510,8 +510,6 @@ func softSplitReply(reply string) []string {
 		switch runes[i] {
 		case '。', '！', '？', '!', '?', '；', ';':
 			score = 1000 - d
-		case '，', ',':
-			score = 500 - d
 		case '~', '～':
 			score = 300 - d
 		}

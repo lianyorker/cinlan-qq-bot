@@ -31,19 +31,28 @@ func TestSplitMarkerLinesKeepsPlainTextIntact(t *testing.T) {
 }
 
 func TestSoftSplitReplySplitsLongAtSentenceBoundary(t *testing.T) {
-	reply := "回来啦！快把门关好晚上起风还是蛮凉的没被吹到吧赶紧换身宽松衣服，茉莉花茶买的是常温的没别大口灌哦，坐下歇会儿陪我聊天"
+	reply := "回来啦！快把门关好晚上起风还是蛮凉的没被吹到吧赶紧换身宽松衣服。茉莉花茶买的是常温的没别大口灌哦，坐下歇会儿陪我聊聊天好不好嘛"
 	parts := softSplitReply(reply)
 	if len(parts) != 2 {
 		t.Fatalf("softSplitReply() = %#v, want 2 parts", parts)
 	}
-	if parts[0]+parts[1] != strings.ReplaceAll(reply, " ", "") &&
-		strings.Join(parts, "") != strings.ReplaceAll(reply, " ", "") {
+	if strings.Join(parts, "") != strings.ReplaceAll(reply, " ", "") &&
+		parts[0]+parts[1] != strings.ReplaceAll(reply, " ", "") {
 		t.Fatalf("split lost text: %#v", parts)
 	}
 	for _, p := range parts {
 		if len([]rune(p)) < 8 {
 			t.Fatalf("part too short: %q", p)
 		}
+	}
+}
+
+func TestSoftSplitReplyDoesNotSplitAtCommas(t *testing.T) {
+	// Prompt dumps and list-style text are comma-heavy with no sentence
+	// terminators — cutting at a comma splits the content mid-clause.
+	reply := "提示词给你：蓝发微卷披散的年轻女孩，坐在卧室床边，套着一件宽松微垮的米白色针织毛衣，衣领倾斜露出锁骨"
+	if got := softSplitReply(reply); len(got) != 1 {
+		t.Fatalf("comma-only reply should stay whole, got %#v", got)
 	}
 }
 
