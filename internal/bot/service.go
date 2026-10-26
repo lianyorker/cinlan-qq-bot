@@ -314,6 +314,7 @@ func NewWithRuntime(
 	}
 	service.bannedWords = newOutboundBannedWords(strings.TrimSpace(cfg.OutboundBannedWordsFile))
 	service.judgeProvider = strings.TrimSpace(cfg.JudgeProvider)
+	go service.voiceCacheLoop()
 	service.flow = service.newPipeline()
 	return service
 }

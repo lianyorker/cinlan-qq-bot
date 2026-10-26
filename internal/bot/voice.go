@@ -2,11 +2,16 @@ package bot
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/binary"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -422,6 +427,23 @@ func (s *Service) sendVoiceClips(
 			time.Now().UnixNano(),
 			opaqueAttentionID(selfID, chatID, text),
 		)
+		// Disk cache: the same spoken text reuses the rendered file
+		// instead of paying API quota again. Singing is skipped — lyrics
+		// rarely repeat and each performance should differ anyway.
+		useCache := !clip.Singing && strings.TrimSpace(s.cfg.VoiceCachePath) != ""
+		cachePath := ""
+		cacheHit := false
+		if useCache {
+			cachePath = filepath.Join(
+				s.cfg.VoiceCachePath, voiceCacheKey(text, clipVoice, rate),
+			)
+			if _, statErr := os.Stat(cachePath); statErr == nil {
+				now := time.Now()
+				_ = os.Chtimes(cachePath, now, now)
+				path = cachePath
+				cacheHit = true
+			}
+		}
 		// NapCat needs a real file:// URI — a relative path like
 		// "data/voice/x.mp3" is rejected as 识别URL失败 (retcode 1200).
 		absPath, absErr := filepath.Abs(path)
@@ -431,30 +453,41 @@ func (s *Service) sendVoiceClips(
 		chain := message.Chain{
 			message.Record("file://" + filepath.ToSlash(absPath)),
 		}
-		err := provider.Synthesize(
-			ctx, text, path, clipVoice, rate,
-		)
-		if err != nil && clipVoice != "" {
-			// A broken or expired custom voice shouldn't silence the
-			// feature — retry once with the provider default voice.
-			s.logger.Warn(
-				"voice synthesis failed, retrying default voice",
-				"chat", chatID,
-				"voice", clipVoice, "error", err.Error(),
+		if !cacheHit {
+			err := provider.Synthesize(
+				ctx, text, path, clipVoice, rate,
 			)
-			err = provider.Synthesize(ctx, text, path, "", rate)
-		}
-		if err != nil && provider != s.voiceProvider {
-			// Singing engine down — keep the lyrics audible on the
-			// plain voice rather than losing the clip entirely.
-			err = s.voiceProvider.Synthesize(ctx, clip.Text, path, voiceName, rate)
-		}
-		if err != nil {
-			s.logger.Warn(
-				"voice synthesis failed, falling back to text",
-				"chat", chatID, "error", err.Error(),
-			)
-			chain = message.Chain{message.Text(text)}
+			if err != nil && clipVoice != "" {
+				// A broken or expired custom voice shouldn't silence the
+				// feature — retry once with the provider default voice.
+				s.logger.Warn(
+					"voice synthesis failed, retrying default voice",
+					"chat", chatID,
+					"voice", clipVoice, "error", err.Error(),
+				)
+				err = provider.Synthesize(ctx, text, path, "", rate)
+			}
+			if err != nil && provider != s.voiceProvider {
+				// Singing engine down — keep the lyrics audible on the
+				// plain voice rather than losing the clip entirely.
+				err = s.voiceProvider.Synthesize(ctx, clip.Text, path, voiceName, rate)
+			}
+			if err != nil {
+				s.logger.Warn(
+					"voice synthesis failed, falling back to text",
+					"chat", chatID, "error", err.Error(),
+				)
+				chain = message.Chain{message.Text(text)}
+			} else if useCache {
+				if mkErr := os.MkdirAll(s.cfg.VoiceCachePath, 0o755); mkErr == nil {
+					if cpErr := copyFile(path, cachePath); cpErr != nil {
+						s.logger.Warn(
+							"voice cache write failed",
+							"chat", chatID, "error", cpErr.Error(),
+						)
+					}
+				}
+			}
 		}
 		if index > 0 && !waitForReplyPart(
 			ctx, s.replyPartDelay(text),
@@ -472,6 +505,96 @@ func (s *Service) sendVoiceClips(
 				"chat", chatID, "error", err.Error(),
 			)
 			s.stats.sendErrors.Add(1)
+		}
+	}
+}
+
+// voiceCacheKey hashes the clip inputs into a stable filename — the same
+// text+voice+rate always lands on the same cache entry.
+func voiceCacheKey(text, voice string, rate float64) string {
+	h := sha256.New()
+	h.Write([]byte(text))
+	h.Write([]byte{0})
+	h.Write([]byte(voice))
+	h.Write([]byte{0})
+	_ = binary.Write(h, binary.LittleEndian, rate)
+	return hex.EncodeToString(h.Sum(nil)[:16]) + ".mp3"
+}
+
+// copyFile duplicates a rendered clip into the cache; Rename would move
+// the temp file NapCat still needs to read for upload.
+func copyFile(src, dst string) error {
+	in, err := os.Open(src)
+	if err != nil {
+		return err
+	}
+	defer in.Close()
+	out, err := os.Create(dst)
+	if err != nil {
+		return err
+	}
+	defer out.Close()
+	if _, err = io.Copy(out, in); err != nil {
+		return err
+	}
+	return out.Sync()
+}
+
+// voiceCacheLoop sweeps expired files once at startup, then hourly.
+// No stop channel needed — the process outlives it.
+func (s *Service) voiceCacheLoop() {
+	dir := strings.TrimSpace(s.cfg.VoiceCachePath)
+	if dir == "" {
+		return
+	}
+	sweepVoiceCache(dir, int64(s.cfg.VoiceCacheMaxMB)<<20, s.cfg.VoiceCacheTTL)
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+	for range ticker.C {
+		sweepVoiceCache(dir, int64(s.cfg.VoiceCacheMaxMB)<<20, s.cfg.VoiceCacheTTL)
+	}
+}
+
+// sweepVoiceCache drops files older than ttl, then evicts oldest-first
+// until the directory fits under maxBytes. Zero values skip that bound.
+func sweepVoiceCache(dir string, maxBytes int64, ttl time.Duration) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return
+	}
+	type fileInfo struct {
+		path  string
+		size  int64
+		mtime time.Time
+	}
+	var files []fileInfo
+	var totalSize int64
+	now := time.Now()
+	for _, entry := range entries {
+		info, err := entry.Info()
+		if err != nil {
+			continue
+		}
+		path := filepath.Join(dir, entry.Name())
+		if ttl > 0 && now.Sub(info.ModTime()) > ttl {
+			_ = os.Remove(path)
+			continue
+		}
+		files = append(files, fileInfo{path, info.Size(), info.ModTime()})
+		totalSize += info.Size()
+	}
+	if maxBytes <= 0 || totalSize <= maxBytes {
+		return
+	}
+	sort.Slice(files, func(i, j int) bool {
+		return files[i].mtime.Before(files[j].mtime)
+	})
+	for _, f := range files {
+		if totalSize <= maxBytes {
+			break
+		}
+		if err := os.Remove(f.path); err == nil {
+			totalSize -= f.size
 		}
 	}
 }

@@ -805,7 +805,7 @@ func (s *Service) stageSession(_ context.Context, event *pipeline.Context) error
 		strings.HasSuffix(history[n-1].Content, state.promptText) {
 		history = history[:n-1]
 	}
-	state.history = history
+	state.history = foldSpam(history)
 	state.summary = snapshot.Summary
 	if state.learning {
 		state.memory = snapshot.Memory
@@ -1281,20 +1281,41 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	resultChannel := make(chan agentResult, 1)
 	go func() {
 		var result agentResult
-		if s.providers != nil {
-			if state.providerName != "" {
-				result.response, result.err = s.providers.ReplyWith(
-					ctx,
-					state.providerName,
-					request,
-				)
+		// One cheap retry for the user-visible call only — transient
+		// 503s shouldn't produce an instant "发呆了". Judge/reflect
+		// paths don't come through here and stay failure-silent.
+		const maxRetries = 1
+		for attempt := 0; attempt <= maxRetries; attempt++ {
+			if s.providers != nil {
+				if state.providerName != "" {
+					result.response, result.err = s.providers.ReplyWith(
+						ctx,
+						state.providerName,
+						request,
+					)
+				} else {
+					result.response, result.err = s.providers.Reply(ctx, request)
+				}
+			} else if s.agent != nil {
+				result.response, result.err = s.agent.Reply(ctx, request)
 			} else {
-				result.response, result.err = s.providers.Reply(ctx, request)
+				result.err = fmt.Errorf("no agent provider is configured")
 			}
-		} else if s.agent != nil {
-			result.response, result.err = s.agent.Reply(ctx, request)
-		} else {
-			result.err = fmt.Errorf("no agent provider is configured")
+			if result.err == nil || ctx.Err() != nil {
+				break
+			}
+			if attempt < maxRetries {
+				s.logger.Warn(
+					"agent call failed, retrying",
+					"attempt", attempt+1,
+					"error", result.err.Error(),
+					"chat", state.chatType+":"+state.chatID,
+				)
+				select {
+				case <-time.After(500 * time.Millisecond):
+				case <-ctx.Done():
+				}
+			}
 		}
 		resultChannel <- result
 	}()
@@ -1749,6 +1770,13 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					s.sendThenRecall(ctx, state, inner)
 					cleaned = append(cleaned, "[撤回:"+truncateRunes(inner, 20)+"]")
 				}
+				continue
+			}
+			// Anything still bracketed after every known parser ran is a
+			// hallucinated marker ([[SECRET:x]] etc.) — strip it before
+			// the internal marker namespace leaks into the chat.
+			part = stripUnrecognizedMarkers(part)
+			if part == "" {
 				continue
 			}
 			chain, plain, _ := parseFaceMarkers(part)
@@ -2837,4 +2865,55 @@ func quotedLabel(quoted *message.FetchedMessage, state *flowState) string {
 		return "对方引用了QQ:" + quoted.SenderID + "说的"
 	}
 	return "对方引用了之前的消息"
+}
+
+// foldSpam collapses runs of consecutive same-role user messages that
+// were never replied to — the prompt equivalent of "he kept talking to
+// himself". Keeps first 2 + last 2 of each run, the middle becomes one
+// summary line. Saves tokens on high-chatter groups without losing the
+// conversational edges. Storage history is untouched — this only shapes
+// the prompt copy.
+func foldSpam(history []domain.ChatMessage) []domain.ChatMessage {
+	const threshold = 5 // runs longer than this get folded
+	const keepEdge = 2  // head/tail messages kept verbatim
+
+	if len(history) <= threshold {
+		return history
+	}
+	result := make([]domain.ChatMessage, 0, len(history))
+	for i := 0; i < len(history); {
+		if history[i].Role != "user" {
+			result = append(result, history[i])
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(history) && history[j].Role == "user" {
+			j++
+		}
+		runLen := j - i
+		if runLen <= threshold {
+			result = append(result, history[i:j]...)
+		} else {
+			result = append(result, history[i:i+keepEdge]...)
+			result = append(result, domain.ChatMessage{
+				Role:    "user",
+				Content: fmt.Sprintf("[中间的 %d 条连发消息已省略]", runLen-2*keepEdge),
+			})
+			result = append(result, history[j-keepEdge:j]...)
+		}
+		i = j
+	}
+	return result
+}
+
+// unrecognizedMarkerPattern matches [[UPPER]] / [[UPPER:content]] markers
+// that survived every known parser — hallucinated internal markers that
+// must not reach the user. Lowercase and single brackets pass through.
+var unrecognizedMarkerPattern = regexp.MustCompile(
+	`\[\[[A-Z_]+(?::[^\]]{0,100})?\]\]`,
+)
+
+func stripUnrecognizedMarkers(text string) string {
+	return strings.TrimSpace(unrecognizedMarkerPattern.ReplaceAllString(text, ""))
 }

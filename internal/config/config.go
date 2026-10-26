@@ -198,6 +198,13 @@ type Config struct {
 	VoiceCooldown   time.Duration
 	VoiceTimeout    time.Duration
 	VoiceDailyLimit int
+	// On-disk TTS cache: same text+voice+rate reuses a rendered clip
+	// instead of paying API quota again. VoiceCachePath="" disables it;
+	// keep it separate from VoiceDir so the temp-voice janitor can't
+	// sweep cached files.
+	VoiceCachePath  string
+	VoiceCacheMaxMB int
+	VoiceCacheTTL   time.Duration
 	ImageEnhance    bool
 
 	// Repeat-spam handling: same normalized text N times inside the
@@ -538,6 +545,9 @@ func Load() (Config, error) {
 	cfg.SingAPIURL = envOrAllowEmpty("SING_API_URL", "")
 	cfg.SingModel = envOrAllowEmpty("SING_MODEL", "breeze-tts-2-multilingual")
 	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
+	cfg.VoiceCachePath = envOr("VOICE_CACHE_PATH", "runtime/voice-cache")
+	cfg.VoiceCacheMaxMB = parseInt("VOICE_CACHE_MAX_MB", 500, 0, &errs)
+	cfg.VoiceCacheTTL = parseDuration("VOICE_CACHE_TTL", 7*24*time.Hour, true, &errs)
 	cfg.VoiceMaxRunes = parseInt("VOICE_MAX_RUNES", 200, 20, &errs)
 	cfg.VoiceCooldown = parseDuration("VOICE_COOLDOWN", 45*time.Second, true, &errs)
 	cfg.VoiceTimeout = parseDuration("VOICE_TIMEOUT", 15*time.Second, true, &errs)

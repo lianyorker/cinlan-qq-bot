@@ -762,8 +762,9 @@ func TestPersonaBeginDialogsAndCustomErrorMessage(t *testing.T) {
 
 	service.handleEvent(context.Background(), testEvent("persona-error", "question", true))
 
-	if len(agentClient.requests) != 1 {
-		t.Fatalf("agent calls = %d, want 1", len(agentClient.requests))
+	// Persistent failure = initial call + the single agent retry.
+	if len(agentClient.requests) != 2 {
+		t.Fatalf("agent calls = %d, want 2", len(agentClient.requests))
 	}
 	history := agentClient.requests[0].History
 	if len(history) < 2 || history[0].Content != "hello" ||
@@ -784,8 +785,9 @@ func TestErrorSilentDropsAgentErrorReply(t *testing.T) {
 
 	service.handleEvent(context.Background(), testEvent("silent-error", "question", true))
 
-	if len(agentClient.requests) != 1 {
-		t.Fatalf("agent calls = %d, want 1", len(agentClient.requests))
+	// Persistent failure = initial call + the single agent retry.
+	if len(agentClient.requests) != 2 {
+		t.Fatalf("agent calls = %d, want 2", len(agentClient.requests))
 	}
 	if len(sender.messages) != 0 {
 		t.Fatalf("silent error reply = %#v, want no messages", sender.messages)
