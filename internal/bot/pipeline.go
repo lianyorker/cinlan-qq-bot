@@ -1575,14 +1575,22 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				parts = append(parts, truncationCloser(state.chatType))
 			}
 		}
-		if state.personaName != "" {
+		{
 			filtered := parts[:0]
 			for _, part := range parts {
-				if part = stripSpeakerPrefix(part, state.personaName); strings.TrimSpace(part) != "" {
+				if state.personaName != "" {
+					part = stripSpeakerPrefix(part, state.personaName)
+				}
+				// QQ renders raw text — markdown syntax arrives as literal
+				// garbage, so scrub it before anything else sees the part.
+				if part = scrubMarkdown(part); strings.TrimSpace(part) != "" {
 					filtered = append(filtered, part)
 				}
 			}
 			parts = filtered
+			if len(parts) == 0 {
+				return nil
+			}
 		}
 		if !state.allowLinks {
 			filtered := parts[:0]

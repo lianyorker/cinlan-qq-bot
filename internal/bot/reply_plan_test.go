@@ -65,3 +65,69 @@ func TestParseMemeMarker(t *testing.T) {
 		t.Fatal("parseMemeMarker() matched a mixed part")
 	}
 }
+
+func TestScrubMarkdownStripsDocumentSyntax(t *testing.T) {
+	in := "刚才的提示词给你：\n**中文提示词：**\n> 蓝发微卷披散的女孩\n" +
+		"## 场景\n- 毛衣\n1. 锁骨\n用 `seedream` 生成就行"
+	got := scrubMarkdown(in)
+	for _, junk := range []string{"**", ">", "#", "- 毛衣", "1. ", "`"} {
+		if strings.Contains(got, junk) {
+			t.Fatalf("scrubMarkdown() left %q in %q", junk, got)
+		}
+	}
+	for _, keep := range []string{"中文提示词：", "蓝发微卷披散的女孩", "毛衣", "锁骨"} {
+		if !strings.Contains(got, keep) {
+			t.Fatalf("scrubMarkdown() lost content %q in %q", keep, got)
+		}
+	}
+}
+
+func TestScrubMarkdownKeepsPlainChat(t *testing.T) {
+	in := "嗯 抱着了 [[MEME:害羞]]"
+	if got := scrubMarkdown(in); got != in {
+		t.Fatalf("scrubMarkdown() mangled plain text: %q -> %q", in, got)
+	}
+}
+
+func TestScrubMarkdownFencedCodeKeepsContent(t *testing.T) {
+	in := "看这个\n```go\nfmt.Println(\"hi\")\n```"
+	got := scrubMarkdown(in)
+	if strings.Contains(got, "```") {
+		t.Fatalf("fence leaked: %q", got)
+	}
+	if !strings.Contains(got, `fmt.Println("hi")`) {
+		t.Fatalf("code content lost: %q", got)
+	}
+}
+
+func TestSplitReplyCutsAtSentenceBoundary(t *testing.T) {
+	// A reply longer than maxRunes used to slice mid-word at the cap;
+	// now the chunk must end at the last terminator inside the cap.
+	text := "第一句话说完啦。第二句话也很长很长它一直说到中间去。第三句话收尾。"
+	parts, truncated := splitReply(text, 20, 4)
+	if len(parts) == 0 {
+		t.Fatal("splitReply() returned nothing")
+	}
+	for _, p := range parts {
+		if len([]rune(p)) > 20 {
+			t.Fatalf("chunk exceeds cap: %q", p)
+		}
+	}
+	if strings.HasSuffix(parts[0], "中间") || strings.HasSuffix(parts[0], "完") {
+		t.Fatalf("chunk cut mid-word: %q", parts[0])
+	}
+	if !strings.HasSuffix(parts[0], "。") {
+		t.Fatalf("first chunk should end at 。: %q", parts[0])
+	}
+	_ = truncated
+}
+
+func TestSplitReplyNoBoundaryHardCuts(t *testing.T) {
+	// No terminator at all inside the cap: fall back to the hard cut so
+	// nothing is dropped.
+	text := strings.Repeat("连", 50)
+	parts, _ := splitReply(text, 20, 2)
+	if len(parts) != 2 {
+		t.Fatalf("expected 2 chunks, got %#v", parts)
+	}
+}

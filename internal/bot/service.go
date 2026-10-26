@@ -1488,7 +1488,16 @@ func splitReply(text string, maxRunes, maxChunks int) ([]string, bool) {
 	chunks := make([]string, 0, min(maxChunks, len(remaining)/maxRunes+1))
 	for len(remaining) > 0 && len(chunks) < maxChunks {
 		size := min(maxRunes, len(remaining))
-		chunks = append(chunks, string(remaining[:size]))
+		if size < len(remaining) {
+			// Cut at the last sentence terminator inside the cap —
+			// a person doesn't split a word across two bubbles. No
+			// text is lost here (the remainder flows to the next
+			// chunk), so even an early boundary beats a mid-word cut.
+			if end := lastSentenceEnd(remaining[:size]); end > 0 {
+				size = end
+			}
+		}
+		chunks = append(chunks, strings.TrimSpace(string(remaining[:size])))
 		remaining = remaining[size:]
 	}
 
@@ -1500,17 +1509,24 @@ func splitReply(text string, maxRunes, maxChunks int) ([]string, bool) {
 	// follow-up bubble say the rest. Walk the last chunk back to its
 	// nearest terminator; keep it only when the trim isn't drastic.
 	last := []rune(chunks[len(chunks)-1])
+	if end := lastSentenceEnd(last); end >= len(last)/2 {
+		chunks[len(chunks)-1] = strings.TrimSpace(string(last[:end]))
+	}
+	return chunks, true
+}
+
+// lastSentenceEnd returns the rune offset just past the last sentence
+// terminator in text, or -1 when there is none. Newlines count so a
+// bubble never dies mid-sentence inside a multi-line reply.
+func lastSentenceEnd(text []rune) int {
 	best := -1
-	for i, r := range last {
+	for i, r := range text {
 		switch r {
 		case '。', '！', '？', '!', '?', '；', ';', '\n':
 			best = i
 		}
 	}
-	if best >= len(last)/2 {
-		chunks[len(chunks)-1] = strings.TrimSpace(string(last[:best+1]))
-	}
-	return chunks, true
+	return best + 1
 }
 
 // truncationCloser is the follow-up bubble when a reply got capped —

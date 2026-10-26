@@ -406,6 +406,48 @@ func containsProviderError(text string) bool {
 	return providerErrorPattern.MatchString(text)
 }
 
+// These patterns catch the markdown syntax models keep emitting even
+// after being told not to — QQ shows raw text, so **bold**, > quotes and
+// ``` fences arrive as literal garbage. Soft prompt rules stay; this is
+// the hard outbound scrub.
+var (
+	// Fenced code blocks: drop the fence lines, keep the content.
+	markdownFencePattern = regexp.MustCompile(`(?m)^\s*` + "```" + `[a-zA-Z]*\s*\n?`)
+	// Bold / italic / strike → unwrap to the inner text (loop until none
+	// left so ***nested*** markers fully dissolve).
+	markdownEmphPattern = regexp.MustCompile(
+		`\*\*([^*]+)\*\*|__([^_]+)__|~~([^~]+)~~|\*([^*]+)\*|_([^_]+)_`,
+	)
+	markdownCodePattern = regexp.MustCompile("`([^`\n]+)`")
+	// Line-leading structural markers: headers, quotes, bullets, ordered
+	// lists. Chat lines that happen to start with "- " are rare compared
+	// to model bullet dumps.
+	markdownLinePatterns = []*regexp.Regexp{
+		regexp.MustCompile(`(?m)^[ \t]{0,3}#{1,6}\s+`),
+		regexp.MustCompile(`(?m)^[ \t]{0,3}>\s?`),
+		regexp.MustCompile(`(?m)^([ \t]*)(?:[-*•]|\d{1,2}[.)])\s+`),
+	}
+)
+
+// scrubMarkdown removes markdown syntax from an outbound text part so the
+// message reads like typed chat, not a rendered document. Inner content
+// is preserved — only the decoration dies.
+func scrubMarkdown(text string) string {
+	text = markdownFencePattern.ReplaceAllString(text, "")
+	for _, p := range markdownLinePatterns {
+		text = p.ReplaceAllString(text, "$1")
+	}
+	for {
+		cleaned := markdownEmphPattern.ReplaceAllString(text, "$1$2$3$4$5")
+		if cleaned == text {
+			break
+		}
+		text = cleaned
+	}
+	text = markdownCodePattern.ReplaceAllString(text, "$1")
+	return strings.TrimSpace(text)
+}
+
 // stripSpeakerPrefix removes leaked channel markers ("[Y]", "【Y】") and a
 // leading speaker-name prefix the model may echo so replies never announce
 // the persona name as their first line.
