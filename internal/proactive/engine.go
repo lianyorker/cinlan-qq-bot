@@ -13,6 +13,7 @@ import (
 	"math/rand"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -77,9 +78,15 @@ type Deps struct {
 	ResolveMeme func(platform, chatType, chatID, query string) string
 	// DefaultSelfID fills rules that carry no explicit self_id.
 	DefaultSelfID string
-	Now           func() time.Time
-	Logger        *slog.Logger
-	Rand          *rand.Rand
+	// AffinityScore reports a user's intimacy score with this account;
+	// powers the daily profile-like for people she's already close to.
+	AffinityScore func(platform, selfID, userID string) int
+	// Call runs a raw platform action for one bot account — used for
+	// side-effect gestures (send_like) that aren't chat messages.
+	Call func(ctx context.Context, selfID, action string, params map[string]any) error
+	Now    func() time.Time
+	Logger *slog.Logger
+	Rand   *rand.Rand
 }
 
 type Engine struct {
@@ -89,6 +96,10 @@ type Engine struct {
 	sent map[string]time.Time // chatKey -> last proactive send
 	day  string               // yyyy-mm-dd of counters
 	hits map[string]int       // chatKey -> proactive sends today
+	// occasion/likes track once-a-day gestures so a festival greeting
+	// or profile like can't refire every tick.
+	occasion map[string]string // chatKey -> last occasion date greeted
+	liked    map[string]string // userID  -> last like date
 }
 
 func New(cfg Config, deps Deps) *Engine {
@@ -123,11 +134,13 @@ func New(cfg Config, deps Deps) *Engine {
 		deps.Logger = slog.Default()
 	}
 	return &Engine{
-		cfg:  cfg,
-		deps: deps,
-		sent: map[string]time.Time{},
-		day:  deps.Now().Format("2006-01-02"),
-		hits: map[string]int{},
+		cfg:      cfg,
+		deps:     deps,
+		sent:     map[string]time.Time{},
+		day:      deps.Now().Format("2006-01-02"),
+		hits:     map[string]int{},
+		occasion: map[string]string{},
+		liked:    map[string]string{},
 	}
 }
 
@@ -192,6 +205,20 @@ func (e *Engine) sweep(ctx context.Context) {
 			if selfID == "" {
 				selfID = e.deps.DefaultSelfID
 			}
+			// Calendar gestures run on their own track: a birthday or
+			// festival greeting fires once a day without waiting for the
+			// chat to go quiet — that's exactly when a person would say it.
+			if occasion := e.occasionFor(plat, selfID, chatType, chatID); occasion != "" {
+				if e.markOccasion(plat, chatType, chatID) {
+					e.fire(ctx, rule, plat, chatType, chatID, occasion)
+					continue
+				}
+			}
+			// Daily profile like for private chats she's already close
+			// to — the low-effort "我在" a real friend leaves on your card.
+			if chatType == platform.ChatPrivate {
+				e.maybeLike(ctx, selfID, chatID)
+			}
 			if !e.eligible(plat, selfID, chatType, chatID) {
 				continue
 			}
@@ -217,9 +244,121 @@ func (e *Engine) sweep(ctx context.Context) {
 			// Circadian: evening is her chatty window; morning/noon dim.
 			chance *= mood.CircadianFactor(e.deps.Now())
 			if e.deps.Rand.Float64() < chance {
-				e.fire(ctx, rule, plat, chatType, chatID)
+				e.fire(ctx, rule, plat, chatType, chatID, "")
 			}
 		}
+	}
+}
+
+// festivals maps fixed MM-DD dates to the greeting hook. Lunar festivals
+// need a real calendar and are deliberately left out rather than guessed.
+var festivals = map[string]string{
+	"01-01": "今天是元旦，新年第一天",
+	"02-14": "今天是情人节",
+	"05-01": "今天是五一劳动节，放假的日子",
+	"06-01": "今天是六一儿童节",
+	"10-01": "今天是国庆，长假第一天",
+	"12-24": "今天是平安夜",
+	"12-25": "今天是圣诞节",
+}
+
+// birthdayPattern catches remembered birthdays inside facts/impressions:
+// 生日10-28 / 生日10.28 / 生日10月28日 / 10.28生日 and friends.
+var birthdayPattern = regexp.MustCompile(
+	`(?:生日[^0-9]{0,4}(\d{1,2})[-.月](\d{1,2})日?)|(?:(\d{1,2})[-.月](\d{1,2})日?[^0-9]{0,4}生日)`,
+)
+
+// occasionFor returns today's greeting hook for a chat — a remembered
+// birthday or a fixed festival — or "" when today is an ordinary day.
+func (e *Engine) occasionFor(plat, selfID, chatType, chatID string) string {
+	now := e.deps.Now()
+	today := now.Format("01-02")
+	if e.deps.ChatPrefs != nil {
+		for _, f := range e.deps.ChatPrefs.FactsSnapshot(plat, selfID, chatType, chatID) {
+			if m := birthdayPattern.FindStringSubmatch(f.Text); m != nil {
+				mm, dd := m[1], m[2]
+				if mm == "" {
+					mm, dd = m[3], m[4]
+				}
+				if fmtBirthday(mm, dd) == today {
+					return "今天你记得他们中有人过生日（" + f.Text + "）"
+				}
+			}
+		}
+		for _, imp := range e.deps.ChatPrefs.ImpressionSnapshot(plat, selfID, chatType, chatID) {
+			if m := birthdayPattern.FindStringSubmatch(imp.Text); m != nil {
+				mm, dd := m[1], m[2]
+				if mm == "" {
+					mm, dd = m[3], m[4]
+				}
+				if fmtBirthday(mm, dd) == today {
+					return "今天你记得他们中有人过生日（" + imp.Text + "）"
+				}
+			}
+		}
+	}
+	return festivals[today]
+}
+
+// fmtBirthday zero-pads a regex-captured month/day pair into "MM-DD".
+// %02s can't pad strings, so Atoi first; a bad capture returns "" which
+// never matches today.
+func fmtBirthday(mm, dd string) string {
+	m, errM := strconv.Atoi(mm)
+	d, errD := strconv.Atoi(dd)
+	if errM != nil || errD != nil {
+		return ""
+	}
+	return fmt.Sprintf("%02d-%02d", m, d)
+}
+
+// markOccasion records today's greeting so it can't refire on the next
+// tick. Returns false when the chat was already greeted today or is
+// muted / opted out of proactive contact.
+func (e *Engine) markOccasion(plat, chatType, chatID string) bool {
+	now := e.deps.Now()
+	today := now.Format("2006-01-02")
+	key := plat + ":" + chatType + ":" + chatID
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.occasion[key] == today {
+		return false
+	}
+	if e.deps.ChatPrefs != nil {
+		selfID := e.deps.DefaultSelfID
+		if !e.deps.ChatPrefs.NotifyEnabled(plat, selfID, chatType, chatID) ||
+			e.deps.ChatPrefs.Muted(plat, selfID, chatType, chatID, now) {
+			return false
+		}
+	}
+	e.occasion[key] = today
+	return true
+}
+
+// maybeLike drops a profile like on a familiar private-chat friend once
+// a day — silent gesture, no message, no fanfare.
+func (e *Engine) maybeLike(ctx context.Context, selfID, userID string) {
+	if e.deps.Call == nil || e.deps.AffinityScore == nil {
+		return
+	}
+	if e.deps.AffinityScore(e.deps.Platform, selfID, userID) < 20 {
+		return // below 熟悉 — liking a stranger's card reads creepy
+	}
+	today := e.deps.Now().Format("2006-01-02")
+	key := selfID + ":" + userID
+	e.mu.Lock()
+	if e.liked[key] == today {
+		e.mu.Unlock()
+		return
+	}
+	e.liked[key] = today
+	e.mu.Unlock()
+	if err := e.deps.Call(ctx, selfID, "send_like", map[string]any{
+		"user_id": userID,
+		"times":   1,
+	}); err != nil {
+		e.deps.Logger.Warn("proactive like failed",
+			"user_id", userID, "error", err.Error())
 	}
 }
 
@@ -288,7 +427,7 @@ func (e *Engine) eligible(plat, selfID, chatType, chatID string) bool {
 func (e *Engine) fire(
 	ctx context.Context,
 	rule binding.Rule,
-	plat, chatType, chatID string,
+	plat, chatType, chatID, occasion string,
 ) {
 	e.mu.Lock()
 	key := plat + ":" + chatType + ":" + chatID
@@ -343,6 +482,13 @@ func (e *Engine) fire(
 			"），或者 [[MEME:情绪]] 发一张以前偷存的群图。"
 	}
 	system := profile.SystemPrompt + opener
+	if occasion != "" {
+		// Calendar gesture — the opener becomes a greeting instead of
+		// idle chatter. "有人过生日" comes from her own memories, so the
+		// model sees the fact, not a script.
+		system += "\n\n（" + occasion +
+			"——顺着说一两句应景的，像真人突然想起来那样开口）"
+	}
 	if e.deps.ChatPrefs != nil {
 		// Ground the opener in what she actually remembers — “想你了”
 		// lands, generic filler doesn't.
@@ -368,13 +514,19 @@ func (e *Engine) fire(
 			system += "\n你之前答应过的事（这次开口可以先兑现它）：\n" +
 				strings.Join(lines, "\n")
 		}
-		if hint := mood.Hint(e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())); hint != "" {
+		moodScore := e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())
+		if hint := mood.Hint(moodScore); hint != "" {
 			system += "\n" + hint
 		}
 		// Time-of-day vibe + chat-banned phrases apply to cold openers
 		// too — proactive text bypasses the pipeline tone guard.
 		if hint := mood.Circadian(e.deps.Now()); hint != "" {
 			system += "\n" + hint
+		}
+		// Same grounded activity anchor the pipeline gets — a cold
+		// opener about 在干嘛 should match what she'd say when asked.
+		if scene := mood.Scene(e.deps.Now(), moodScore); scene != "" {
+			system += "\n" + scene
 		}
 		if bans := e.deps.ChatPrefs.ToneBans(plat, selfID, chatType, chatID); len(bans) > 0 {
 			system += "\n他们让你别再说这些词：" +

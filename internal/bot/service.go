@@ -1233,12 +1233,21 @@ func (s *Service) shouldQuoteReply(chatType string) bool {
 // replyPartDelay simulates the time a person needs to type the part
 // about to be sent: the base beat plus ~30ms per rune (a longer message
 // visibly takes longer to type). Capped at 80 runes of extra time.
+// Jittered and slowed when she's sleepy so a burst of bubbles doesn't
+// land at a robotic fixed cadence.
 func (s *Service) replyPartDelay(part string) time.Duration {
 	if s.cfg.ReplyPartDelay <= 0 {
 		return 0
 	}
 	extraRunes := min(utf8.RuneCountInString(part), 80)
-	return s.cfg.ReplyPartDelay + time.Duration(extraRunes)*30*time.Millisecond
+	delay := s.cfg.ReplyPartDelay + time.Duration(extraRunes)*30*time.Millisecond
+	// ±30% jitter — real typing rhythm wobbles.
+	jitter := time.Duration(rand.Int63n(int64(delay/3) + 1))
+	delay += jitter - delay/6
+	if s.cfg.Asleep(time.Now()) {
+		delay += delay / 2
+	}
+	return delay
 }
 
 // typingDelay simulates the pause before a person sends their first

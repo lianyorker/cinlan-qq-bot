@@ -66,6 +66,16 @@ func registerLocalExtensions(
 		); registerErr != nil {
 			logger.Error("failed to register emoji react tool", "error", registerErr)
 		}
+		if registerErr := service.ToolRegistry().Register(
+			interaction.SignatureTool(caller, time.Now),
+		); registerErr != nil {
+			logger.Error("failed to register signature tool", "error", registerErr)
+		}
+		if registerErr := service.ToolRegistry().Register(
+			interaction.QzoneTool(caller, time.Now),
+		); registerErr != nil {
+			logger.Error("failed to register qzone tool", "error", registerErr)
+		}
 	}
 	if registerErr := service.ToolRegistry().Register(
 		interaction.QuietTool(store, time.Now),

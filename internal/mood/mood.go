@@ -87,3 +87,46 @@ func CircadianFactor(now time.Time) float64 {
 		return 1.0
 	}
 }
+
+// Scene gives her a grounded "what I'm doing right now" anchor so 刚睡醒
+// / 在摸鱼 isn't improvised turn-by-turn (and contradicting itself).
+// Derived from clock + mood so every injection of the same hour tells the
+// same story; "" means nothing worth pinning down.
+func Scene(now time.Time, moodScore int) string {
+	weekend := now.Weekday() == time.Saturday || now.Weekday() == time.Sunday
+	var scene string
+	switch h := now.Hour(); {
+	case h >= 6 && h < 9:
+		scene = "刚起床没多久，还有点迷糊"
+	case h >= 9 && h < 12:
+		if weekend {
+			scene = "周末上午，瘫着刷手机"
+		} else {
+			scene = "上午，摸一会儿忙一会儿"
+		}
+	case h >= 12 && h < 14:
+		scene = "刚吃完午饭，犯困"
+	case h >= 14 && h < 18:
+		if weekend {
+			scene = "周末下午，闲得发慌"
+		} else {
+			scene = "下午，熬着等天黑"
+		}
+	case h >= 18 && h < 19:
+		scene = "晚饭点儿，想着吃点啥"
+	case h >= 19 && h < 23:
+		scene = "晚上瘫着，一天里最闲的时候"
+	case h >= 23 || h < 6:
+		scene = "大半夜，困得眼皮打架"
+	default:
+		return ""
+	}
+	switch {
+	case moodScore <= -30:
+		scene += "，心情不太好"
+	case moodScore >= 30:
+		scene += "，心情不错"
+	}
+	return "（你现在的状态：" + scene +
+		"——被问到在干嘛时按这个说，别编出矛盾的来）"
+}

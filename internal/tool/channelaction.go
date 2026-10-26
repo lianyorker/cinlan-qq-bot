@@ -78,6 +78,15 @@ var safeChannelActions = map[string]bool{
 	"runtime_status": true,
 }
 
+// selfChannelActions mutate ONLY the bot's own account — profile fields
+// and its own qzone feed. They carry no target user or group, so the
+// persona may use them herself without admin rights. Actions that touch
+// a group or another member stay behind the admin gate below.
+var selfChannelActions = map[string]bool{
+	"set_qq_profile": true, // own nickname / signature
+	"send_qzone":     true, // own feed post
+}
+
 func channelActionHandler(platforms *platform.Registry, allowedRoot []string) Handler {
 	root := ""
 	if len(allowedRoot) > 0 {
@@ -101,7 +110,16 @@ func channelActionHandler(platforms *platform.Registry, allowedRoot []string) Ha
 			params = map[string]any{}
 		}
 		admin := call.Actor.Role == "admin" || call.Actor.Role == "owner"
-		if !safeChannelActions[action] {
+		switch {
+		case safeChannelActions[action]:
+			// open tier — reads and harmless likes
+		case selfChannelActions[action]:
+			// self-account tier — no chat target to pin, but local
+			// file paths (qzone images) stay confined.
+			if deny := filePathViolation(params, root); deny != "" {
+				return Result{Error: deny}, fmt.Errorf("channel_action: %s", deny)
+			}
+		default:
 			if !admin {
 				return Result{Error: fmt.Sprintf(
 						"channel_action %q requires admin role", action)},

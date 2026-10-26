@@ -331,9 +331,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	case binding.ReplyModeMentionOnly:
 		// Real commands ride through mention-only: /开启通知 must be able
 		// to undo a notify-off group. Non-command "/" text still dies
-		// here — the attention stage does not re-gate mentions.
+		// here — the attention stage does not re-gate mentions, and a
+		// follow-up exemption must not turn typo'd commands into chat.
+		slashJunk := strings.HasPrefix(strings.TrimSpace(state.text), "/")
 		if !state.eventMentioned && !s.commandMessage(state.text) &&
-			!s.pendingGameMove(state) && !s.pendingFollowUp(state) {
+			(slashJunk || (!s.pendingGameMove(state) && !s.pendingFollowUp(state))) {
 			state.ignored = true
 			event.Stop("not_mentioned")
 			return nil
@@ -979,10 +981,8 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 	}
 	request.SystemPrompt += clockLine
-	if s.cfg.Asleep(now) {
-		// She's a person, not a service — 3am replies read sleepy, not perky.
-		request.SystemPrompt += "现在是深夜，你有点困了——回复可以更短更慵懒，真困了就直说想睡，别硬撑着精神。"
-	}
+	// Sleepy-night hint lives near the end of prompt assembly — one
+	// injection only; a second one here wasted tokens on every 3am turn.
 	if state.chatType == platform.ChatGroup {
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
@@ -1200,12 +1200,27 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// Humanization hints: current mood tier + circadian rhythm — both
 	// gated by MoodEnabled so formal bindings can opt out of both.
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
-		if hint := mood.Hint(s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())); hint != "" {
+		moodScore := s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())
+		if hint := mood.Hint(moodScore); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
 		if hint := mood.Circadian(s.now()); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
+		// A shared anchor for "你在干嘛" — clock-derived so it can't
+		// contradict itself across turns the way pure invention does.
+		if scene := mood.Scene(s.now(), moodScore); scene != "" {
+			request.SystemPrompt += "\n\n" + scene
+		}
+	}
+	// A person doesn't chat forever — after a long stretch she may wind
+	// the conversation down herself instead of waiting to be left on
+	// read. Hint only; the model decides whether this turn is a natural
+	// closing beat.
+	if len(state.history) >= 12 &&
+		(s.chatPrefs == nil ||
+			s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now()) < 40) {
+		request.SystemPrompt += "\n\n（你们已经聊了好一会儿了——如果话题到段落了，你可以像真人一样主动收尾，比如「先这样我去忙了」，不用硬聊）"
 	}
 	// The mood tier says HOW she feels; the freshest [心情] note says
 	// WHY. Injecting it keeps feelings attached to their cause instead

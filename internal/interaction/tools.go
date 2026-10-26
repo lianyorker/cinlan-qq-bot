@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/chatprefs"
@@ -141,6 +142,142 @@ func EmojiLikeTool(caller ActionCaller) tool.Definition {
 				return tool.Result{Error: "没贴上：" + err.Error()}, nil
 			}
 			return tool.Result{Content: "贴了 " + string(runes[0])}, nil
+		},
+	}
+}
+
+// signatureCooldown is the minimum gap between profile writes — QQ
+// risk-controls accounts that change their signature too often, so a
+// moody persona can't trip the anti-abuse tripwire.
+const signatureCooldown = 30 * time.Minute
+
+// SignatureTool lets the persona update her own QQ signature — the tiny
+// mood line real people flip when they're happy or annoyed. Changes are
+// rate-limited per bot account; the tool only touches the bot's own
+// profile, never anyone else's.
+func SignatureTool(caller ActionCaller, now func() time.Time) tool.Definition {
+	var mu sync.Mutex
+	lastChange := map[string]time.Time{}
+	if now == nil {
+		now = time.Now
+	}
+	return tool.Definition{
+		Name: "update_signature",
+		Description: "改自己的 QQ 个性签名（别人看你资料时那一句心情/状态）。心情明显变化、想了句很贴当下的话时用。" +
+			"参数 signature 填新签名，别太长。改的不是对方也不是群，是你自己的资料。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"signature": map[string]any{
+					"type":        "string",
+					"description": "新的个性签名内容",
+				},
+			},
+			"required": []string{"signature"},
+		},
+		Permission: tool.PermissionEveryone,
+		Timeout:    10 * time.Second,
+		Handler: func(ctx context.Context, call tool.Call) (tool.Result, error) {
+			if caller == nil {
+				return tool.Result{Error: "签名不可用"}, nil
+			}
+			var args struct {
+				Signature string `json:"signature"`
+			}
+			_ = json.Unmarshal(call.Arguments, &args)
+			sig := strings.TrimSpace(args.Signature)
+			if sig == "" {
+				return tool.Result{Error: "签名是空的"}, nil
+			}
+			if n := len([]rune(sig)); n > 60 {
+				return tool.Result{Error: fmt.Sprintf("签名太长了（%d 字），压到 60 字内", n)}, nil
+			}
+			selfID := call.Actor.SelfID
+			mu.Lock()
+			if last, ok := lastChange[selfID]; ok && now().Sub(last) < signatureCooldown {
+				wait := signatureCooldown - now().Sub(last)
+				mu.Unlock()
+				return tool.Result{Error: fmt.Sprintf(
+					"签名刚改没多久，冷却中——%d 分钟后再改", int(wait.Minutes())+1)}, nil
+			}
+			mu.Unlock()
+			_, err := caller.CallFor(ctx, selfID, "set_qq_profile", map[string]any{
+				"personal_note": sig,
+			})
+			if err != nil {
+				return tool.Result{Error: "没改成：" + err.Error()}, nil
+			}
+			mu.Lock()
+			lastChange[selfID] = now()
+			mu.Unlock()
+			return tool.Result{Content: "签名改成「" + sig + "」了"}, nil
+		},
+	}
+}
+
+// qzoneCooldown keeps feed posts rare — spamming 说说 reads bot, and QQ
+// throttles accounts that post too often anyway.
+const qzoneCooldown = 2 * time.Hour
+
+// QzoneTool lets the persona post to her own QQ 空间 — the mood line or
+// little moment a real person broadcasts when chat isn't enough. Own
+// feed only; it can never post to anyone else's space.
+func QzoneTool(caller ActionCaller, now func() time.Time) tool.Definition {
+	var mu sync.Mutex
+	lastPost := map[string]time.Time{}
+	if now == nil {
+		now = time.Now
+	}
+	return tool.Definition{
+		Name: "post_qzone",
+		Description: "发一条自己的 QQ 空间说说（你的个人动态，好友刷空间能看到）。有想公开碎碎念的事——心情、小事、日常——用；" +
+			"私密的话发聊天里就行，别往空间发。参数 content 写说说正文。",
+		Parameters: map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"content": map[string]any{
+					"type":        "string",
+					"description": "说说正文，口语一点，别太长",
+				},
+			},
+			"required": []string{"content"},
+		},
+		Permission: tool.PermissionEveryone,
+		Timeout:    15 * time.Second,
+		Handler: func(ctx context.Context, call tool.Call) (tool.Result, error) {
+			if caller == nil {
+				return tool.Result{Error: "空间不可用"}, nil
+			}
+			var args struct {
+				Content string `json:"content"`
+			}
+			_ = json.Unmarshal(call.Arguments, &args)
+			content := strings.TrimSpace(args.Content)
+			if content == "" {
+				return tool.Result{Error: "说说是空的"}, nil
+			}
+			if n := len([]rune(content)); n > 200 {
+				return tool.Result{Error: fmt.Sprintf("说说太长了（%d 字），压到 200 字内", n)}, nil
+			}
+			selfID := call.Actor.SelfID
+			mu.Lock()
+			if last, ok := lastPost[selfID]; ok && now().Sub(last) < qzoneCooldown {
+				wait := qzoneCooldown - now().Sub(last)
+				mu.Unlock()
+				return tool.Result{Error: fmt.Sprintf(
+					"刚发过说说，%d 分钟后再发", int(wait.Minutes())+1)}, nil
+			}
+			mu.Unlock()
+			_, err := caller.CallFor(ctx, selfID, "send_qzone", map[string]any{
+				"content": content,
+			})
+			if err != nil {
+				return tool.Result{Error: "没发出去：" + err.Error()}, nil
+			}
+			mu.Lock()
+			lastPost[selfID] = now()
+			mu.Unlock()
+			return tool.Result{Content: "说说发出去了"}, nil
 		},
 	}
 }
