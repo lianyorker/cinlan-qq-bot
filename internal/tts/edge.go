@@ -196,7 +196,7 @@ func ssmlMessage(connID, voice, style, rate, pitch, text string, plainSSML bool)
 		inner = fmt.Sprintf(
 			`<prosody pitch='%s' rate='%s' volume='+0%%'>%s</prosody>`,
 			defaultOr(pitch, "+0Hz"), defaultOr(rate, "+0%"),
-			xmlEscape(text),
+			xmlEscapeSpeech(text),
 		)
 	}
 	if strings.TrimSpace(style) != "" {
@@ -230,7 +230,7 @@ func prosodyClauses(pitch, rate, text string) string {
 	if len(clauses) <= 1 {
 		return fmt.Sprintf(
 			`<prosody pitch='%s' rate='%s' volume='+0%%'>%s</prosody>`,
-			basePitch, baseRate, xmlEscape(text),
+			basePitch, baseRate, xmlEscapeSpeech(text),
 		)
 	}
 	var b strings.Builder
@@ -238,7 +238,7 @@ func prosodyClauses(pitch, rate, text string) string {
 		b.WriteString(fmt.Sprintf(
 			`<prosody pitch='%s' rate='%s'>%s</prosody>`,
 			shiftPitch(basePitch, i), shiftRate(baseRate, i),
-			xmlEscape(clause),
+			xmlEscapeSpeech(clause),
 		))
 	}
 	return b.String()
@@ -336,4 +336,15 @@ var xmlEscaper = strings.NewReplacer(
 
 func xmlEscape(text string) string {
 	return xmlEscaper.Replace(text)
+}
+
+// xmlEscapeSpeech escapes prose for SSML and additionally turns the
+// lyric/pause marks … and ... into explicit 800ms breaks — Edge would
+// otherwise swallow the ellipsis and the interlude disappears. The
+// single-rune … must be replaced before the ASCII dots.
+func xmlEscapeSpeech(text string) string {
+	text = xmlEscape(text) // escape first — inserted tags must stay literal
+	text = strings.ReplaceAll(text, "…", `<break time="800ms"/>`)
+	text = strings.ReplaceAll(text, "...", `<break time="800ms"/>`)
+	return text
 }

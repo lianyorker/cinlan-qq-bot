@@ -50,19 +50,14 @@ type voiceSynth interface {
 	) error
 }
 
-const voicePromptNote = `你可以发语音：说话台词用 [[VOICE]]词[[/VOICE]]（最多两段，每段不超过200字，要口语化，可以带语气词、拟声词）。
-
-使用规则：
-- 发普通语音用 [[VOICE]]；语速微调写冒号+倍速，如 [[VOICE:1.1]]。
-- 标记内只放要被原样念出来的台词本身，禁止写"这是一段语音""这是设计的音色"之类的说明文字，也不要写（温柔地说）这类括号舞台指示。
-- 台词只写进标记里：文字部分别再复述/转述语音内容，也不要回顾"我刚才对你说了什么"——语音和文字是一条消息的两部分，不是让你说两遍。
-- 对方连续反复要求语音时可以按你的人设傲娇拒绝，不必每次都念。
-- 平时闲聊不要随便用语音，保持稀罕感。`
+// voicePromptNote covers ordinary voice plus the privileged "say it for
+// me" case — merged from the old voicePromptNote+voicePrivilegedRequestNote
+// pair so the prompt stays short.
+const voicePromptNote = `你可以发语音：台词写进 [[VOICE]]词[[/VOICE]]（最多两段、每段200字内、口语化可带语气词），微调语速用 [[VOICE:1.1]] 这种；对方明说"用语音说/叫声xx给我听"时必须真的打标记念出来。标记里只放被念的台词——禁（温柔地说）这类舞台指示、禁"这是一段语音"这类说明文字，文字泡别复述/转述语音内容；闲聊少发保持稀罕感，被连着要可以按人设傲娇拒。`
 
 // singPromptNote is appended only when the chat has singing enabled —
 // it teaches the [[SING]] marker the model otherwise must not emit.
-const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 唱一小段（自己编的歌词小段，不照抄真实歌词，不超过两段每段200字内，可以带～拖音）；语速按歌定 [[SING:0.7]] 慢歌、[[SING:1.2]] 快歌；没说清唱什么可以先反问。
-唱歌时的消息顺序：最多先发一条寒暄（"咳咳清嗓子"之类），然后 [[SING]] 唱，唱完最多再发一条收尾——歌词只写进标记里，文字泡里严禁再复述歌词；"唱完啦"这类收尾只准说一遍，整个唱歌回合连文字泡最多 3 条。你是用和自己说话一样的声音真唱，被夸好听可以得意，唱得不好就嘴硬说没发挥好。`
+const singPromptNote = `- 唱歌：对方让你唱歌时用 [[SING]]歌词[[/SING]] 唱一小段（自己编不照抄真歌词，每段200字内，可带～拖音）；语速按歌定：抒情慢歌 [[SING:0.7]]、流行中速 [[SING:1.0]]、欢快快歌 [[SING:1.2]]、说唱 [[SING:1.3]]，歌词里的 ... 是间奏停顿；没说清唱什么先反问。顺序：最多一条寒暄→唱→最多一条收尾，歌词只进标记文字泡严禁复述、收尾只一遍、整回合文字泡≤3条；你用平时说话的声音真唱，被夸可得意，唱砸了嘴硬。`
 
 // singDisabledNote is appended while singing is off — the model must
 // admit it cannot sing instead of silently emitting a dropped marker.
@@ -73,17 +68,10 @@ const singDisabledNote = `- 唱歌功能暂未开放：对方要你唱歌就直�
 // markers that get dropped on the floor.
 const voiceDisabledNote = `语音功能当前已关闭：对方要语音就直说现在开不了/没开，严禁打 [[VOICE]] 或 [[SING]] 标记假装发过——这些标记会被直接丢掉，对方什么都听不到。`
 
-// voicePrivilegedRequestNote is only injected for trusted senders (private
-// whitelist chats, group admins/owners, binding allowed_users): it tells the
-// model explicit "say this for me" requests must actually be spoken, not
-// faked in text. Kept out of the shared note so regular group members
-// cannot command voice lines.
-const voicePrivilegedRequestNote = `- 对方明确要求听语音（"叫声xx给我听""用语音说"之类）时，要用 [[VOICE]] 把那句台词真的念出来，不能只在文字里假装说过。`
-
 // atPromptNote (group chats only) teaches the marker that becomes a real
 // @ notification — the human touch for calling someone out or stirring
 // the pot. The cap and "don't spam" hint keep it from pinging everyone.
-const atPromptNote = `- 想@某人时在回复里写 [[AT]]（@当前说话的人）或 [[AT:QQ号]]（@指定成员），对方会真的收到@提醒。点名回怼、叫人来围观时用，一条消息最多@3次，别见人就@。`
+const atPromptNote = `- 回复里写 [[AT]]@当前说话的人、[[AT:QQ号]]@指定成员，对方真收@提醒；点名回怼、叫人围观时用，一条消息最多@3次别见人就@。`
 
 // voiceClipMetaPatterns strip leftover stage directions like （温柔地唱）
 // or meta sentences like "这是一段设计的音色" at the start of a clip
@@ -284,7 +272,30 @@ func (s *Service) personaVoice(state *flowState) (string, float64) {
 	if !ok {
 		return "", 0
 	}
-	return profile.Voice, profile.VoiceRate
+	voice, rate := profile.Voice, profile.VoiceRate
+	// Mood nudges the tempo: sour chats speak slower, warm chats pick up
+	// the pace — the way a real person's speech follows their mood.
+	if rate > 0 && s.cfg.MoodEnabled && s.chatPrefs != nil {
+		rate = moodRate(rate, s.chatPrefs.MoodScore(
+			state.platform, state.selfID,
+			state.chatType, state.chatID, s.now(),
+		))
+	}
+	return voice, rate
+}
+
+// moodRate maps the -100..+100 mood score onto a gentle tempo factor:
+// -100 → ×0.85, 0 → ×1.0, +100 → ×1.15, then clamps to 0.5..2.0 so a
+// broken mood input can never garble the clip.
+func moodRate(rate float64, mood int) float64 {
+	rate *= 1.0 + float64(mood)/666.0
+	if rate < 0.5 {
+		return 0.5
+	}
+	if rate > 2.0 {
+		return 2.0
+	}
+	return rate
 }
 
 func truncateRunes(text string, limit int) string {

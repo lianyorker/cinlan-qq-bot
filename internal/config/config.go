@@ -238,37 +238,40 @@ type Config struct {
 	WebScreenshotHeight       int
 	WebScreenshotWait         time.Duration
 
-	MaxHistory         int
-	SessionTTL         time.Duration
-	SessionStorePath   string
-	SessionLegacyPath  string
-	SessionKey         string
-	SessionCompressAt  int
-	SessionRetain      int
-	SessionSemanticTTL time.Duration
-	SessionLearning    bool
-	CronStorePath      string
-	KnowledgeDir       string
-	KnowledgeTopK      int
-	MCPServersFile     string
-	SkillsDir          string
-	SubagentsFile      string
-	PluginsFile        string
-	ProvidersFile      string
-	PersonasFile       string
-	PersonaPacksDir    string
-	ChatBindingsFile   string
-	FileCatalogPath    string
-	FileMaxBytes       int64
-	FileSendTimeout    time.Duration
-	BotAllowedRoot     string
-	SecurityStorePath  string
-	MaxConcurrency     int
-	UserCooldown       time.Duration
-	UserRateLimit      int
-	UserRateWindow     time.Duration
-	AttentionTimeout   time.Duration
-	AttentionRateLimit int
+	MaxHistory        int
+	SessionTTL        time.Duration
+	SessionStorePath  string
+	SessionLegacyPath string
+	SessionKey        string
+	SessionCompressAt int
+	SessionRetain     int
+	// SessionSummaryBudget caps the compressed session summary in runes;
+	// 4000 covers casual groups while busy business chats can raise it.
+	SessionSummaryBudget int
+	SessionSemanticTTL   time.Duration
+	SessionLearning      bool
+	CronStorePath        string
+	KnowledgeDir         string
+	KnowledgeTopK        int
+	MCPServersFile       string
+	SkillsDir            string
+	SubagentsFile        string
+	PluginsFile          string
+	ProvidersFile        string
+	PersonasFile         string
+	PersonaPacksDir      string
+	ChatBindingsFile     string
+	FileCatalogPath      string
+	FileMaxBytes         int64
+	FileSendTimeout      time.Duration
+	BotAllowedRoot       string
+	SecurityStorePath    string
+	MaxConcurrency       int
+	UserCooldown         time.Duration
+	UserRateLimit        int
+	UserRateWindow       time.Duration
+	AttentionTimeout     time.Duration
+	AttentionRateLimit   int
 	// AttentionChatRateLimit caps judge calls per chat per window — the
 	// per-actor limit above stops one spammer; this one stops a flooding
 	// room. Shares AttentionRateWindow.
@@ -622,6 +625,7 @@ func Load() (Config, error) {
 	cfg.SessionKey = strings.TrimSpace(os.Getenv("SESSION_ENCRYPTION_KEY"))
 	cfg.SessionCompressAt = parseInt("SESSION_COMPRESSION_THRESHOLD", 16, 4, &errs)
 	cfg.SessionRetain = parseInt("SESSION_COMPRESSION_RETAIN", 6, 2, &errs)
+	cfg.SessionSummaryBudget = parseInt("SESSION_SUMMARY_BUDGET", 4000, 200, &errs)
 	// Semantic memory outlives raw turns: SESSION_TTL controls history,
 	// this controls how long compressed summary/memory still count.
 	cfg.SessionSemanticTTL = parseDuration(

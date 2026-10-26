@@ -12,10 +12,11 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 )
 
-const (
-	maxSummaryRunes = 8000
-	maxMemoryRunes  = 4000
-)
+const maxMemoryRunes = 4000
+
+// defaultSummaryBudget backs SESSION_SUMMARY_BUDGET; 4000 runes covers
+// a casual chat — busy business bindings can raise it via env.
+const defaultSummaryBudget = 4000
 
 type compressionResult struct {
 	Summary string `json:"summary"`
@@ -78,7 +79,11 @@ memory 不得保存价格、库存、有货状态、账号状态、源码路径�
 	if err != nil {
 		return err
 	}
-	result, err := decodeCompressionResult(response.Reply)
+	budget := s.cfg.SessionSummaryBudget
+	if budget <= 0 {
+		budget = defaultSummaryBudget
+	}
+	result, err := decodeCompressionResult(response.Reply, budget)
 	if err != nil {
 		return err
 	}
@@ -195,7 +200,7 @@ func (s *Service) runCompressionTask(ctx context.Context, state *flowState) {
 	}
 }
 
-func decodeCompressionResult(value string) (compressionResult, error) {
+func decodeCompressionResult(value string, summaryBudget int) (compressionResult, error) {
 	value = strings.TrimSpace(value)
 	if strings.HasPrefix(value, "```") {
 		lines := strings.Split(value, "\n")
@@ -219,10 +224,10 @@ func decodeCompressionResult(value string) (compressionResult, error) {
 	if result.Summary == "" {
 		return compressionResult{}, errors.New("session compression returned an empty summary")
 	}
-	if utf8.RuneCountInString(result.Summary) > maxSummaryRunes {
+	if utf8.RuneCountInString(result.Summary) > summaryBudget {
 		return compressionResult{}, fmt.Errorf(
 			"session summary exceeds %d runes",
-			maxSummaryRunes,
+			summaryBudget,
 		)
 	}
 	if utf8.RuneCountInString(result.Memory) > maxMemoryRunes {

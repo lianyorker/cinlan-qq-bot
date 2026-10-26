@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 )
 
 // Level names, ascending. Personas may attach a per-level behavior prompt
@@ -74,17 +75,29 @@ func GenericHint(level string) string {
 	return ""
 }
 
+// dailyDeltaCap bounds how far one user's score can move per day —
+// [[AFFINITY:±N]] markers are clamped to ±5 each, but nothing stopped
+// a chatterbox from farming +5 all day long.
+const dailyDeltaCap = 15
+
 type Store struct {
-	path   string
-	mu     sync.RWMutex
-	scores map[string]int
+	path       string
+	mu         sync.RWMutex
+	scores     map[string]int
+	dailyDelta map[string]int // key → net change already spent today
+	dailyDate  string         // "2006-01-02" — rolls the cap at midnight
 }
 
 // Load opens the JSON score file; a missing file yields an empty store.
 // legacyPlatform is stamped onto pre-platform two-part keys so an
 // upgrade keeps old scores instead of orphaning them.
 func Load(path, legacyPlatform string) (*Store, error) {
-	store := &Store{path: strings.TrimSpace(path), scores: map[string]int{}}
+	store := &Store{
+		path:       strings.TrimSpace(path),
+		scores:     map[string]int{},
+		dailyDelta: map[string]int{},
+		dailyDate:  time.Now().Format("2006-01-02"),
+	}
 	if store.path == "" {
 		return store, nil
 	}
@@ -146,15 +159,43 @@ func (s *Store) Score(platform, selfID, userID string) int {
 	return s.scores[Key(platform, selfID, userID)]
 }
 
-// Add increments a user's score by delta and persists the file.
+// Add increments a user's score by delta and persists the file. The
+// delta is trimmed so the user's net daily change stays inside
+// ±dailyDeltaCap; the cap is in-memory only — a restart is a fresh day.
 func (s *Store) Add(platform, selfID, userID string, delta int) int {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+
+	today := time.Now().Format("2006-01-02")
+	if s.dailyDate != today {
+		s.dailyDelta = map[string]int{}
+		s.dailyDate = today
+	}
+	if s.dailyDelta == nil {
+		s.dailyDelta = map[string]int{}
+	}
+
 	key := Key(platform, selfID, userID)
+	used := s.dailyDelta[key]
+	if delta > 0 {
+		if remain := dailyDeltaCap - used; remain <= 0 {
+			return s.scores[key]
+		} else if delta > remain {
+			delta = remain
+		}
+	} else if delta < 0 {
+		if remain := dailyDeltaCap + used; remain <= 0 {
+			return s.scores[key]
+		} else if -delta > remain {
+			delta = -remain
+		}
+	}
+
 	s.scores[key] += delta
 	if s.scores[key] < 0 {
 		s.scores[key] = 0
 	}
+	s.dailyDelta[key] += delta
 	_ = s.saveLocked()
 	return s.scores[key]
 }

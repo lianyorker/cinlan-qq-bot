@@ -1069,10 +1069,8 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			} else {
 				request.SystemPrompt += "\n" + singDisabledNote
 			}
-			if state.chatType == platform.ChatPrivate ||
-				state.replyPolicy.AllowsUser(state.userID) {
-				request.SystemPrompt += "\n" + voicePrivilegedRequestNote
-			}
+			// The "say it for me" rule now lives inside voicePromptNote —
+			// one merged note instead of a privileged-only append.
 		}
 	}
 	// Group chats get the @ marker so replies can ping members for real —
