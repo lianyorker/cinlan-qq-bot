@@ -1,6 +1,6 @@
 # Cinlan QQ Bot
 
-`cinlan-qq-bot` 是面向个人 QQ 账号的群聊智能客服运行时。默认主链直接加载到官方 QQNT，不要求安装、启动或运行 NapCat/AstrBot。
+`cinlan-qq-bot` 是面向个人 QQ 账号的拟人化群聊/私聊运行时：按绑定挂人格（persona）、长期记忆、知识库和工具，可扮演陪伴、客服等多种角色。默认主链直接加载到官方 QQNT，不要求安装、启动或运行 NapCat/AstrBot。
 
 ```text
 Official QQNT
