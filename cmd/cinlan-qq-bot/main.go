@@ -82,34 +82,6 @@ func main() {
 			"max_bytes", cfg.ImageMaxBytes,
 		)
 	}
-	var webScreenshot *media.WebScreenshot
-	if cfg.WebScreenshotEnabled {
-		webScreenshot, err = media.NewWebScreenshot(
-			media.WebScreenshotConfig{
-				BrowserPath:  cfg.WebScreenshotBrowserPath,
-				AllowedHosts: cfg.WebScreenshotAllowedHosts,
-				OutputDir:    cfg.WebScreenshotOutputDir,
-				AllowedRoot:  cfg.BotAllowedRoot,
-				MaxBytes:     cfg.WebScreenshotMaxBytes,
-				Timeout:      cfg.WebScreenshotTimeout,
-				Retention:    cfg.WebScreenshotRetention,
-				Width:        cfg.WebScreenshotWidth,
-				Height:       cfg.WebScreenshotHeight,
-				Wait:         cfg.WebScreenshotWait,
-			},
-		)
-		if err != nil {
-			logger.Error("failed to configure web screenshots", "error", err)
-			os.Exit(2)
-		}
-		logger.Info(
-			"web screenshot configured",
-			"browser", cfg.WebScreenshotBrowserPath,
-			"allowed_hosts", len(cfg.WebScreenshotAllowedHosts),
-			"output_dir", webScreenshot.OutputDir(),
-			"max_bytes", cfg.WebScreenshotMaxBytes,
-		)
-	}
 	if len(os.Args) == 2 && os.Args[1] == "--migrate-sessions-only" {
 		sessionStore, openErr := openSessionStore(cfg)
 		if openErr != nil {
@@ -213,9 +185,6 @@ func main() {
 		if imageGenerator != nil {
 			imageSendRoots = []string{imageGenerator.OutputDir()}
 		}
-		if webScreenshot != nil {
-			imageSendRoots = appendUniquePath(imageSendRoots, webScreenshot.OutputDir())
-		}
 		nativeAdapter, openErr := qqntplatform.NewAdapter(qqntplatform.Config{
 			ListenAddr:       cfg.QQNTIPCListenAddr,
 			Token:            cfg.QQNTIPCToken,
@@ -233,7 +202,7 @@ func main() {
 			RuntimePath:      cfg.QQNTRuntimePath,
 			PatchPackagePath: cfg.QQNTPatchPackagePath,
 			ImageSendRoots:   imageSendRoots,
-			ImageMaxBytes:    maxInt64(cfg.ImageMaxBytes, cfg.WebScreenshotMaxBytes),
+			ImageMaxBytes:    cfg.ImageMaxBytes,
 		}, logger)
 		if openErr != nil {
 			logger.Error("failed to configure QQNT runtime", "error", openErr)
@@ -713,15 +682,6 @@ func main() {
 			logger.Info("model iq chart enabled", "interval", cfg.IQChartInterval)
 		}
 	}
-	if webScreenshot != nil {
-		if registerErr := botService.ToolRegistry().Register(
-			mediaLimiter.Wrap(webScreenshot.Tool()),
-		); registerErr != nil {
-			logger.Error("failed to register web screenshot tool", "error", registerErr)
-			os.Exit(2)
-		}
-		logger.Info("web screenshot tool enabled")
-	}
 	var pluginManager *plugin.WebhookManager
 	if cfg.PluginsFile != "" {
 		pluginManager, err = plugin.OpenWebhookManager(
@@ -1039,11 +999,4 @@ func appendUniquePath(paths []string, value string) []string {
 		}
 	}
 	return append(paths, value)
-}
-
-func maxInt64(left, right int64) int64 {
-	if left > right {
-		return left
-	}
-	return right
 }

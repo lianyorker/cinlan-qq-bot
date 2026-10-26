@@ -124,8 +124,6 @@ func (l *MediaLimiter) failureText(name, reason string) string {
 	switch name {
 	case "generate_image":
 		return "生图失败了，稍后再试试～"
-	case "capture_webpage":
-		return "截图失败了，稍后再试试～"
 	default:
 		return "生成失败了，稍后再试试～"
 	}

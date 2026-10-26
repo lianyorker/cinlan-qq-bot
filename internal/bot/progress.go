@@ -20,12 +20,6 @@ func progressReply(allowedTools []string, text string) string {
 	) {
 		return "我给你生成一下。"
 	}
-	if _, ok := tools["capture_webpage"]; ok && containsProgressWord(
-		text,
-		"网页", "网站", "官网", "截图",
-	) {
-		return "我打开网页看一下。"
-	}
 	return ""
 }
 

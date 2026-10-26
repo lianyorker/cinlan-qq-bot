@@ -49,7 +49,7 @@ cinlan-qq-bot/
 │  ├─ plugin/ command/   # 插件与命令 registry
 │  ├─ tool/ skill/       # Agent Tool 与 SKILL.md
 │  ├─ mcp/ subagent/     # MCP Streamable HTTP 与 subagent handoff
-│  ├─ media/             # 生图与网页截图
+│  ├─ media/             # 生图与IQ图
 │  ├─ filedelivery/      # 文件目录与发送
 │  ├─ cron/              # 定时通知任务
 │  ├─ security/          # 危险请求指纹与防护
@@ -97,7 +97,7 @@ OneBot 11 的四种 transport 仍保留为可选兼容出口，只有设置 `QQ_
 - Provider、Persona、Plugin、Command、Tool registry。
 - HTTP webhook 插件、MCP Streamable HTTP、`SKILL.md`、同步 subagent handoff。
 - 配置化文件目录和 `deliver_file` Agent Tool；群聊引导加好友，私聊发送指定文件。
-- 可选的真实图片生成、网页截图和业务查询 Tool；具体能力由本地 Binding 配置决定。
+- 可选的真实图片生成和业务查询 Tool；具体能力由本地 Binding 配置决定。
 - Markdown/TXT 本地知识库、加密 SQLite 会话、自动压缩和 Cron 通知任务。
 - Bearer 保护的 `/api/v1/*` 管理 API。
 - 拟人化亲历层：会话内的心情计（`QQ_MOOD_ENABLED`）随 @她的消息起伏，
@@ -250,8 +250,6 @@ AGENT_MAX_TOOL_ROUNDS=4
 只有注册到 `ToolRegistry` 的工具会发送给模型。未注册工具、非法 JSON、超限参数或权限不足都不会执行。
 
 管理员指定文件的配置和群转私聊流程见 [docs/文件交付.md](docs/文件交付.md)。
-真实网页截图的白名单、网络隔离和 Chrome 配置见
-[docs/网页截图.md](docs/网页截图.md)。
 面向公开部署的配置、资源隔离和发布前检查见
 [docs/公开部署指南.md](docs/公开部署指南.md)。
 
@@ -264,7 +262,7 @@ AGENT_MAX_TOOL_ROUNDS=4
 ```
 
 检查失败时不要提交或推送。真实账号、群号、业务 Persona、私有知识库、会话库、
-截图/日志、业务源码和凭据只能保留在本地忽略路径中。
+日志、业务源码和凭据只能保留在本地忽略路径中。
 
 ## 主要配置
 
@@ -295,15 +293,6 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `IMAGE_TIMEOUT` | `120s` | 图片生成请求超时 |
 | `IMAGE_RETENTION` | `24h` | 生成图片本地保留时间 |
 | `IMAGE_ENHANCE_PROMPT` | `true` | Pollinations 请求启用 prompt enhancement；仍使用随机 seed |
-| `WEB_SCREENSHOT_ENABLED` | `false` | 启用真实网页截图 Tool |
-| `WEB_SCREENSHOT_BROWSER_PATH` | empty | Chrome `chrome.exe` 的绝对路径 |
-| `WEB_SCREENSHOT_ALLOWED_HOSTS` | empty | 逗号分隔的精确 HTTPS host 白名单 |
-| `WEB_SCREENSHOT_OUTPUT_DIR` | `data/generated-images` | 截图目录，必须位于 `BOT_ALLOWED_ROOT` 内 |
-| `WEB_SCREENSHOT_TIMEOUT` | `45s` | 单次网页截图超时 |
-| `WEB_SCREENSHOT_RETENTION` | `24h` | 截图本地保留时间 |
-| `WEB_SCREENSHOT_MAX_BYTES` | `20971520` | 单张截图最大字节数 |
-| `WEB_SCREENSHOT_WIDTH` / `HEIGHT` | `1365` / `768` | 截图 viewport 尺寸，最大 4096 |
-| `WEB_SCREENSHOT_WAIT` | `3s` | 页面加载后的虚拟时间等待 |
 | `FILE_CATALOG_PATH` | empty | Agent 可发送的文件目录 JSON；空值禁用文件交付 |
 | `FILE_DELIVERY_MAX_BYTES` | `104857600` | 单个目录文件的最大字节数 |
 | `FILE_DELIVERY_TIMEOUT` | `30s` | 文件发送 Tool 超时 |
@@ -319,9 +308,9 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `BOT_USER_RATE_LIMIT` / `BOT_USER_RATE_WINDOW` | `10` / `1m` | 同一 QQ 的正式回答滑动窗口消息配额 |
 | `BOT_ATTENTION_TIMEOUT` | `5s` | Binding 启用 AI 判断时，单次回复决策的独立超时 |
 | `BOT_ATTENTION_RATE_LIMIT` / `BOT_ATTENTION_RATE_WINDOW` | `20` / `1m` | 同一 QQ 的 AI 回复决策独立预算 |
-| `MEDIA_TOOL_USER_COOLDOWN` | `30s` | 同一 QQ 生图和截图共用冷却 |
+| `MEDIA_TOOL_USER_COOLDOWN` | `30s` | 同一 QQ 媒体工具共用冷却 |
 | `MEDIA_TOOL_USER_LIMIT` / `MEDIA_TOOL_WINDOW` | `10` / `1h` | 同一 QQ 媒体 Tool 滑动窗口配额 |
-| `MEDIA_TOOL_MAX_CONCURRENCY` | `2` | 全局并行生图/截图任务上限 |
+| `MEDIA_TOOL_MAX_CONCURRENCY` | `2` | 全局并行媒体任务上限 |
 | `CRON_STORE_PATH` | `data/cron.json` | Cron 持久化路径 |
 | `HTTP_LISTEN_ADDR` | `127.0.0.1:18080` | 健康检查和 Admin API |
 | `ADMIN_API_TOKEN` | empty | Admin API Bearer token |
@@ -433,7 +422,6 @@ Windows 包包含 Go runtime、QQNT loader、hook 和 `runtime/qqnt`。Linux 和
 - AVSDK listener 只上报固定格式摘要：回调名、动作码候选、参数类型、长度和 SHA256；不转发原始 Buffer，事件不进入普通消息流水线。
 - QQ 视频接听、拒绝、挂断和媒体收发尚未开放；动作码必须通过白名单私聊实机采样确认后才能实现，模型永远不能主动拨号。
 - 主动语音、视频及群文件发送尚未开放；收到的视频目前只保留消息组件，不做视频理解。
-- `capture_webpage` 只截图管理员白名单中的 HTTPS 页面；它不复用 QQ 登录态，也不等价于桌面 QQ 截图。
 - QQNT 更新可能改变 native interface；runtime 会保持 `/readyz` 为 503 并输出实际错误，需按版本做兼容验证。
 - 已经普通方式启动的 QQ 无法补做启动期 package redirect。默认要求先退出 QQ，再运行 `start.cmd`。
 - 官方 QQ 登录、账号风控和协议实现仍由官方 QQNT 提供；Cinlan 不复制 QQ 协议栈。

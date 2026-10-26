@@ -24,14 +24,8 @@ func TestProgressReplyMatchesOnlyRelevantToolRequests(t *testing.T) {
 			want:  "我给你生成一下。",
 		},
 		{
-			name:  "web screenshot",
-			tools: []string{"capture_webpage"},
-			text:  "帮我截一下官网首页",
-			want:  "我打开网页看一下。",
-		},
-		{
 			name:  "casual",
-			tools: []string{"capture_webpage"},
+			tools: []string{"generate_image"},
 			text:  "你好",
 			want:  "",
 		},
@@ -50,7 +44,7 @@ func TestSlowToolRequestSendsProgressBeforeFinalReply(t *testing.T) {
 	agentClient := &fakeAgent{
 		reply: func(domain.AgentRequest) (domain.AgentResponse, error) {
 			time.Sleep(2600 * time.Millisecond)
-			return domain.AgentResponse{Reply: "官网首页截图已生成。"}, nil
+			return domain.AgentResponse{Reply: "图片已生成。"}, nil
 		},
 	}
 	sender := &fakeSender{}
@@ -67,7 +61,7 @@ func TestSlowToolRequestSendsProgressBeforeFinalReply(t *testing.T) {
 		SelfID:   "10001",
 		ChatType: "group",
 		ChatID:   "30003",
-		Tools:    []string{"capture_webpage"},
+		Tools:    []string{"generate_image"},
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -76,12 +70,12 @@ func TestSlowToolRequestSendsProgressBeforeFinalReply(t *testing.T) {
 
 	service.handleEvent(
 		context.Background(),
-		testEvent("slow-web", "帮我截一下官网首页", true),
+		testEvent("slow-web", "帮我生成一张图片", true),
 	)
 
 	if len(sender.messages) != 2 ||
-		sender.messages[0].text != "我打开网页看一下。" ||
-		sender.messages[1].text != "官网首页截图已生成。" {
+		sender.messages[0].text != "我给你生成一下。" ||
+		sender.messages[1].text != "图片已生成。" {
 		t.Fatalf("sent messages = %#v", sender.messages)
 	}
 }

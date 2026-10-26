@@ -24,7 +24,7 @@ func TestMediaLimiterSharesCooldownAcrossMediaTools(t *testing.T) {
 		return Result{}, nil
 	}
 	first := limiter.Wrap(Definition{Name: "generate_image", Handler: handler})
-	second := limiter.Wrap(Definition{Name: "capture_webpage", Handler: handler})
+	second := limiter.Wrap(Definition{Name: "model_iq_chart", Handler: handler})
 	actor := Actor{Platform: "qq", SelfID: "bot", UserID: "user", ChatID: "group-a"}
 	if _, err := first.Handler(context.Background(), Call{Actor: actor}); err != nil {
 		t.Fatal(err)

@@ -227,17 +227,6 @@ type Config struct {
 	MentionFatigueWindow    time.Duration
 	MentionFatigueIgnorePct int
 
-	WebScreenshotEnabled      bool
-	WebScreenshotBrowserPath  string
-	WebScreenshotAllowedHosts []string
-	WebScreenshotOutputDir    string
-	WebScreenshotMaxBytes     int64
-	WebScreenshotTimeout      time.Duration
-	WebScreenshotRetention    time.Duration
-	WebScreenshotWidth        int
-	WebScreenshotHeight       int
-	WebScreenshotWait         time.Duration
-
 	MaxHistory        int
 	SessionTTL        time.Duration
 	SessionStorePath  string
@@ -587,54 +576,6 @@ func Load() (Config, error) {
 	cfg.MentionFatigueWindow = parseDuration("MENTION_FATIGUE_WINDOW", 10*time.Minute, true, &errs)
 	cfg.MentionFatigueIgnorePct = parseInt("MENTION_FATIGUE_IGNORE_PCT", 65, 0, &errs)
 
-	cfg.WebScreenshotEnabled = parseBool("WEB_SCREENSHOT_ENABLED", false, &errs)
-	cfg.WebScreenshotBrowserPath = strings.TrimSpace(
-		os.Getenv("WEB_SCREENSHOT_BROWSER_PATH"),
-	)
-	cfg.WebScreenshotAllowedHosts = parseList(
-		os.Getenv("WEB_SCREENSHOT_ALLOWED_HOSTS"),
-	)
-	cfg.WebScreenshotOutputDir = envOr(
-		"WEB_SCREENSHOT_OUTPUT_DIR",
-		"data/generated-images",
-	)
-	cfg.WebScreenshotMaxBytes = parseInt64(
-		"WEB_SCREENSHOT_MAX_BYTES",
-		20<<20,
-		1,
-		&errs,
-	)
-	cfg.WebScreenshotTimeout = parseDuration(
-		"WEB_SCREENSHOT_TIMEOUT",
-		45*time.Second,
-		true,
-		&errs,
-	)
-	cfg.WebScreenshotRetention = parseDuration(
-		"WEB_SCREENSHOT_RETENTION",
-		24*time.Hour,
-		true,
-		&errs,
-	)
-	cfg.WebScreenshotWidth = parseInt(
-		"WEB_SCREENSHOT_WIDTH",
-		1365,
-		1,
-		&errs,
-	)
-	cfg.WebScreenshotHeight = parseInt(
-		"WEB_SCREENSHOT_HEIGHT",
-		768,
-		1,
-		&errs,
-	)
-	cfg.WebScreenshotWait = parseDuration(
-		"WEB_SCREENSHOT_WAIT",
-		3*time.Second,
-		false,
-		&errs,
-	)
-
 	cfg.MaxHistory = parseInt("SESSION_MAX_HISTORY", 20, 2, &errs)
 	cfg.SessionTTL = parseDuration("SESSION_TTL", 24*time.Hour, true, &errs)
 	cfg.SessionStorePath = envOrAllowEmpty("SESSION_STORE_PATH", "data/sessions.db")
@@ -942,28 +883,6 @@ func (c Config) Validate() error {
 		}
 		if strings.TrimSpace(c.ImageOutputDir) == "" {
 			errs = append(errs, errors.New("IMAGE_OUTPUT_DIR must not be empty"))
-		}
-	}
-	if c.WebScreenshotEnabled {
-		if strings.TrimSpace(c.WebScreenshotBrowserPath) == "" {
-			errs = append(errs, errors.New(
-				"WEB_SCREENSHOT_BROWSER_PATH is required when web screenshots are enabled",
-			))
-		}
-		if len(c.WebScreenshotAllowedHosts) == 0 {
-			errs = append(errs, errors.New(
-				"WEB_SCREENSHOT_ALLOWED_HOSTS is required when web screenshots are enabled",
-			))
-		}
-		if strings.TrimSpace(c.WebScreenshotOutputDir) == "" {
-			errs = append(errs, errors.New(
-				"WEB_SCREENSHOT_OUTPUT_DIR must not be empty",
-			))
-		}
-		if c.WebScreenshotWidth > 4096 || c.WebScreenshotHeight > 4096 {
-			errs = append(errs, errors.New(
-				"WEB_SCREENSHOT_WIDTH and WEB_SCREENSHOT_HEIGHT must be at most 4096",
-			))
 		}
 	}
 	if c.UserRateLimit > 0 && c.UserRateWindow <= 0 {

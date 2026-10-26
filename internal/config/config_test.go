@@ -390,15 +390,6 @@ func clearConfigEnvironment(t *testing.T) {
 		"IMAGE_RETENTION",
 		"IMAGE_ENHANCE_PROMPT",
 		"WEB_SCREENSHOT_ENABLED",
-		"WEB_SCREENSHOT_BROWSER_PATH",
-		"WEB_SCREENSHOT_ALLOWED_HOSTS",
-		"WEB_SCREENSHOT_OUTPUT_DIR",
-		"WEB_SCREENSHOT_MAX_BYTES",
-		"WEB_SCREENSHOT_TIMEOUT",
-		"WEB_SCREENSHOT_RETENTION",
-		"WEB_SCREENSHOT_WIDTH",
-		"WEB_SCREENSHOT_HEIGHT",
-		"WEB_SCREENSHOT_WAIT",
 		"SESSION_MAX_HISTORY",
 		"SESSION_TTL",
 		"SESSION_STORE_PATH",
@@ -470,37 +461,17 @@ func TestLoadImageGenerationConfig(t *testing.T) {
 	}
 }
 
-func TestLoadWebScreenshotConfig(t *testing.T) {
+func TestLoadRejectsWebScreenshotEnv(t *testing.T) {
 	clearConfigEnvironment(t)
 	t.Setenv("QQ_GROUP_ALLOWLIST", "*")
 	t.Setenv("AGENT_API_URL", "http://127.0.0.1:9000/reply")
 	t.Setenv("WEB_SCREENSHOT_ENABLED", "true")
-	t.Setenv("WEB_SCREENSHOT_BROWSER_PATH", `C:\Program Files\Google\Chrome\Application\chrome.exe`)
-	t.Setenv("WEB_SCREENSHOT_ALLOWED_HOSTS", "example.com,github.com")
-	t.Setenv("WEB_SCREENSHOT_OUTPUT_DIR", "data/screenshots")
-	t.Setenv("WEB_SCREENSHOT_MAX_BYTES", "4096")
-	t.Setenv("WEB_SCREENSHOT_TIMEOUT", "40s")
-	t.Setenv("WEB_SCREENSHOT_RETENTION", "3h")
-	t.Setenv("WEB_SCREENSHOT_WIDTH", "1280")
-	t.Setenv("WEB_SCREENSHOT_HEIGHT", "720")
-	t.Setenv("WEB_SCREENSHOT_WAIT", "2s")
 
 	cfg, err := Load()
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if !cfg.WebScreenshotEnabled ||
-		cfg.WebScreenshotBrowserPath == "" ||
-		len(cfg.WebScreenshotAllowedHosts) != 2 ||
-		cfg.WebScreenshotOutputDir != "data/screenshots" ||
-		cfg.WebScreenshotMaxBytes != 4096 ||
-		cfg.WebScreenshotTimeout != 40*time.Second ||
-		cfg.WebScreenshotRetention != 3*time.Hour ||
-		cfg.WebScreenshotWidth != 1280 ||
-		cfg.WebScreenshotHeight != 720 ||
-		cfg.WebScreenshotWait != 2*time.Second {
-		t.Fatalf("web screenshot config = %#v", cfg)
-	}
+	_ = cfg // WEB_SCREENSHOT_* env vars are now ignored after tool removal
 }
 
 func TestLoadAttentionConfig(t *testing.T) {
