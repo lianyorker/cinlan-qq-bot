@@ -122,11 +122,11 @@ func registerLocalExtensions(
 	)
 
 	isOperator := func(c *command.Context) bool {
-		role := strings.ToLower(c.Event.SenderRole)
-		if role == "admin" || role == "owner" {
-			return true
-		}
-		return slices.Contains(cfg.AdminUserIDs, c.Event.UserID)
+		// Operator = whitelist only: the binding's allowed_users (Privileged)
+		// or the global BOT_ADMIN_USER_IDS. Group owner/admin titles are
+		// display context, not authority.
+		return c.Event.Privileged ||
+			slices.Contains(cfg.AdminUserIDs, c.Event.UserID)
 	}
 
 	register := func(def command.Definition) {

@@ -31,8 +31,11 @@ func TestSplitMarkerLinesKeepsPlainTextIntact(t *testing.T) {
 }
 
 func TestSoftSplitReplySplitsLongAtSentenceBoundary(t *testing.T) {
-	reply := "回来啦！快把门关好晚上起风还是蛮凉的没被吹到吧赶紧换身宽松衣服。茉莉花茶买的是常温的没别大口灌哦，坐下歇会儿陪我聊聊天好不好嘛"
-	parts := softSplitReply(reply, 0.9)
+	reply := "回来啦！快把门关好，晚上起风还是蛮凉的，没被吹到吧？赶紧换身宽松衣服。茉莉花茶买的是常温的，没别大口灌哦，坐下歇会儿陪我聊聊天好不好嘛，今天在外面跑了一整天肯定累坏了。"
+	if l := len([]rune(reply)); l < 80 {
+		t.Skipf("test text must reach the split band, got %d runes", l)
+	}
+	parts := softSplitReply(reply, 0.1)
 	if len(parts) != 2 {
 		t.Fatalf("softSplitReply() = %#v, want 2 parts", parts)
 	}
@@ -67,25 +70,28 @@ func TestSoftSplitReplyKeepsShortAndBoundaryFree(t *testing.T) {
 }
 
 func TestSoftSplitReplyJitterKeepsMidWhole(t *testing.T) {
-	reply := "还有一个多小时呢你慢慢来别着急。摸会儿鱼就能混过去了你先把手里的事情忙完我就在这里等你来找我不着急。"
-	if l := len([]rune(reply)); l < 40 || l >= 80 {
+	reply := "还有一个多小时呢你慢慢来别着急，路上注意安全不要跑。摸会儿鱼就能混过去了，你先把手里的事情忙完，我就在这里等你不着急。"
+	if l := len([]rune(reply)); l < 80 || l >= 160 {
 		t.Skipf("test text must stay in the mid band, got %d runes", l)
 	}
-	if got := softSplitReply(reply, 0.2); len(got) != 1 {
-		t.Fatalf("low roll should keep mid reply whole, got %#v", got)
+	if got := softSplitReply(reply, 0.9); len(got) != 1 {
+		t.Fatalf("high roll should keep mid reply whole, got %#v", got)
 	}
-	if got := softSplitReply(reply, 0.9); len(got) < 2 {
-		t.Fatalf("high roll should split mid reply, got %#v", got)
+	if got := softSplitReply(reply, 0.2); len(got) < 2 {
+		t.Fatalf("low roll should split mid reply, got %#v", got)
 	}
 }
 
 func TestSoftSplitReplyThirdPartOnLongTail(t *testing.T) {
 	// A long first segment pushes the mid-point boundary early, leaving
 	// a tail big enough to split once more — three bubbles total.
-	reply := strings.Repeat("很长的一段啊，", 16) + "。" +
-		strings.Repeat("中间一截短些，", 7) + "。" +
-		strings.Repeat("最后一截也短，", 7) + "。"
-	got := softSplitReply(reply, 0.9)
+	reply := strings.Repeat("很长的一段啊，", 22) + "。" +
+		strings.Repeat("中间一截短些，", 8) + "。" +
+		strings.Repeat("最后一截也短，", 8) + "。"
+	if l := len([]rune(reply)); l < 240 {
+		t.Skipf("test text must reach the third-bubble band, got %d runes", l)
+	}
+	got := softSplitReply(reply, 0.5)
 	if len(got) != 3 {
 		t.Fatalf("long tail should reach 3 parts, got %#v", got)
 	}
