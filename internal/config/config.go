@@ -284,7 +284,10 @@ type Config struct {
 	MediaToolLimit       int
 	MediaToolWindow      time.Duration
 	MediaToolConcurrency int
-	MessageDedupeTTL     time.Duration
+	// MediaToolNotify sends "正在生图~" before image work starts —
+	// a courtesy most chats don't need; opt-in via MEDIA_TOOL_NOTIFY.
+	MediaToolNotify  bool
+	MessageDedupeTTL time.Duration
 
 	// Humanization layer — makes the bot behave like a person rather than
 	// a vending machine. All persona-agnostic; personas stay operator-owned.
@@ -682,6 +685,7 @@ func Load() (Config, error) {
 		false,
 		&errs,
 	)
+	cfg.MediaToolNotify = parseBool("MEDIA_TOOL_NOTIFY", false, &errs)
 	cfg.MediaToolConcurrency = parseInt(
 		"MEDIA_TOOL_MAX_CONCURRENCY",
 		2,

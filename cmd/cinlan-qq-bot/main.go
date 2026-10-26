@@ -659,7 +659,7 @@ func main() {
 		},
 	).Run(ctx)
 	mediaLimiter.Notify = func(name string, actor tool.Actor, used, limit int) {
-		if name != "generate_image" || actor.ChatID == "" {
+		if !cfg.MediaToolNotify || name != "generate_image" || actor.ChatID == "" {
 			return
 		}
 		notice := fmt.Sprintf("正在生图，请稍等~")
