@@ -1,6 +1,7 @@
 package tts
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"net/http"
@@ -67,6 +68,50 @@ func TestBreezeSynthesizePostsVoiceIDAndWritesAudio(t *testing.T) {
 	written, err := os.ReadFile(out)
 	if err != nil || len(written) != len(fakeAudio) {
 		t.Fatalf("audio file = %d bytes, err %v", len(written), err)
+	}
+}
+
+func TestBreezePerformanceSendsInstructionsAndGuidance(t *testing.T) {
+	var gotBody map[string]any
+	fakeAudio := bytes.Repeat([]byte{0x2}, 512)
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			_ = json.NewDecoder(r.Body).Decode(&gotBody)
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write(fakeAudio)
+		},
+	))
+	defer server.Close()
+
+	provider, err := New(Config{
+		Mode:   "breeze",
+		APIURL: server.URL,
+		APIKey: "brz_test_key",
+		Voice:  "voc_default",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	perf, ok := provider.(interface {
+		SynthesizeWithPerformance(
+			context.Context, string, string, string, float64, string, float64,
+		) error
+	})
+	if !ok {
+		t.Fatal("breeze provider missing SynthesizeWithPerformance")
+	}
+	out := filepath.Join(t.TempDir(), "sing.mp3")
+	if err := perf.SynthesizeWithPerformance(
+		context.Background(), "[唱歌] 啦啦啦", out, "", 1.0, "唱出来", 4.0,
+	); err != nil {
+		t.Fatal(err)
+	}
+	if gotBody["instructions"] != "唱出来" {
+		t.Fatalf("instructions = %#v", gotBody["instructions"])
+	}
+	vs, _ := gotBody["voice_settings"].(map[string]any)
+	if vs["guidance_scale"] != 4.0 {
+		t.Fatalf("voice_settings = %#v", gotBody["voice_settings"])
 	}
 }
 

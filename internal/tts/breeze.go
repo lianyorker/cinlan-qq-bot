@@ -30,16 +30,47 @@ type breezeProvider struct {
 	client  *http.Client
 }
 
+type breezeVoiceSettings struct {
+	GuidanceScale float64 `json:"guidance_scale,omitempty"`
+}
+
 type breezeRequest struct {
-	Text    string   `json:"text"`
-	ModelID string   `json:"model_id,omitempty"`
-	Speed   *float64 `json:"speed,omitempty"`
+	Text          string               `json:"text"`
+	ModelID       string               `json:"model_id,omitempty"`
+	Speed         *float64             `json:"speed,omitempty"`
+	Instructions  string               `json:"instructions,omitempty"`
+	VoiceSettings *breezeVoiceSettings `json:"voice_settings,omitempty"`
 }
 
 func (p *breezeProvider) Synthesize(
 	ctx context.Context,
 	text, outPath, voice string,
 	rate float64,
+) error {
+	return p.perform(ctx, text, outPath, voice, rate, "", 0)
+}
+
+// SynthesizeWithPerformance is the sing-path entry: instructions direct
+// the delivery ("sing this as a song") and guidanceScale controls how
+// strongly the model follows them. Zero values fall back to API defaults.
+func (p *breezeProvider) SynthesizeWithPerformance(
+	ctx context.Context,
+	text, outPath, voice string,
+	rate float64,
+	instructions string,
+	guidanceScale float64,
+) error {
+	return p.perform(
+		ctx, text, outPath, voice, rate, instructions, guidanceScale,
+	)
+}
+
+func (p *breezeProvider) perform(
+	ctx context.Context,
+	text, outPath, voice string,
+	rate float64,
+	instructions string,
+	guidanceScale float64,
 ) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
@@ -58,8 +89,14 @@ func (p *breezeProvider) Synthesize(
 		return fmt.Errorf("breeze tts needs a voice_id (voc_…); set VOICE_NAME")
 	}
 	body := breezeRequest{
-		Text:    text,
-		ModelID: p.model,
+		Text:         text,
+		ModelID:      p.model,
+		Instructions: strings.TrimSpace(instructions),
+	}
+	if guidanceScale > 0 {
+		body.VoiceSettings = &breezeVoiceSettings{
+			GuidanceScale: guidanceScale,
+		}
 	}
 	if rate > 0 && rate != 1.0 {
 		speed := rate

@@ -62,6 +62,27 @@ type voiceEmotionAware interface {
 	) error
 }
 
+// voicePerformer is implemented by providers that accept per-call
+// performance direction (Breeze instructions + guidance_scale). The
+// sing path uses it so lyrics come out vocalized, not read aloud.
+type voicePerformer interface {
+	SynthesizeWithPerformance(
+		ctx context.Context,
+		text, outPath, voice string,
+		rate float64,
+		instructions string,
+		guidanceScale float64,
+	) error
+}
+
+// singInstruction directs the Breeze performance in the lyrics'
+// language (zh); singGuidance sits above the default 1 so the engine
+// actually follows it instead of staying close to spoken reference.
+const (
+	singInstruction = "把下面的文字当歌词唱出来，带上自然的旋律和节奏，像在随口唱歌一样，不要念出来"
+	singGuidance    = 4.0
+)
+
 // moodEmotion maps the chat mood onto a volcano emotion tag. Only the
 // extremes tag — mild moods stay neutral so a voice that doesn't
 // support emotion isn't fed noise every other clip.
@@ -465,7 +486,8 @@ func (s *Service) sendVoiceClips(
 			// Breeze's audio-tag contract for vocalized singing.
 			provider = s.singProvider
 			clipVoice = ""
-			text = "(sings) " + text
+			// zh audio-tag syntax — (sings) only works for English input.
+			text = "[唱歌] " + text
 		}
 		path := fmt.Sprintf(
 			"%s/%d-%s.mp3",
@@ -501,7 +523,16 @@ func (s *Service) sendVoiceClips(
 		}
 		if !cacheHit {
 			var err error
-			if ea, ok := provider.(voiceEmotionAware); ok && clipEmotion != "" {
+			if clip.Singing {
+				if perf, ok := provider.(voicePerformer); ok {
+					err = perf.SynthesizeWithPerformance(
+						ctx, text, path, clipVoice, rate,
+						singInstruction, singGuidance,
+					)
+				} else {
+					err = provider.Synthesize(ctx, text, path, clipVoice, rate)
+				}
+			} else if ea, ok := provider.(voiceEmotionAware); ok && clipEmotion != "" {
 				err = ea.SynthesizeWithEmotion(
 					ctx, text, path, clipVoice, rate, clipEmotion,
 				)

@@ -69,8 +69,8 @@ func TestSingClipsRouteToSingProviderWithTag(t *testing.T) {
 		t.Fatalf("sing calls = %#v", sing.calls)
 	}
 	got := sing.calls[0]
-	if !strings.HasPrefix(got.text, "(sings) ") || !strings.Contains(got.text, "啦啦啦") {
-		t.Fatalf("sing text missing (sings) tag: %q", got.text)
+	if !strings.HasPrefix(got.text, "[唱歌] ") || !strings.Contains(got.text, "啦啦啦") {
+		t.Fatalf("sing text missing [唱歌] tag: %q", got.text)
 	}
 	if got.voice != "" {
 		t.Fatalf("sing voice leaked: %q", got.voice)
@@ -97,7 +97,7 @@ func TestSingClipFallsBackToVoiceProviderWhenNoSingEngine(t *testing.T) {
 	)
 	if len(voice.calls) != 1 ||
 		voice.calls[0].voice != "volc_default_voice" ||
-		strings.HasPrefix(voice.calls[0].text, "(sings)") {
+		strings.HasPrefix(voice.calls[0].text, "[唱歌]") {
 		t.Fatalf("fallback calls = %#v", voice.calls)
 	}
 }
