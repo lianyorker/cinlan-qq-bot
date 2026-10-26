@@ -1026,6 +1026,17 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 	}
 	request.SystemPrompt += clockLine
+	// Unfinished thread: if the chat went quiet right on an open beat —
+	// her question unanswered, or him leaving mid-topic — she can pick
+	// the thread back up the way a person would. Derived, not stored.
+	if !state.prevActivityAt.IsZero() &&
+		now.Sub(state.prevActivityAt) >= 90*time.Minute {
+		if frag, ok := hangingTail(state.history); ok &&
+			security.TextSafeForPrompt(frag) {
+			request.SystemPrompt += "\n\n上次说到「" + frag +
+				"」就没下文了——他可能还惦记着这个话题，自然的话可以接回去，不用硬接。"
+		}
+	}
 	// Sleepy-night hint lives near the end of prompt assembly — one
 	// injection only; a second one here wasted tokens on every 3am turn.
 	if state.chatType == platform.ChatGroup {

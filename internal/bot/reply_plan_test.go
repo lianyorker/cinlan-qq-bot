@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 )
 
 func TestPlanReplyPartsFoldsBlankLinesWithoutSplitting(t *testing.T) {
@@ -167,6 +169,37 @@ func TestMaybeTypoPart(t *testing.T) {
 	}
 	if got := maybeTypoPart([]string{"[[MEME:嘲笑]]", "嗯嗯"}, 0, true); len(got) != 2 {
 		t.Fatalf("markers and short parts are not typo candidates: %#v", got)
+	}
+}
+
+func TestHangingTail(t *testing.T) {
+	hist := []domain.ChatMessage{
+		{Role: "user", Content: "周末要不要一起去爬山？"},
+		{Role: "assistant", Content: "去呀，你想走哪条线？"},
+	}
+	if frag, ok := hangingTail(hist); !ok || !strings.Contains(frag, "爬山") {
+		t.Fatalf("unanswered question should hang: %q %v", frag, ok)
+	}
+
+	left := []domain.ChatMessage{
+		{Role: "user", Content: "新出的游戏看着还行"},
+		{Role: "assistant", Content: "确实，画风蛮合我胃口"},
+		{Role: "user", Content: "我先去忙了回头再说"},
+	}
+	if frag, ok := hangingTail(left); !ok || !strings.Contains(frag, "忙") {
+		t.Fatalf("mid-topic exit should hang: %q %v", frag, ok)
+	}
+
+	closed := []domain.ChatMessage{
+		{Role: "user", Content: "晚安"},
+		{Role: "assistant", Content: "晚安好梦"},
+	}
+	if _, ok := hangingTail(closed); ok {
+		t.Fatal("clean closing should not hang")
+	}
+	empty := []domain.ChatMessage{{Role: "assistant", Content: "嗯"}}
+	if _, ok := hangingTail(empty); ok {
+		t.Fatal("sub-4-rune content should be skipped")
 	}
 }
 

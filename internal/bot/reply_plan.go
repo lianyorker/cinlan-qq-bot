@@ -747,6 +747,61 @@ func isTextReplyChain(chain message.Chain) bool {
 	return len(chain) == 1 && chain[0].Type == message.TypeText
 }
 
+// leavePattern spots mid-conversation exits — the user said "later"
+// and then actually went quiet, which is what makes the topic hang.
+var leavePattern = regexp.MustCompile(
+	`先去|待会|回头|晚点|下次聊|先这样|忙去了|我有事|撤了|先下了|一会儿`,
+)
+
+// hangingTail looks at the tail of a quiet conversation and returns the
+// topic fragment that was left open — she asked something that never
+// got answered, or he left mid-topic. Derived at prompt time; nothing
+// to store, nothing to expire.
+func hangingTail(history []domain.ChatMessage) (string, bool) {
+	var lastUser, lastAssistant string
+	for i := len(history) - 1; i >= 0 && (lastUser == "" || lastAssistant == ""); i-- {
+		content := strings.TrimSpace(
+			sentTimestampPattern.ReplaceAllString(history[i].Content, ""),
+		)
+		if content == "" || len([]rune(content)) < 4 {
+			continue
+		}
+		switch history[i].Role {
+		case "user":
+			if lastUser == "" {
+				lastUser = content
+			}
+		case "assistant":
+			if lastAssistant == "" {
+				lastAssistant = content
+			}
+		}
+	}
+	hanging := false
+	switch {
+	case lastAssistant != "" &&
+		(strings.HasSuffix(lastAssistant, "？") || strings.HasSuffix(lastAssistant, "?")):
+		// she asked, he vanished
+		hanging = true
+	case lastUser != "" && leavePattern.MatchString(lastUser):
+		// he left mid-topic
+		hanging = true
+	}
+	if !hanging {
+		return "", false
+	}
+	frag := lastUser
+	if frag == "" {
+		frag = lastAssistant
+	}
+	runes := []rune(frag)
+	if len(runes) > 18 {
+		runes = runes[:18]
+		frag = string(runes) + "…"
+	}
+	return frag, true
+}
+
 // typoChance is the per-reply odds of shipping a bubble with a typo.
 // Opt-in via QQ_TYPO_SIM — rare enough to read as a slip, not a quirk.
 const typoChance = 0.015
