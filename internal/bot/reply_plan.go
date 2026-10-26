@@ -406,6 +406,11 @@ func containsProviderError(text string) bool {
 	return providerErrorPattern.MatchString(text)
 }
 
+// selfTagPattern matches the internal "[SELF]" image-prompt marker — the
+// model tags self-image tool calls with it and sometimes echoes the whole
+// prompt (tag included) back into the reply. It is never chat content.
+var selfTagPattern = regexp.MustCompile(`(?i)\[\s*self\s*\]\s*`)
+
 // These patterns catch the markdown syntax models keep emitting even
 // after being told not to — QQ shows raw text, so **bold**, > quotes and
 // ``` fences arrive as literal garbage. Soft prompt rules stay; this is
@@ -433,6 +438,7 @@ var (
 // message reads like typed chat, not a rendered document. Inner content
 // is preserved — only the decoration dies.
 func scrubMarkdown(text string) string {
+	text = selfTagPattern.ReplaceAllString(text, "")
 	text = markdownFencePattern.ReplaceAllString(text, "")
 	for _, p := range markdownLinePatterns {
 		text = p.ReplaceAllString(text, "$1")

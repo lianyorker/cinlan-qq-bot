@@ -62,6 +62,7 @@ type ImageGenerator struct {
 	enhance        bool
 	client         *http.Client
 	downloadClient *http.Client
+	proxyBase      string
 	referenceFor   func(ctx context.Context, actor tool.Actor) string
 	now            func() time.Time
 }
@@ -134,6 +135,7 @@ func NewImageGenerator(cfg ImageGeneratorConfig) (*ImageGenerator, error) {
 		enhance:        cfg.Enhance,
 		client:         &http.Client{Timeout: cfg.Timeout},
 		downloadClient: publicHTTPClient(cfg.Timeout),
+		proxyBase:      "https://images.weserv.nl",
 		now:            time.Now,
 	}, nil
 }
@@ -644,10 +646,20 @@ func (g *ImageGenerator) download(ctx context.Context, value string) ([]byte, er
 	if cdnErr == nil {
 		return data, nil
 	}
-	// The CDN behind some image gateways is unreachable from the host
-	// (poisoned DNS / region blocks) while the API host itself fronts the
-	// same asset path — retry the identical path on the API endpoint
-	// before failing the generation.
+	// The CDN behind some gateways is unreachable from the host (poisoned
+	// DNS / region blocks) — retry through a public image proxy first,
+	// then via the API endpoint host which may front the same asset path.
+	var proxyErr error
+	if g.proxyBase != "" {
+		data, proxyErr = g.downloadURL(
+			ctx,
+			g.proxyBase+"/?url="+url.QueryEscape(parsed.String()),
+			false,
+		)
+		if proxyErr == nil {
+			return data, nil
+		}
+	}
 	fallback := &url.URL{
 		Scheme:   g.endpoint.Scheme,
 		Host:     g.endpoint.Host,
@@ -657,8 +669,8 @@ func (g *ImageGenerator) download(ctx context.Context, value string) ([]byte, er
 	data, err = g.downloadURL(ctx, fallback.String(), true)
 	if err != nil {
 		return nil, fmt.Errorf(
-			"generated image download failed (cdn: %v; via api host: %w)",
-			cdnErr, err,
+			"generated image download failed (cdn: %v; proxy: %v; via api host: %w)",
+			cdnErr, proxyErr, err,
 		)
 	}
 	return data, nil

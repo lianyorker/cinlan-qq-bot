@@ -127,6 +127,7 @@ func TestImageGeneratorDownloadFallsBackToAPIHost(t *testing.T) {
 	// Plain client so the unreachable CDN fails fast on DNS while the
 	// httptest fallback still works.
 	generator.downloadClient = &http.Client{Timeout: 5 * time.Second}
+	generator.proxyBase = "https://proxy.invalid" // dead host -> skip to api tier
 
 	data, err := generator.download(
 		context.Background(),
@@ -143,6 +144,50 @@ func TestImageGeneratorDownloadFallsBackToAPIHost(t *testing.T) {
 	}
 	if gotAuth != "Bearer test-key" {
 		t.Fatalf("fallback auth header = %q", gotAuth)
+	}
+}
+
+func TestImageGeneratorDownloadFallsBackToProxy(t *testing.T) {
+	imageData := testPNG(t)
+	var gotQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(
+		writer http.ResponseWriter, request *http.Request,
+	) {
+		gotQuery = request.URL.Query().Get("url")
+		writer.Header().Set("Content-Type", "image/png")
+		_, _ = writer.Write(imageData)
+	}))
+	defer server.Close()
+
+	root := t.TempDir()
+	generator, err := NewImageGenerator(ImageGeneratorConfig{
+		Mode:        "openai",
+		APIURL:      "https://api.invalid/v1/images/generations",
+		APIKey:      "test-key",
+		Model:       "image-test",
+		OutputDir:   "generated",
+		AllowedRoot: root,
+		MaxBytes:    1 << 20,
+		Timeout:     5 * time.Second,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	generator.downloadClient = &http.Client{Timeout: 5 * time.Second}
+	generator.proxyBase = server.URL
+
+	data, err := generator.download(
+		context.Background(),
+		"https://cdn.invalid/cdn-path/shot.png",
+	)
+	if err != nil {
+		t.Fatalf("download() = %v, want proxy success", err)
+	}
+	if !bytes.Equal(data, imageData) {
+		t.Fatal("downloaded image differs from proxy response")
+	}
+	if gotQuery != "https://cdn.invalid/cdn-path/shot.png" {
+		t.Fatalf("proxy ?url = %q", gotQuery)
 	}
 }
 

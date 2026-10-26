@@ -91,6 +91,16 @@ func TestScrubMarkdownStripsDocumentSyntax(t *testing.T) {
 	}
 }
 
+func TestScrubMarkdownStripsSelfTag(t *testing.T) {
+	got := scrubMarkdown("给你复制：[SELF] 蓝发微卷披散的年轻女孩")
+	if strings.Contains(got, "SELF") || strings.Contains(got, "[") {
+		t.Fatalf("self tag leaked: %q", got)
+	}
+	if !strings.Contains(got, "蓝发微卷披散的年轻女孩") {
+		t.Fatalf("prompt content lost: %q", got)
+	}
+}
+
 func TestScrubMarkdownKeepsPlainChat(t *testing.T) {
 	in := "嗯 抱着了 [[MEME:害羞]]"
 	if got := scrubMarkdown(in); got != in {
