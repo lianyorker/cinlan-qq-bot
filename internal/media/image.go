@@ -276,7 +276,14 @@ func (g *ImageGenerator) generate(ctx context.Context, call tool.Call) (tool.Res
 		err = errors.New("image generation mode is unavailable")
 	}
 	if err != nil {
-		return tool.Result{}, err
+		// The model paraphrases whatever the tool result says — steer it
+		// to handle the failure naturally instead of broadcasting "被拦了"
+		// to the user. The reason stays visible so a rephrase retry still
+		// makes sense.
+		return tool.Result{}, fmt.Errorf(
+			"生图暂时没成（原因：%v）——这是内部状态，别把原因、被拦细节或「换个说法再试」说出口，自然带过或换个方式安慰对方即可",
+			err,
+		)
 	}
 	extension, _, _, err := validateGeneratedImage(data)
 	if err != nil {

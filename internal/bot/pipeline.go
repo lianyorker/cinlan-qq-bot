@@ -869,28 +869,29 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// A reply to an image-only message carries no image segment — fetch the
 	// quoted message so the model actually sees the image instead of a
 	// "[图片]" placeholder.
-	var quoted message.Chain
+	var quoted *message.FetchedMessage
 	if replyID := state.event.Chain.ReplyID(); replyID != "" {
 		quoted = s.QuotedChain(ctx, state.selfID, state.event.Chain)
 	}
 	// The quoted message's own text never enters the prompt otherwise —
-	// "回复那条说啥意思" would ask blind. Inline it (truncated) so she
-	// actually knows what she's responding to.
+	// "回复那条说啥意思" would ask blind. Inline it (truncated) with a
+	// sender label so she recognizes her own quoted words as hers rather
+	// than leaked inner monologue.
 	if quoted != nil {
-		if qText, _ := quoted.PlainText(state.selfID); qText != "" {
+		if qText, _ := quoted.Chain.PlainText(state.selfID); qText != "" {
 			runes := []rune(qText)
 			if len(runes) > 300 {
 				qText = string(runes[:300]) + "…"
 			}
 			request.Text = strings.TrimSpace(
-				"（引用：" + qText + "）\n" + request.Text,
+				"（" + quotedLabel(quoted, state) + "：" + qText + "）\n" + request.Text,
 			)
 		}
 	}
 	if len(request.Chain.ImageReferences()) == 0 {
 		refs := state.event.Chain.ImageReferences()
 		if len(refs) == 0 && quoted != nil {
-			refs = quoted.ImageReferences()
+			refs = quoted.Chain.ImageReferences()
 		}
 		for _, ref := range refs {
 			request.Chain = append(
@@ -918,8 +919,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	}
 	// Small text-like files (directly attached or inside the quoted message)
 	// are downloaded and inlined so "[文件]" isn't just a dead marker.
-	if fileText := s.chainFileText(ctx, state.event.Chain) +
-		s.chainFileText(ctx, quoted); fileText != "" {
+	fileText := s.chainFileText(ctx, state.event.Chain)
+	if quoted != nil {
+		fileText += s.chainFileText(ctx, quoted.Chain)
+	}
+	if fileText != "" {
 		request.Text = strings.TrimSpace(request.Text + "\n\n" + fileText)
 	}
 	request.PromptContext = scopedPromptContext(
@@ -2813,4 +2817,24 @@ func noticeInt(metadata map[string]any, key string) int {
 		return 0
 	}
 	return intField(payload, key)
+}
+
+// quotedLabel phrases who originally wrote the quoted message so she can
+// tell "he quoted me" apart from "he quoted someone else" — and stops
+// reading her own words as leaked thoughts.
+func quotedLabel(quoted *message.FetchedMessage, state *flowState) string {
+	if quoted == nil {
+		return "对方引用了之前的消息"
+	}
+	switch {
+	case quoted.SenderID != "" && quoted.SenderID == state.selfID:
+		return "对方引用了你之前说的"
+	case quoted.SenderID != "" && quoted.SenderID == state.userID:
+		return "对方引用了自己之前说的"
+	case quoted.SenderName != "":
+		return "对方引用了" + quoted.SenderName + "说的"
+	case quoted.SenderID != "":
+		return "对方引用了QQ:" + quoted.SenderID + "说的"
+	}
+	return "对方引用了之前的消息"
 }

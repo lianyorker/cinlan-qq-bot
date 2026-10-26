@@ -454,29 +454,35 @@ func numericID(value string) any {
 	return strings.TrimSpace(value)
 }
 
-// FetchMessage returns the parsed chain of a message fetched via get_msg on
-// the account identified by selfID.
+// FetchMessage returns the parsed chain and sender of a message fetched
+// via get_msg on the account identified by selfID.
 func (m *MultiAdapter) FetchMessage(
 	ctx context.Context,
 	selfID, messageID string,
-) (message.Chain, error) {
+) (*message.FetchedMessage, error) {
 	raw, err := m.CallFor(ctx, selfID, "get_msg", map[string]any{
 		"message_id": messageID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return extractQuotedChain(raw)
+	return extractQuotedMessage(raw)
 }
 
-// extractQuotedChain parses a get_msg payload into a message chain.
-func extractQuotedChain(raw any) (message.Chain, error) {
+// extractQuotedMessage parses a get_msg payload into chain + sender so
+// reply-quote attribution survives the hop to the prompt.
+func extractQuotedMessage(raw any) (*message.FetchedMessage, error) {
 	data, err := json.Marshal(raw)
 	if err != nil {
 		return nil, err
 	}
 	var payload struct {
 		Message json.RawMessage `json:"message"`
+		Sender  struct {
+			UserID   int64  `json:"user_id"`
+			Nickname string `json:"nickname"`
+			Card     string `json:"card"`
+		} `json:"sender"`
 	}
 	if err := json.Unmarshal(data, &payload); err != nil {
 		return nil, err
@@ -484,7 +490,22 @@ func extractQuotedChain(raw any) (message.Chain, error) {
 	if len(payload.Message) == 0 {
 		return nil, errors.New("get_msg returned no message")
 	}
-	return message.ParseOneBot(payload.Message, "", "")
+	chain, err := message.ParseOneBot(payload.Message, "", "")
+	if err != nil {
+		return nil, err
+	}
+	name := payload.Sender.Card
+	if name == "" {
+		name = payload.Sender.Nickname
+	}
+	out := &message.FetchedMessage{
+		Chain:      chain,
+		SenderName: name,
+	}
+	if payload.Sender.UserID != 0 {
+		out.SenderID = strconv.FormatInt(payload.Sender.UserID, 10)
+	}
+	return out, nil
 }
 
 // IsFriend reports whether userID is on the friend list of the account

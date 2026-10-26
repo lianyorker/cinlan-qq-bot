@@ -53,7 +53,7 @@ type FileSender interface {
 // MessageFetcher resolves a replied-to (quoted) message's full chain, which
 // is not part of the inbound chain.
 type MessageFetcher interface {
-	FetchMessage(ctx context.Context, selfID, messageID string) (message.Chain, error)
+	FetchMessage(ctx context.Context, selfID, messageID string) (*message.FetchedMessage, error)
 }
 
 // GroupModerator performs deterministic moderation actions (recall, mute,
@@ -587,18 +587,19 @@ func (s *Service) EventImageRefs(
 		return refs
 	}
 	if quoted := s.QuotedChain(ctx, selfID, chain); quoted != nil {
-		return quoted.ImageReferences()
+		return quoted.Chain.ImageReferences()
 	}
 	return nil
 }
 
-// QuotedChain returns the parsed chain of the message this one replies to,
-// or nil when there is no reply segment or the fetch fails.
+// QuotedChain returns the fetched message this one replies to, or nil
+// when there is no reply segment or the fetch fails. Sender info is
+// attached so the prompt can attribute the quote.
 func (s *Service) QuotedChain(
 	ctx context.Context,
 	selfID string,
 	chain message.Chain,
-) message.Chain {
+) *message.FetchedMessage {
 	if s.chainFetcher == nil {
 		return nil
 	}

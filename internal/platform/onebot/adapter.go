@@ -214,14 +214,14 @@ func (a *Adapter) KickMember(
 func (a *Adapter) FetchMessage(
 	ctx context.Context,
 	selfID, messageID string,
-) (message.Chain, error) {
+) (*message.FetchedMessage, error) {
 	raw, err := a.Call(ctx, "get_msg", map[string]any{
 		"message_id": messageID,
 	})
 	if err != nil {
 		return nil, err
 	}
-	return extractQuotedChain(raw)
+	return extractQuotedMessage(raw)
 }
 
 // IsGroupMember reports whether userID belongs to groupID via

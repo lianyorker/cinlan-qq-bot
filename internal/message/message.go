@@ -144,6 +144,16 @@ func (c Chain) HasMention(userID string) bool {
 	return false
 }
 
+// FetchedMessage is a platform-fetched message (e.g. a reply-quote target)
+// with its sender attached so the prompt can attribute who originally
+// said it — without attribution she reads her own quoted words as leaked
+// inner monologue ("你怎么偷看人家心里在想什么").
+type FetchedMessage struct {
+	Chain      Chain
+	SenderID   string
+	SenderName string
+}
+
 // PlainText converts a chain to a safe prompt representation. Reply segments
 // are metadata and are intentionally omitted from the prompt body.
 func (c Chain) PlainText(selfID string) (text string, mentioned bool) {
