@@ -1227,9 +1227,17 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 				continue
 			}
 			recalledRunes += len([]rune(f.Text))
+			// Fresh memories arrive sharp; anything past a week reads the
+			// way a person recalls it — half-sure, worth double-checking.
+			lead := "你突然想起"
+			hedge := ""
+			if now.Sub(f.CreatedAt) > 7*24*time.Hour {
+				lead = "你隐约记得"
+				hedge = "，记不清就说大概"
+			}
 			recalled = append(recalled, fmt.Sprintf(
-				"你突然想起（%s记的）：%s%s",
-				factAge(now, f.CreatedAt), f.Text, factMoodHint(f.Mood),
+				"%s（%s记的%s）：%s%s",
+				lead, factAge(now, f.CreatedAt), hedge, f.Text, factMoodHint(f.Mood),
 			))
 		}
 		if len(recalled) > 0 {
