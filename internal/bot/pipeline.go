@@ -43,6 +43,19 @@ var outboundSecretLeakPattern = regexp.MustCompile(
 		`(?:AGENT_API_KEY|ONEBOT_ACCESS_TOKEN|SESSION_STORE_KEY|LK_MCP_AUTH|EMBEDDING_API_KEY)\s*=)`,
 )
 
+// outboundRefusalPattern catches the canned refusals upstream
+// providers and tool errors leak into replies — a person would just
+// not reply, so these sentences collapse to silence. Kept tight on
+// robotic phrasing so her own natural declines still go out.
+var outboundRefusalPattern = regexp.MustCompile(
+	`(?i)无法处理包含[^。！？!\n]{0,40}的?请求|` +
+		`该请求已被拒绝|请求已被拒绝|` +
+		`无法生成[^。！？\n]{0,8}(图片|图像)|` +
+		`违反[^。！？\n]{0,10}(内容政策|使用政策|社区规范)|` +
+		`(?:内容|安全)?审核未通过|审核拒绝|` +
+		`(?:content|safety)\s+policy\s+(?:violation|refus|block)`,
+)
+
 type flowState struct {
 	event          platform.Event
 	platform       string
@@ -1676,6 +1689,35 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				return nil
 			}
 		}
+		{
+			// Canned upstream refusals ("该请求已被拒绝" etc.) read as
+			// machine notices — she goes quiet instead of relaying them.
+			filtered := parts[:0]
+			for _, part := range parts {
+				cleaned, removed := dropProviderRefusals(part)
+				if removed {
+					snippet := []rune(part)
+					if len(snippet) > 20 {
+						snippet = snippet[:20]
+					}
+					s.logger.Info(
+						"outbound refusal silenced",
+						"platform", state.platform,
+						"chat_type", state.chatType,
+						"chat_id", state.chatID,
+						"snippet", string(snippet),
+					)
+				}
+				if strings.TrimSpace(cleaned) == "" {
+					continue
+				}
+				filtered = append(filtered, cleaned)
+			}
+			parts = filtered
+			if len(parts) == 0 {
+				return nil
+			}
+		}
 		for _, part := range parts {
 			if outboundSecretLeakPattern.MatchString(part) {
 				s.logger.Warn(
@@ -1876,6 +1918,19 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			s.recordExchange(ctx, state)
 		}
 		return nil
+	}
+	if cleaned, refused := dropProviderRefusals(state.reply); refused {
+		s.logger.Info(
+			"outbound refusal silenced",
+			"platform", state.platform,
+			"chat_type", state.chatType,
+			"chat_id", state.chatID,
+		)
+		state.reply = cleaned
+		if strings.TrimSpace(state.reply) == "" {
+			return nil
+		}
+		chain = message.Chain{message.Text(state.reply)}
 	}
 	if !state.allowLinks {
 		var removed bool
@@ -2280,6 +2335,23 @@ func (s *Service) recordExchange(ctx context.Context, state *flowState) {
 		s.affinity.Add(state.platform, state.selfID, state.userID, 1)
 	}
 	s.scheduleCompression(ctx, state)
+}
+
+// dropProviderRefusals removes canned upstream refusal sentences —
+// same shape as removeLinks: sentence-level drop; an all-refusal
+// reply collapses to "" and the whole send goes quiet.
+func dropProviderRefusals(text string) (string, bool) {
+	if !outboundRefusalPattern.MatchString(text) {
+		return text, false
+	}
+	var kept strings.Builder
+	for _, sentence := range splitSentences(text) {
+		if outboundRefusalPattern.MatchString(sentence) {
+			continue
+		}
+		kept.WriteString(sentence)
+	}
+	return kept.String(), true
 }
 
 // removeLinks drops whole sentences that contain links. A placeholder like
