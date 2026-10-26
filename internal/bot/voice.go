@@ -50,6 +50,31 @@ type voiceSynth interface {
 	) error
 }
 
+// voiceEmotionAware is implemented by providers whose backend tags
+// per-clip emotion (volcano multi-emotion voices). Optional — every
+// other provider just does plain Synthesize.
+type voiceEmotionAware interface {
+	SynthesizeWithEmotion(
+		ctx context.Context,
+		text, outPath, voice string,
+		rate float64,
+		emotion string,
+	) error
+}
+
+// moodEmotion maps the chat mood onto a volcano emotion tag. Only the
+// extremes tag — mild moods stay neutral so a voice that doesn't
+// support emotion isn't fed noise every other clip.
+func moodEmotion(score int) string {
+	switch {
+	case score >= 60:
+		return "happy"
+	case score <= -60:
+		return "sad"
+	}
+	return ""
+}
+
 // voicePromptNote covers ordinary voice plus the privileged "say it for
 // me" case — merged from the old voicePromptNote+voicePrivilegedRequestNote
 // pair so the prompt stays short.
@@ -387,7 +412,8 @@ func (s *Service) deliverVoiceClips(
 	}
 	voiceName, voiceRate := s.personaVoice(state)
 	s.sendVoiceClips(
-		ctx, state.selfID, state.chatType, state.chatID,
+		ctx, state.platform, state.selfID,
+		state.chatType, state.chatID,
 		clips, voiceName, voiceRate,
 	)
 	s.feelAmbient(
@@ -400,7 +426,7 @@ func (s *Service) deliverVoiceClips(
 // content still reaches the chat.
 func (s *Service) sendVoiceClips(
 	ctx context.Context,
-	selfID, chatType, chatID string,
+	plat, selfID, chatType, chatID string,
 	clips []voiceClip,
 	voiceName string, voiceRate float64,
 ) {
@@ -410,6 +436,14 @@ func (s *Service) sendVoiceClips(
 	maxRunes := s.cfg.VoiceMaxRunes
 	if maxRunes <= 0 {
 		maxRunes = 200
+	}
+	// Voice follows mood when the provider can take an emotion tag and
+	// the operator opted in — rate already bends, this colors the tone.
+	clipEmotion := ""
+	if s.cfg.VoiceMoodEmotion && s.cfg.MoodEnabled && s.chatPrefs != nil {
+		clipEmotion = moodEmotion(s.chatPrefs.MoodScore(
+			plat, selfID, chatType, chatID, s.now(),
+		))
 	}
 	for index, clip := range clips {
 		rate := voiceRate
@@ -446,7 +480,7 @@ func (s *Service) sendVoiceClips(
 		cacheHit := false
 		if useCache {
 			cachePath = filepath.Join(
-				s.cfg.VoiceCachePath, voiceCacheKey(text, clipVoice, rate),
+				s.cfg.VoiceCachePath, voiceCacheKey(text, clipVoice, rate, clipEmotion),
 			)
 			if _, statErr := os.Stat(cachePath); statErr == nil {
 				now := time.Now()
@@ -465,9 +499,16 @@ func (s *Service) sendVoiceClips(
 			message.Record("file://" + filepath.ToSlash(absPath)),
 		}
 		if !cacheHit {
-			err := provider.Synthesize(
-				ctx, text, path, clipVoice, rate,
-			)
+			var err error
+			if ea, ok := provider.(voiceEmotionAware); ok && clipEmotion != "" {
+				err = ea.SynthesizeWithEmotion(
+					ctx, text, path, clipVoice, rate, clipEmotion,
+				)
+			} else {
+				err = provider.Synthesize(
+					ctx, text, path, clipVoice, rate,
+				)
+			}
 			if err != nil && clipVoice != "" {
 				// A broken or expired custom voice shouldn't silence the
 				// feature — retry once with the provider default voice.
@@ -521,12 +562,14 @@ func (s *Service) sendVoiceClips(
 }
 
 // voiceCacheKey hashes the clip inputs into a stable filename — the same
-// text+voice+rate always lands on the same cache entry.
-func voiceCacheKey(text, voice string, rate float64) string {
+// text+voice+rate+emotion always lands on the same cache entry.
+func voiceCacheKey(text, voice string, rate float64, emotion string) string {
 	h := sha256.New()
 	h.Write([]byte(text))
 	h.Write([]byte{0})
 	h.Write([]byte(voice))
+	h.Write([]byte{0})
+	h.Write([]byte(emotion))
 	h.Write([]byte{0})
 	_ = binary.Write(h, binary.LittleEndian, rate)
 	return hex.EncodeToString(h.Sum(nil)[:16]) + ".mp3"

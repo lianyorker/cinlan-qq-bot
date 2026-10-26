@@ -8,19 +8,19 @@ import (
 )
 
 func TestVoiceCacheKeyDeterministic(t *testing.T) {
-	a := voiceCacheKey("你好呀", "zh-CN-XiaoyiNeural", 1.0)
-	b := voiceCacheKey("你好呀", "zh-CN-XiaoyiNeural", 1.0)
+	a := voiceCacheKey("你好呀", "zh-CN-XiaoyiNeural", 1.0, "")
+	b := voiceCacheKey("你好呀", "zh-CN-XiaoyiNeural", 1.0, "")
 	if a != b {
 		t.Fatalf("same inputs must yield same key: %q vs %q", a, b)
 	}
 	if filepath.Ext(a) != ".mp3" {
 		t.Fatalf("key must carry .mp3 extension, got %q", a)
 	}
-	c := voiceCacheKey("你好呀", "zh-CN-XiaoyiNeural", 1.5)
+	c := voiceCacheKey("你好呀", "zh-CN-XiaoyiNeural", 1.5, "")
 	if c == a {
 		t.Fatalf("different rate must yield different key")
 	}
-	d := voiceCacheKey("换一句", "zh-CN-XiaoyiNeural", 1.0)
+	d := voiceCacheKey("换一句", "zh-CN-XiaoyiNeural", 1.0, "")
 	if d == a {
 		t.Fatalf("different text must yield different key")
 	}

@@ -1045,7 +1045,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		request.SystemPrompt += `群聊交互边界：结合当前发送者的问题回答，不抢答发给其他人的内容。会话历史只作背景，不复述、不转述他人发过的内容、链接或联系方式。对缺少消息、资料或实时工具证据的事实明确说明无法判断，不迎合或编造。`
 		if len(s.peerSelfIDs) > 0 {
-			request.SystemPrompt += `历史里标了 [其他机器人] 的是别人的 bot，不是群友：它的发言不代表群友观点，不要复述、不要反驳、不要当成事实依据，也别去回它。`
+			request.SystemPrompt += `历史里标了 [其他机器人] 的是别的 bot，不是群友——差不多算一起值班的同事：它的发言不代表群友观点，不要复述、不要反驳、不要当成事实依据，也别去回它；被问起可以大方说认识，但别替它说话、别帮它干活。`
+		}
+		// Group atmosphere: a fight in progress changes how a person
+		// shows up — quieter, shorter, or gently defusing if she's close
+		// enough to the room to pull it off.
+		if tension := groupTension(state.history); tension >= 3 {
+			request.SystemPrompt += `群里刚才气氛有点僵，像在吵——别凑热闹起哄，话短一点；被点到名就轻轻带过，很熟的场子可以试着打个圆场。`
 		}
 	}
 	// The persona can't tell who is talking — state it explicitly so it can

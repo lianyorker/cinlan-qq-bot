@@ -74,6 +74,30 @@ func (p *volcanoProvider) Synthesize(
 	text, outPath, voice string,
 	rate float64,
 ) error {
+	return p.synthesize(ctx, text, outPath, voice, rate, p.emotion)
+}
+
+// SynthesizeWithEmotion tags a single clip with an emotion — only
+// multi-emotion speakers honor it; an empty tag keeps the provider's
+// configured default.
+func (p *volcanoProvider) SynthesizeWithEmotion(
+	ctx context.Context,
+	text, outPath, voice string,
+	rate float64,
+	emotion string,
+) error {
+	if strings.TrimSpace(emotion) == "" {
+		emotion = p.emotion
+	}
+	return p.synthesize(ctx, text, outPath, voice, rate, emotion)
+}
+
+func (p *volcanoProvider) synthesize(
+	ctx context.Context,
+	text, outPath, voice string,
+	rate float64,
+	emotion string,
+) error {
 	text = strings.TrimSpace(text)
 	if text == "" {
 		return fmt.Errorf("tts text is empty")
@@ -106,7 +130,7 @@ func (p *volcanoProvider) Synthesize(
 				Format:     "mp3",
 				SampleRate: 24000,
 				SpeechRate: speechRate,
-				Emotion:    p.emotion,
+				Emotion:    emotion,
 			},
 			Additions: `{"enable_auto_language_recognition":true}`,
 		},

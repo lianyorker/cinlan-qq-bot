@@ -58,7 +58,7 @@ func TestSingClipsRouteToSingProviderWithTag(t *testing.T) {
 		{Text: "啦啦啦唱歌词", Singing: true, Rate: 0.8},
 	}
 	service.sendVoiceClips(
-		context.Background(), "10001", "private", "20002",
+		context.Background(), "qq", "10001", "private", "20002",
 		clips, "volc_default_voice", 1.0,
 	)
 
@@ -91,7 +91,7 @@ func TestSingClipFallsBackToVoiceProviderWhenNoSingEngine(t *testing.T) {
 	service.SetVoiceProvider(voice)
 
 	service.sendVoiceClips(
-		context.Background(), "10001", "private", "20002",
+		context.Background(), "qq", "10001", "private", "20002",
 		[]voiceClip{{Text: "歌词", Singing: true}},
 		"volc_default_voice", 1.0,
 	)

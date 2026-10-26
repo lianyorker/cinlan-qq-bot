@@ -747,6 +747,31 @@ func isTextReplyChain(chain message.Chain) bool {
 	return len(chain) == 1 && chain[0].Type == message.TypeText
 }
 
+// fightPattern marks messages that read as quarrelling — insults,
+// dismissals, doubled exclamation/question runs. Several of these in a
+// row is an argument, not a lively chat.
+var fightPattern = regexp.MustCompile(
+	`滚|闭嘴|烦死|杠|有病|吵|喷|孝子|你懂个|懂什么|神经病|无语了|笑死人了|！{2,}|？{2,}`,
+)
+
+// groupTension scores how heated the recent group chatter is. Counts
+// fight markers across the last stretch of member messages; >=3 reads
+// as an argument in progress — the moment a real person goes quiet or
+// steps in to smooth things over, not the moment to be chipper.
+func groupTension(history []domain.ChatMessage) int {
+	score := 0
+	seen := 0
+	for i := len(history) - 1; i >= 0 && seen < 14; i-- {
+		if history[i].Role != "user" {
+			continue
+		}
+		seen++
+		content := sentTimestampPattern.ReplaceAllString(history[i].Content, "")
+		score += len(fightPattern.FindAllString(content, -1))
+	}
+	return score
+}
+
 // leavePattern spots mid-conversation exits — the user said "later"
 // and then actually went quiet, which is what makes the topic hang.
 var leavePattern = regexp.MustCompile(
