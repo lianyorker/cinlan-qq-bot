@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math/rand"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -1241,6 +1242,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now()) < 40) {
 		request.SystemPrompt += "\n\n（你们已经聊了好一会儿了——如果话题到段落了，你可以像真人一样主动收尾，比如「先这样我去忙了」，不用硬聊）"
 	}
+	// Permission to be lazy — ~10% of turns she may answer with a single
+	// short burst. Real people don't write a paragraph for everything.
+	if rand.Float64() < 0.10 {
+		request.SystemPrompt += "\n\n（这条随便回就行——一两个字、一个表情，甚至只回个梗，熟了不用讲客气）"
+	}
 	// The mood tier says HOW she feels; the freshest [心情] note says
 	// WHY. Injecting it keeps feelings attached to their cause instead
 	// of floating as unexplained grumpiness.
@@ -1561,7 +1567,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		} else {
 			planned := planReplyParts(state.reply)
 			if len(planned) <= 1 {
-				planned = softSplitReply(state.reply)
+				planned = softSplitReply(state.reply, rand.Float64())
 			}
 			var truncated bool
 			parts, truncated = expandReplyParts(
@@ -1661,6 +1667,13 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			expanded = append(expanded, splitMarkerLines(part)...)
 		}
 		parts = expanded
+		// Humans don't re-send a phrase they coined one turn ago — trim
+		// or drop parts that echo her own recent sends verbatim.
+		if filtered := filterSelfEcho(
+			parts, recentAssistantTexts(state.history, 8),
+		); len(filtered) > 0 {
+			parts = filtered
+		}
 		chains := make([]message.Chain, 0, len(parts))
 		cleaned := make([]string, 0, len(parts))
 		skippedMarkers := 0

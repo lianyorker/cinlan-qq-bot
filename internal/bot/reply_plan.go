@@ -6,6 +6,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 )
 
@@ -496,15 +497,48 @@ func stripSpeakerPrefix(text, name string) string {
 	return text
 }
 
-// softSplitReply breaks a long single-bubble reply into two parts at the
-// sentence boundary nearest the middle when the model forgot [[NEXT]].
-// People send short bursts, not walls of text — replies under 40 runes
-// or with no usable boundary stay whole.
-func softSplitReply(reply string) []string {
+// softSplitReply breaks a long single-bubble reply into 1–3 parts at
+// sentence boundaries when the model forgot [[NEXT]]. People don't burst
+// the same way every time, so the roll jitters the outcome: mid-length
+// replies (40–79 runes) stay whole half the time, longer ones split —
+// and a still-long tail may split once more for a third bubble.
+// Replies under 40 runes or with no usable boundary stay whole.
+func softSplitReply(reply string, roll float64) []string {
 	runes := []rune(reply)
 	if len(runes) < 40 {
 		return []string{reply}
 	}
+	if len(runes) < 80 && roll < 0.5 {
+		return []string{reply}
+	}
+	parts := []string{reply}
+	for len(parts) < 3 {
+		tail := parts[len(parts)-1]
+		best := bestSoftSplitAt(tail)
+		if best < 0 {
+			break
+		}
+		tailRunes := []rune(tail)
+		head := strings.TrimSpace(string(tailRunes[:best+1]))
+		rest := strings.TrimSpace(string(tailRunes[best+1:]))
+		if head == "" || rest == "" {
+			break
+		}
+		// A second split only happens when the leftover is big enough to
+		// read as its own bubble — otherwise the chop looks mechanical.
+		if len(parts) > 1 && len([]rune(rest)) < 40 {
+			break
+		}
+		parts[len(parts)-1] = head
+		parts = append(parts, rest)
+	}
+	return parts
+}
+
+// bestSoftSplitAt finds the sentence-ending boundary nearest the middle
+// of text, or -1 when no usable boundary exists.
+func bestSoftSplitAt(text string) int {
+	runes := []rune(text)
 	mid := len(runes) / 2
 	best, bestScore := -1, -1
 	for i := 12; i < len(runes)-8; i++ {
@@ -523,15 +557,89 @@ func softSplitReply(reply string) []string {
 			bestScore, best = score, i
 		}
 	}
-	if best < 0 {
-		return []string{reply}
+	return best
+}
+
+// sentTimestampPattern strips the "[MM-DD HH:MM] " stamp session history
+// puts on recorded assistant turns.
+var sentTimestampPattern = regexp.MustCompile(`^\[\d{2}-\d{2} \d{2}:\d{2}\]\s*`)
+
+// recentAssistantTexts returns her last few plain-text sends from session
+// history — the baseline filterSelfEcho compares new parts against.
+func recentAssistantTexts(history []domain.ChatMessage, limit int) []string {
+	texts := make([]string, 0, limit)
+	for i := len(history) - 1; i >= 0 && len(texts) < limit; i-- {
+		if history[i].Role != "assistant" {
+			continue
+		}
+		content := strings.TrimSpace(
+			sentTimestampPattern.ReplaceAllString(history[i].Content, ""),
+		)
+		if content != "" {
+			texts = append(texts, content)
+		}
 	}
-	head := strings.TrimSpace(string(runes[:best+1]))
-	tail := strings.TrimSpace(string(runes[best+1:]))
-	if head == "" || tail == "" {
-		return []string{reply}
+	return texts
+}
+
+// echoTrimCutoff is the shortest verbatim overlap worth removing — below
+// this the shared run could be a coincidence ("好慢" "昂" style filler).
+const echoTrimCutoff = 5
+
+// trimRepeatedSpan removes the longest run of text that already appeared
+// verbatim in one of the recent sends, so "好慢 熬着等天黑呢 快下班来找我"
+// doesn't re-ship "熬着等天黑呢" one turn after she coined it.
+func trimRepeatedSpan(part string, sent []string) string {
+	current := part
+	for _, text := range sent {
+		a := []rune(current)
+		b := []rune(text)
+		best, bestLen := -1, 0
+		// Longest common substring (contiguous run), rune-accurate.
+		prev := make([]int, len(b)+1)
+		for i := 1; i <= len(a); i++ {
+			row := make([]int, len(b)+1)
+			for j := 1; j <= len(b); j++ {
+				if a[i-1] == b[j-1] {
+					row[j] = prev[j-1] + 1
+					if row[j] > bestLen {
+						bestLen, best = row[j], i
+					}
+				}
+			}
+			prev = row
+		}
+		if bestLen < echoTrimCutoff {
+			continue
+		}
+		start := best - bestLen
+		current = strings.TrimSpace(
+			string(a[:start]) + " " + string(a[best:]),
+		)
 	}
-	return []string{head, tail}
+	return current
+}
+
+// filterSelfEcho drops or trims reply parts that repeat something she
+// literally just sent — the "said the same phrase twice in a row" tell.
+// When every part would be eaten the first survives: no reply at all is
+// a worse failure than a mild echo.
+func filterSelfEcho(parts []string, sent []string) []string {
+	if len(sent) == 0 {
+		return parts
+	}
+	filtered := parts[:0]
+	for _, part := range parts {
+		trimmed := trimRepeatedSpan(part, sent)
+		if trimmed == "" || len([]rune(trimmed)) < 3 {
+			continue
+		}
+		filtered = append(filtered, trimmed)
+	}
+	if len(filtered) == 0 && len(parts) > 0 {
+		return parts[:1]
+	}
+	return filtered
 }
 
 func expandReplyParts(parts []string, maxRunes, maxChunks int) ([]string, bool) {

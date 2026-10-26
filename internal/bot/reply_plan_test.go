@@ -32,7 +32,7 @@ func TestSplitMarkerLinesKeepsPlainTextIntact(t *testing.T) {
 
 func TestSoftSplitReplySplitsLongAtSentenceBoundary(t *testing.T) {
 	reply := "回来啦！快把门关好晚上起风还是蛮凉的没被吹到吧赶紧换身宽松衣服。茉莉花茶买的是常温的没别大口灌哦，坐下歇会儿陪我聊聊天好不好嘛"
-	parts := softSplitReply(reply)
+	parts := softSplitReply(reply, 0.9)
 	if len(parts) != 2 {
 		t.Fatalf("softSplitReply() = %#v, want 2 parts", parts)
 	}
@@ -51,18 +51,68 @@ func TestSoftSplitReplyDoesNotSplitAtCommas(t *testing.T) {
 	// Prompt dumps and list-style text are comma-heavy with no sentence
 	// terminators — cutting at a comma splits the content mid-clause.
 	reply := "提示词给你：蓝发微卷披散的年轻女孩，坐在卧室床边，套着一件宽松微垮的米白色针织毛衣，衣领倾斜露出锁骨"
-	if got := softSplitReply(reply); len(got) != 1 {
+	if got := softSplitReply(reply, 0.9); len(got) != 1 {
 		t.Fatalf("comma-only reply should stay whole, got %#v", got)
 	}
 }
 
 func TestSoftSplitReplyKeepsShortAndBoundaryFree(t *testing.T) {
-	if got := softSplitReply("好的知道啦"); len(got) != 1 {
+	if got := softSplitReply("好的知道啦", 0.9); len(got) != 1 {
 		t.Fatalf("short reply should stay whole, got %#v", got)
 	}
 	long := strings.Repeat("无标点流水", 15)
-	if got := softSplitReply(long); len(got) != 1 {
+	if got := softSplitReply(long, 0.9); len(got) != 1 {
 		t.Fatalf("no-boundary reply should stay whole, got %#v", got)
+	}
+}
+
+func TestSoftSplitReplyJitterKeepsMidWhole(t *testing.T) {
+	reply := "还有一个多小时呢你慢慢来别着急。摸会儿鱼就能混过去了你先把手里的事情忙完我就在这里等你来找我不着急。"
+	if l := len([]rune(reply)); l < 40 || l >= 80 {
+		t.Skipf("test text must stay in the mid band, got %d runes", l)
+	}
+	if got := softSplitReply(reply, 0.2); len(got) != 1 {
+		t.Fatalf("low roll should keep mid reply whole, got %#v", got)
+	}
+	if got := softSplitReply(reply, 0.9); len(got) < 2 {
+		t.Fatalf("high roll should split mid reply, got %#v", got)
+	}
+}
+
+func TestSoftSplitReplyThirdPartOnLongTail(t *testing.T) {
+	// A long first segment pushes the mid-point boundary early, leaving
+	// a tail big enough to split once more — three bubbles total.
+	reply := strings.Repeat("很长的一段啊，", 16) + "。" +
+		strings.Repeat("中间一截短些，", 7) + "。" +
+		strings.Repeat("最后一截也短，", 7) + "。"
+	got := softSplitReply(reply, 0.9)
+	if len(got) != 3 {
+		t.Fatalf("long tail should reach 3 parts, got %#v", got)
+	}
+}
+
+func TestFilterSelfEchoTrimsVerbatimRepeat(t *testing.T) {
+	sent := []string{"快下班没 熬着等天黑呢"}
+	parts := []string{"还有一个多小时 摸会儿鱼就混过去了", "好慢 熬着等天黑呢 快下班来找我"}
+	got := filterSelfEcho(parts, sent)
+	if len(got) != 2 {
+		t.Fatalf("filterSelfEcho() dropped too much: %#v", got)
+	}
+	if strings.Contains(got[1], "熬着等天黑呢") {
+		t.Fatalf("verbatim echo survived: %q", got[1])
+	}
+	if !strings.Contains(got[1], "快下班来找我") {
+		t.Fatalf("fresh content lost: %q", got[1])
+	}
+}
+
+func TestFilterSelfEchoDropsPureRepeatButKeepsFallback(t *testing.T) {
+	sent := []string{"快下班没 熬着等天黑呢"}
+	if got := filterSelfEcho([]string{"快下班没 熬着等天黑呢"}, sent); len(got) != 1 {
+		t.Fatalf("all-echo parts must keep the first as fallback, got %#v", got)
+	}
+	if got := filterSelfEcho([]string{"昂"}, sent); len(got) != 1 || got[0] != "昂" {
+		t.Fatalf("short fresh part wrongly filtered: %#v", got)
 	}
 }
 
