@@ -180,9 +180,11 @@ type Rule struct {
 	AllowLinks      *bool             `json:"allow_links,omitempty"`
 	// PromptFile names a binding-scoped prompt fragment loaded at
 	// startup (cinlan storefront rules stay inside cinlan chats, etc.);
-	// Prompt carries the resolved file content.
-	PromptFile string `json:"prompt_file,omitempty"`
-	Prompt     string `json:"-"`
+	// PromptFiles lists every resolved fragment in order and Prompt
+	// carries the joined content.
+	PromptFile  string   `json:"prompt_file,omitempty"`
+	PromptFiles []string `json:"prompt_files,omitempty"`
+	Prompt      string   `json:"-"`
 }
 
 type Registry struct {

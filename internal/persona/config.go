@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -25,6 +26,9 @@ type rawProfile struct {
 	Voice              string            `json:"voice,omitempty"`
 	VoiceRate          float64           `json:"voice_rate,omitempty"`
 	SystemPrompt       string            `json:"system_prompt"`
+	// SystemPromptFile points at a markdown persona card relative to the
+	// personas.json directory. Used when system_prompt is empty.
+	SystemPromptFile   string            `json:"system_prompt_file,omitempty"`
 	BeginDialogs       []Dialogue        `json:"begin_dialogs"`
 	CustomErrorMessage string            `json:"custom_error_message"`
 	RoutingScope       *RoutingScope     `json:"routing_scope"`
@@ -65,12 +69,24 @@ func LoadFile(path string) ([]Profile, string, error) {
 		if raw.Enabled != nil && !*raw.Enabled {
 			continue
 		}
+		prompt := strings.TrimSpace(raw.SystemPrompt)
+		if prompt == "" && strings.TrimSpace(raw.SystemPromptFile) != "" {
+			resolved := strings.TrimSpace(raw.SystemPromptFile)
+			if !filepath.IsAbs(resolved) {
+				resolved = filepath.Join(filepath.Dir(path), resolved)
+			}
+			body, readErr := os.ReadFile(resolved)
+			if readErr != nil {
+				return nil, "", fmt.Errorf("persona %q system_prompt_file %s: %w", raw.Name, raw.SystemPromptFile, readErr)
+			}
+			prompt = strings.TrimSpace(string(body))
+		}
 		profile := Profile{
 			Name:               strings.TrimSpace(raw.Name),
 			Description:        strings.TrimSpace(raw.Description),
 			Voice:              strings.TrimSpace(raw.Voice),
 			VoiceRate:          raw.VoiceRate,
-			SystemPrompt:       strings.TrimSpace(raw.SystemPrompt),
+			SystemPrompt:       prompt,
 			BeginDialogs:       raw.BeginDialogs,
 			CustomErrorMessage: strings.TrimSpace(raw.CustomErrorMessage),
 			RoutingScope:       raw.RoutingScope,

@@ -44,6 +44,9 @@ type rawRule struct {
 	// binding only — e.g. cinlan storefront rules must not leak into
 	// zkmall chats. Relative paths resolve against the config dir.
 	PromptFile string `json:"prompt_file"`
+	// PromptFiles is the multi-file variant; contents join with prompt_file
+	// in order so bindings can mix reusable rule files (rules/*.md).
+	PromptFiles []string `json:"prompt_files"`
 }
 
 func LoadFile(path string) (*Registry, error) {
@@ -83,8 +86,18 @@ func LoadFile(path string) (*Registry, error) {
 		if raw.Enabled != nil && !*raw.Enabled {
 			continue
 		}
-		prompt := ""
+		// prompt_file (single, legacy) merges into prompt_files in order.
+		promptNames := make([]string, 0, len(raw.PromptFiles)+1)
 		if name := strings.TrimSpace(raw.PromptFile); name != "" {
+			promptNames = append(promptNames, name)
+		}
+		for _, name := range raw.PromptFiles {
+			if name = strings.TrimSpace(name); name != "" {
+				promptNames = append(promptNames, name)
+			}
+		}
+		promptParts := make([]string, 0, len(promptNames))
+		for _, name := range promptNames {
 			// Relative paths sit next to the bindings file so deploys
 			// keep prompts and scoping in one data directory.
 			resolved := name
@@ -95,8 +108,11 @@ func LoadFile(path string) (*Registry, error) {
 			if readErr != nil {
 				return nil, fmt.Errorf("binding %q prompt_file %s: %w", raw.Name, name, readErr)
 			}
-			prompt = strings.TrimSpace(string(body))
+			if part := strings.TrimSpace(string(body)); part != "" {
+				promptParts = append(promptParts, part)
+			}
 		}
+		prompt := strings.Join(promptParts, "\n\n")
 		rules = append(rules, Rule{
 			Name:            raw.Name,
 			Platform:        raw.Platform,
@@ -118,6 +134,7 @@ func LoadFile(path string) (*Registry, error) {
 			LearningEnabled: raw.LearningEnabled,
 			AllowLinks:      raw.AllowLinks,
 			PromptFile:      raw.PromptFile,
+			PromptFiles:     promptNames,
 			Prompt:          prompt,
 		})
 	}

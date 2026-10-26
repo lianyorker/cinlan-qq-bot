@@ -409,7 +409,7 @@ func Load() (Config, error) {
 		GroupWelcomeText:        envOrAllowEmpty("GROUP_WELCOME_TEXT", ""),
 		GroupWelcomeGroups:      parseList(envOrAllowEmpty("GROUP_WELCOME_GROUPS", "")),
 		WelcomeFile:             envOrAllowEmpty("WELCOME_FILE", "data/welcome.json"),
-		BasePromptFile:          envOrAllowEmpty("BASE_PROMPT_FILE", "data/prompts/base-human.md"),
+		BasePromptFile:          envOrAllowEmpty("BASE_PROMPT_FILE", "data/rules/base-human.md"),
 		OutboundBannedWordsFile: envOrAllowEmpty("OUTBOUND_BANNED_WORDS_FILE", "data/outbound-banned-words.txt"),
 		PeerBotIDs:              parseList(envOrAllowEmpty("PEER_BOT_IDS", "")),
 		ChatPrefsFile:           envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
