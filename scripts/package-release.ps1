@@ -123,7 +123,13 @@ try {
     }
     New-Item -ItemType Directory -Force -Path $stageRoot | Out-Null
 
-    & $cargo.Source build --release --manifest-path runtime\loader\Cargo.toml
+    $previousEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $cargo.Source build --release --manifest-path runtime\loader\Cargo.toml
+    } finally {
+        $ErrorActionPreference = $previousEAP
+    }
     if ($LASTEXITCODE -ne 0) {
         throw "Windows loader build failed with exit code $LASTEXITCODE."
     }

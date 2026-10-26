@@ -29,7 +29,7 @@ test('QR callbacks, refresh, expiry and ready never enter message channel', asyn
     assert.equal((await __test.getLoginQR({})).status,'ready');
     assert.equal(__test.loginQRStatus().png_base64,undefined);
     assert.ok(frames.every(f=>f.type === 'login_qr' || f.type === 'runtime_status'));
-    assert.throws(()=>__test.recordLoginQR({pngBase64QrcodeData:'evil'}),/PNG/);
+    assert.throws(()=>__test.recordLoginQR({pngBase64QrcodeData:'evil'}),/recognized image format/);
   } finally { Object.assign(__test.state,previous); }
 });
 
