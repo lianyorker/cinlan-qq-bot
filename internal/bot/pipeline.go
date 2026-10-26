@@ -1609,7 +1609,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				parts = []string{single}
 			}
 		} else {
-			planned := planReplyParts(state.reply)
+			planned := planReplyParts(state.reply, s.cfg.MaxReplyChunks)
 			if len(planned) <= 1 {
 				planned = softSplitReply(state.reply, rand.Float64())
 			}
@@ -1739,7 +1739,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		for _, part := range parts {
 			expanded = append(expanded, splitMarkerLines(part)...)
 		}
-		parts = expanded
+		parts = capBurstParts(expanded, s.cfg.MaxReplyChunks)
 		// Humans don't re-send a phrase they coined one turn ago — trim
 		// or drop parts that echo her own recent sends verbatim.
 		if filtered := filterSelfEcho(

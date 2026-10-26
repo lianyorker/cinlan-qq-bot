@@ -7,7 +7,7 @@ import (
 )
 
 func TestPlanReplyPartsFoldsBlankLinesWithoutSplitting(t *testing.T) {
-	parts := planReplyParts("嗯 抱着了\n\n[[MEME:害羞]]")
+	parts := planReplyParts("嗯 抱着了\n\n[[MEME:害羞]]", 4)
 	want := []string{"嗯 抱着了\n[[MEME:害羞]]"}
 	if !reflect.DeepEqual(parts, want) {
 		t.Fatalf("planReplyParts() = %#v, want %#v", parts, want)

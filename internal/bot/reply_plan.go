@@ -265,12 +265,15 @@ func expandAtMarkers(chain message.Chain, defaultUserID string) (message.Chain, 
 	return out, cleaned.String()
 }
 
-func planReplyParts(reply string) []string {
+func planReplyParts(reply string, maxParts int) []string {
 	reply = strings.TrimSpace(reply)
 	if reply == "" {
 		return nil
 	}
-	parts := make([]string, 0, 4)
+	if maxParts <= 0 {
+		maxParts = 1
+	}
+	parts := make([]string, 0, maxParts)
 	for _, segment := range strings.Split(reply, naturalReplyBreak) {
 		// Stray blank lines inside a thought get folded to a single newline —
 		// only an explicit [[NEXT]] may start a new bubble.
@@ -283,14 +286,43 @@ func planReplyParts(reply string) []string {
 			parts = append(parts, part)
 		}
 	}
-	// Up to four [[NEXT]] bursts ride through as separate bubbles —
+	// Up to maxParts [[NEXT]] bursts ride through as separate bubbles —
 	// people fire several short messages, not two giant ones. Any
-	// excess beyond four merges into the last bubble so nothing is lost.
-	if len(parts) <= 4 {
+	// excess merges into the last bubble so nothing is lost.
+	if len(parts) <= maxParts {
 		return parts
 	}
-	head := append([]string{}, parts[:3]...)
-	return append(head, strings.Join(parts[3:], "\n"))
+	head := append([]string{}, parts[:maxParts-1]...)
+	return append(head, strings.Join(parts[maxParts-1:], "\n"))
+}
+
+// capBurstParts re-enforces the bubble budget after splitMarkerLines
+// re-expanded parts at marker boundaries. Overflowing marker parts are
+// dropped silently; overflowing text folds into the previous text bubble
+// so nothing the model wrote disappears.
+func capBurstParts(parts []string, max int) []string {
+	if max <= 0 {
+		return parts
+	}
+	for len(parts) > max {
+		tail := parts[len(parts)-1]
+		parts = parts[:len(parts)-1]
+		if isMarkerPart(tail) {
+			continue
+		}
+		merged := false
+		for i := len(parts) - 1; i >= 0; i-- {
+			if !isMarkerPart(parts[i]) {
+				parts[i] = strings.TrimSpace(parts[i] + "\n" + tail)
+				merged = true
+				break
+			}
+		}
+		if !merged {
+			break
+		}
+	}
+	return parts
 }
 
 // inlineMarkerPattern finds [[MEME...]] / [[IMG:...]] / [[IMAGE:...]] /
