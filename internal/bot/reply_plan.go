@@ -8,6 +8,7 @@ import (
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
+	"github.com/lianyorker/cinlan-qq-bot/internal/vecstore"
 )
 
 const naturalReplyBreak = "[[NEXT]]"
@@ -671,8 +672,15 @@ func trimRepeatedSpan(part string, sent []string) string {
 	return current
 }
 
+// echoSemanticCutoff marks a near-paraphrase of her own recent send.
+// Measured on LocalSimilarity: paraphrased repeats land ~0.5-0.8 while
+// unrelated-but-topic-adjacent lines stay under ~0.47.
+const echoSemanticCutoff = 0.55
+
 // filterSelfEcho drops or trims reply parts that repeat something she
 // literally just sent — the "said the same phrase twice in a row" tell.
+// Verbatim runs come off via trimRepeatedSpan; parts that paraphrase a
+// recent send outright (semantically, not lexically) are dropped too.
 // When every part would be eaten the first survives: no reply at all is
 // a worse failure than a mild echo.
 func filterSelfEcho(parts []string, sent []string) []string {
@@ -685,12 +693,34 @@ func filterSelfEcho(parts []string, sent []string) []string {
 		if trimmed == "" || len([]rune(trimmed)) < 3 {
 			continue
 		}
+		if semanticEcho(trimmed, sent) {
+			continue
+		}
 		filtered = append(filtered, trimmed)
 	}
 	if len(filtered) == 0 && len(parts) > 0 {
 		return parts[:1]
 	}
 	return filtered
+}
+
+// semanticEcho reports whether the part is basically her last message
+// reworded — the paraphrase-level repeat verbatim trimming can't catch.
+// Short lines are exempt: "好的" "嗯嗯" style acknowledgements cluster
+// semantically without being a repeat.
+func semanticEcho(part string, sent []string) bool {
+	if len([]rune(part)) < 8 {
+		return false
+	}
+	for _, text := range sent {
+		if len([]rune(text)) < 8 {
+			continue
+		}
+		if vecstore.LocalSimilarity(part, text) >= echoSemanticCutoff {
+			return true
+		}
+	}
+	return false
 }
 
 func expandReplyParts(parts []string, maxRunes, maxChunks int) ([]string, bool) {

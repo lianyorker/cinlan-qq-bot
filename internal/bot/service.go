@@ -1109,6 +1109,15 @@ func (s *Service) sendChains(
 		s.logger.Error("failed to send reply", "reason", "sender_not_configured")
 		return false
 	}
+	// Sulky or drowsy replies sit for a while before landing — a person
+	// who isn't feeling it reads the @ and gets back to it when she gets
+	// back to it. Zero for happy/neutral states so eagerness stays snappy.
+	if len(chains) > 0 {
+		if d := s.sulkDelay(selfID, chatType, chatID); d > 0 &&
+			!waitForReplyPart(ctx, d) {
+			return false
+		}
+	}
 	for index, chain := range chains {
 		if len(chain) == 0 {
 			continue
@@ -1290,6 +1299,36 @@ func (s *Service) typingDelay(first string) time.Duration {
 		delay = 0
 	}
 	return delay
+}
+
+// sulkDelay is the pre-reply stall of a person who isn't in the mood:
+// grumpy she lets the message sit (45–90s at mood<=-40, 15–45s below
+// zero), sleepy she drifts off mid-read (15–45s). Happy or neutral
+// returns zero — eagerness should never be delayed.
+func (s *Service) sulkDelay(selfID, chatType, chatID string) time.Duration {
+	if s.chatPrefs == nil {
+		return 0
+	}
+	now := s.now()
+	var lo, hi time.Duration
+	switch {
+	case s.cfg.Asleep(now):
+		lo, hi = 15*time.Second, 45*time.Second
+	case s.cfg.MoodEnabled:
+		switch mood := s.chatPrefs.MoodScore(
+			platform.PlatformQQOneBot, selfID, chatType, chatID, now,
+		); {
+		case mood <= -40:
+			lo, hi = 45*time.Second, 90*time.Second
+		case mood < 0:
+			lo, hi = 15*time.Second, 45*time.Second
+		default:
+			return 0
+		}
+	default:
+		return 0
+	}
+	return lo + time.Duration(rand.Int63n(int64(hi-lo)+1))
 }
 
 // readDelay simulates actually reading the inbound message before

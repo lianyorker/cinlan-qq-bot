@@ -583,6 +583,18 @@ func (e *Engine) fire(
 	if replyText == "" || strings.HasPrefix(replyText, "[[SKIP]]") {
 		return
 	}
+	// Hot-chat guard: she decided to speak while the room was quiet, but
+	// generation takes a few seconds — if someone jumped in just now,
+	// blurting her prepared line talks over them. A person who notices
+	// the room woke up puts the sentence away and waits.
+	if chatType == platform.ChatGroup && e.deps.Activity != nil {
+		if last := e.deps.Activity(chatType, chatID); !last.IsZero() &&
+			e.deps.Now().Sub(last) < 8*time.Second {
+			e.deps.Logger.Info("proactive dropped — group woke up",
+				"chat_id", chatID)
+			return
+		}
+	}
 	// Resolve inline image markers the same way stageRespond does —
 	// [[SELFIE:tag]] / [[MEME:query]] / [[IMG:key]] each become their own
 	// image send; everything else joins into one text bubble.

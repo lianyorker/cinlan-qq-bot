@@ -112,6 +112,30 @@ func TestFilterSelfEchoTrimsVerbatimRepeat(t *testing.T) {
 	}
 }
 
+func TestFilterSelfEchoDropsSemanticRepeat(t *testing.T) {
+	sent := []string{"我今晚要去健身房撸铁"}
+	// Same meaning, different words — verbatim trimming can't see it.
+	parts := []string{"今晚去健身房锻炼一下", "今天天气不错"}
+	got := filterSelfEcho(parts, sent)
+	if len(got) != 1 || got[0] != "今天天气不错" {
+		t.Fatalf("semantic echo survived: %#v", got)
+	}
+}
+
+func TestSemanticEchoExemptsShortLines(t *testing.T) {
+	sent := []string{"好的没问题"}
+	if semanticEcho("嗯嗯好的", sent) {
+		t.Fatal("short acknowledgement wrongly flagged as echo")
+	}
+	if !semanticEcho("我今晚要去健身房撸铁", []string{"今晚去健身房锻炼一下"}) {
+		t.Fatal("near-paraphrase not detected")
+	}
+	// Topic-adjacent but not a repeat — below the cutoff.
+	if semanticEcho("熬到天黑下班 等得好慢", []string{"快下班没 熬着等天黑呢"}) {
+		t.Fatal("topic-adjacent line wrongly flagged as echo")
+	}
+}
+
 func TestFilterSelfEchoDropsPureRepeatButKeepsFallback(t *testing.T) {
 	sent := []string{"快下班没 熬着等天黑呢"}
 	if got := filterSelfEcho([]string{"快下班没 熬着等天黑呢"}, sent); len(got) != 1 {
