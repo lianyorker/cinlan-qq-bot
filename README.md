@@ -69,8 +69,8 @@ wake -> security -> command -> session -> attention
      -> rate limit -> plugin -> agent -> decorate -> respond
 ```
 
-各阶段职责见 [docs/原生运行时.md](docs/原生运行时.md) 和
-[docs/完整性审计.md](docs/完整性审计.md)。
+各阶段职责见 [docs/原生运行时.md](docs/原生运行时.md)，内部核查记录见
+[docs/dev/完整性审计.md](docs/dev/完整性审计.md)。
 
 ## Native Runtime
 
@@ -346,7 +346,7 @@ AGENT_MAX_TOOL_ROUNDS=4
 结构化路由范围、隐私默认值和兼容规则见 [docs/会话隔离.md](docs/会话隔离.md)。
 自然但不冒充真人的 Persona 模板见 [docs/人格模板.md](docs/人格模板.md)。
 自定义 Go 扩展、配置型扩展和各作用域边界见 [docs/自定义扩展.md](docs/自定义扩展.md)。
-平台、功能、验证证据和剩余风险见 [docs/完整性审计.md](docs/完整性审计.md)。
+平台、功能、验证证据和剩余风险见 [docs/dev/完整性审计.md](docs/dev/完整性审计.md)。
 
 更多专题文档：
 
@@ -355,8 +355,8 @@ AGENT_MAX_TOOL_ROUNDS=4
 - [docs/技能.md](docs/技能.md)：`SKILL.md` 技能加载。
 - [docs/子Agent.md](docs/子Agent.md)：同步 subagent handoff。
 - [docs/扩展API.md](docs/扩展API.md)：Go 扩展 API（命令、插件注册）。
-- [docs/上游审计.md](docs/上游审计.md) 与
-  [docs/上游迁移矩阵.md](docs/上游迁移矩阵.md)：
+- [docs/dev/上游审计.md](docs/dev/上游审计.md) 与
+  [docs/dev/上游迁移矩阵.md](docs/dev/上游迁移矩阵.md)：
   NapCatQQ/AstrBot clean-room 对照记录（无运行时依赖）。
 
 ## OneBot 兼容模式

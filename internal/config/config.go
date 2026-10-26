@@ -364,6 +364,15 @@ func (c Config) Asleep(now time.Time) bool {
 	return hour >= c.SleepStart || hour < c.SleepEnd
 }
 
+// Waking reports the groggy first hour after the sleep window ends — the
+// ramp between asleep and awake nobody has a switch for.
+func (c Config) Waking(now time.Time) bool {
+	if c.SleepStart < 0 || c.Asleep(now) {
+		return false
+	}
+	return now.Hour() == c.SleepEnd
+}
+
 func Load() (Config, error) {
 	var errs []error
 

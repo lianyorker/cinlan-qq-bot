@@ -1316,9 +1316,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		request.SystemPrompt += "\n\n（你刚刚的真实感受：" + feeling +
 			"——这是你自己的情绪，不是别人说的话）"
 	}
-	if s.cfg.Asleep(s.now()) {
+	switch {
+	case s.cfg.Asleep(s.now()):
 		request.SystemPrompt += fmt.Sprintf(
 			"\n\n现在是深夜 %s，你很困——回复短一点迷糊一点，闲聊可以装没看全。",
+			s.now().Format("15:04"),
+		)
+	case s.cfg.Waking(s.now()):
+		request.SystemPrompt += fmt.Sprintf(
+			"\n\n现在是 %s，你刚醒没多久还有点迷糊——反应慢一点，回复偏短，脑子还没完全上线。",
 			s.now().Format("15:04"),
 		)
 	}

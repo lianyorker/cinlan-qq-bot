@@ -1353,6 +1353,8 @@ func (s *Service) sulkDelay(selfID, chatType, chatID string) time.Duration {
 	switch {
 	case s.cfg.Asleep(now):
 		lo, hi = 15*time.Second, 45*time.Second
+	case s.cfg.Waking(now):
+		lo, hi = 8*time.Second, 25*time.Second
 	case s.cfg.MoodEnabled:
 		switch mood := s.chatPrefs.MoodScore(
 			platform.PlatformQQOneBot, selfID, chatType, chatID, now,
