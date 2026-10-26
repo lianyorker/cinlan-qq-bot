@@ -117,9 +117,7 @@ func (r *Registry) Execute(ctx context.Context, event platform.Event, sessionID,
 	if !exists {
 		return Result{}, false, nil
 	}
-	if definition.Permission == PermissionAdmin &&
-		strings.ToLower(event.SenderRole) != "admin" &&
-		strings.ToLower(event.SenderRole) != "owner" {
+	if definition.Permission == PermissionAdmin && !event.Privileged {
 		return Result{Handled: true, Reply: "权限不足。"}, true, nil
 	}
 	result, err := definition.Handler(ctx, &Context{

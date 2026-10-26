@@ -239,10 +239,10 @@ func (s *Service) checkMentionFatigue(
 	if count <= 0 || state.chatType != platform.ChatGroup {
 		return false
 	}
-	// Admins/owners are exempt — stonewalling the operators looks
-	// human to everyone else but breaks moderation and testing.
-	role := strings.ToLower(state.event.SenderRole)
-	if role == "admin" || role == "owner" {
+	// Whitelisted users are exempt — stonewalling them looks human to
+	// everyone else but breaks moderation and testing. Group owner/admin
+	// titles alone no longer confer this exemption.
+	if state.replyPolicy.AllowsUser(state.userID) {
 		return false
 	}
 	key := state.platform + ":" + state.chatType + ":" + state.chatID

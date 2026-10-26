@@ -83,7 +83,7 @@ var safeChannelActions = map[string]bool{
 // persona may use them herself without admin rights. Actions that touch
 // a group or another member stay behind the admin gate below.
 var selfChannelActions = map[string]bool{
-	"set_qq_profile":  true, // own nickname / signature
+	"set_qq_profile": true, // own nickname / signature
 	"send_qzone_msg": true, // own feed post
 }
 
@@ -109,7 +109,7 @@ func channelActionHandler(platforms *platform.Registry, allowedRoot []string) Ha
 		if params == nil {
 			params = map[string]any{}
 		}
-		admin := call.Actor.Role == "admin" || call.Actor.Role == "owner"
+		admin := call.Actor.Privileged
 		switch {
 		case safeChannelActions[action]:
 			// open tier — reads and harmless likes

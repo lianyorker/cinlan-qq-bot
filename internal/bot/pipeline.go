@@ -239,6 +239,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.replyPolicy = policy
 	}
 
+	// Super-user status comes only from the binding's allowed_users —
+	// group owner/admin titles keep display/normal-reply rights but gain
+	// no privileged powers.
+	state.event.Privileged = state.replyPolicy.AllowsUser(state.userID)
+
 	switch state.chatType {
 	case platform.ChatGroup:
 		state.groupID = state.chatID
@@ -760,15 +765,16 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			Name:      kt.tool,
 			Arguments: arguments,
 			Actor: tool.Actor{
-				UserID:    state.userID,
-				Platform:  state.platform,
-				ChatType:  state.chatType,
-				ChatID:    state.chatID,
-				GroupID:   state.groupID,
-				SelfID:    state.selfID,
-				MessageID: state.messageID,
-				SessionID: state.sessionID,
-				Role:      state.event.SenderRole,
+				UserID:     state.userID,
+				Platform:   state.platform,
+				ChatType:   state.chatType,
+				ChatID:     state.chatID,
+				GroupID:    state.groupID,
+				SelfID:     state.selfID,
+				MessageID:  state.messageID,
+				SessionID:  state.sessionID,
+				Role:       state.event.SenderRole,
+				Privileged: state.event.Privileged,
 			},
 		})
 		if err != nil || result.Response == nil {

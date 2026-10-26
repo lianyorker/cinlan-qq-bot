@@ -33,15 +33,18 @@ type Call struct {
 }
 
 type Actor struct {
-	UserID        string
-	Platform      string
-	ChatType      string
-	ChatID        string
-	GroupID       string
-	SelfID        string
-	MessageID     string
-	SessionID     string
-	Role          string
+	UserID    string
+	Platform  string
+	ChatType  string
+	ChatID    string
+	GroupID   string
+	SelfID    string
+	MessageID string
+	SessionID string
+	Role      string
+	// Privileged marks a whitelisted super-user — the only gate for
+	// admin-tier tools, independent of the actor's group role.
+	Privileged    bool
 	History       []domain.ChatMessage
 	AllowedSkills []string
 }
@@ -209,7 +212,7 @@ func (r *Registry) Execute(parent context.Context, call Call) (Result, error) {
 	if !ok {
 		return Result{}, fmt.Errorf("tool %q is not registered", call.Name)
 	}
-	if definition.Permission == PermissionAdmin && call.Actor.Role != "admin" {
+	if definition.Permission == PermissionAdmin && !call.Actor.Privileged {
 		return Result{}, errors.New("tool permission denied")
 	}
 	ctx, cancel := context.WithTimeout(parent, definition.Timeout)

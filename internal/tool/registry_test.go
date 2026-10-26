@@ -39,7 +39,7 @@ func TestRegistryValidatesArgumentsAndPermissions(t *testing.T) {
 	result, err := registry.Execute(context.Background(), Call{
 		Name:      "lookup",
 		Arguments: []byte(`{"q":"x"}`),
-		Actor:     Actor{Role: "admin"},
+		Actor:     Actor{Privileged: true},
 	})
 	if err != nil || result.Error != "" {
 		t.Fatalf("Execute() = %#v, %v", result, err)

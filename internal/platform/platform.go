@@ -25,9 +25,13 @@ type Event struct {
 	ChatID      string
 	SenderName  string
 	SenderRole  string
-	Chain       message.Chain
-	RawMessage  string
-	Metadata    map[string]any
+	// Privileged marks a whitelisted super-user. Group owner/admin roles
+	// never set this — only the binding's allowed_users does, so ordinary
+	// group admins keep normal-reply rights without gaining super powers.
+	Privileged bool
+	Chain      message.Chain
+	RawMessage string
+	Metadata   map[string]any
 }
 
 func (e Event) IsMessage() bool {

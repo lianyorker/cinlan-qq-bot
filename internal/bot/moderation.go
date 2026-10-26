@@ -58,9 +58,7 @@ func (s *Service) stageModeration(
 	if pol == nil || s.groupModerator == nil || s.warnStore == nil {
 		return nil
 	}
-	senderRole := strings.ToLower(strings.TrimSpace(state.event.SenderRole))
-	if senderRole == "admin" || senderRole == "owner" ||
-		state.replyPolicy.AllowsUser(state.userID) {
+	if state.replyPolicy.AllowsUser(state.userID) {
 		return nil
 	}
 
