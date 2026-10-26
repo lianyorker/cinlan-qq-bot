@@ -203,6 +203,24 @@ func TestHangingTail(t *testing.T) {
 	}
 }
 
+func TestStripQuoteMarker(t *testing.T) {
+	if text, ok := stripQuoteMarker("[[QUOTE]]确实有点东西"); !ok || text != "确实有点东西" {
+		t.Fatalf("stripQuoteMarker() = %q, %v", text, ok)
+	}
+	if text, ok := stripQuoteMarker("[[quote]]"); !ok || text != "" {
+		t.Fatalf("bare lowercase marker = %q, %v", text, ok)
+	}
+	if _, ok := stripQuoteMarker("普通回复"); ok {
+		t.Fatal("plain text should not tag a quote")
+	}
+	if !isMarkerPart("[[QUOTE]]") {
+		t.Fatal("bare QUOTE must survive the marker split")
+	}
+	if isMarkerPart("[[QUOTE]]确实") {
+		t.Fatal("QUOTE glued to text is not a marker part")
+	}
+}
+
 func TestParseMemeMarker(t *testing.T) {
 	if query, ok := parseMemeMarker("[[MEME:害羞]]"); !ok || query != "害羞" {
 		t.Fatalf("parseMemeMarker() = %q, %v", query, ok)

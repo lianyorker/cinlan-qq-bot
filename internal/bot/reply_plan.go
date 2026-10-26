@@ -212,6 +212,23 @@ func parseFaceMarkers(text string) (message.Chain, string, bool) {
 	return chain, cleaned.String(), true
 }
 
+// quoteMarkerPattern matches [[QUOTE]] — the model tags a bubble that
+// specifically answers an earlier message, and the chain gets a real
+// reply/quote segment pointing at the inbound message_id.
+var quoteMarkerPattern = regexp.MustCompile(
+	`\[\[(?:QUOTE|quote)\]\]\s*`,
+)
+
+// stripQuoteMarker removes the marker and reports whether this part
+// asked for a quote. Runs before the unknown-marker stripper, which
+// would otherwise eat [[QUOTE]] as an unrecognized tag.
+func stripQuoteMarker(part string) (string, bool) {
+	if !quoteMarkerPattern.MatchString(part) {
+		return part, false
+	}
+	return strings.TrimSpace(quoteMarkerPattern.ReplaceAllString(part, "")), true
+}
+
 // atMarkerPattern matches [[AT]] (at the current sender) and
 // [[AT:12345678]] (at a specific member by QQ id). Like the other
 // markers the model can learn these from the system prompt note.
@@ -382,6 +399,12 @@ func isMarkerPart(part string) bool {
 		return true
 	}
 	if _, ok := parseOopsMarker(part); ok {
+		return true
+	}
+	// A bare [[QUOTE]] part survives the split so the quote lands on the
+	// next text bubble instead of dying inside the marker stripper.
+	if quoteMarkerPattern.MatchString(strings.TrimSpace(part)) &&
+		strings.TrimSpace(quoteMarkerPattern.ReplaceAllString(part, "")) == "" {
 		return true
 	}
 	return isDiceMarker(part) || isRPSMarker(part)

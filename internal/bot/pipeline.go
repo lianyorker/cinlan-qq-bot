@@ -1850,6 +1850,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		chains := make([]message.Chain, 0, len(parts))
 		cleaned := make([]string, 0, len(parts))
 		skippedMarkers := 0
+		quotePending := false
 		for _, part := range parts {
 			if key, ok := parseStoredImageMarker(part); ok {
 				path := ""
@@ -1964,6 +1965,14 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				}
 				continue
 			}
+			// [[QUOTE]] marks a bubble that answers a specific earlier
+			// message — a real reply/quote segment, not literal text.
+			// Extracted before the unknown-marker strip eats it.
+			var quote bool
+			part, quote = stripQuoteMarker(part)
+			if quote {
+				quotePending = true
+			}
 			// Anything still bracketed after every known parser ran is a
 			// hallucinated marker ([[SECRET:x]] etc.) — strip it before
 			// the internal marker namespace leaks into the chat.
@@ -1976,6 +1985,13 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				// [[AT]] pings the sender, [[AT:qq]] pings a specific
 				// member — real @ notifications, not literal text.
 				chain, plain = expandAtMarkers(chain, state.userID)
+			}
+			if quotePending && state.messageID != "" {
+				chain = append(
+					message.Chain{message.Reply(state.messageID)},
+					chain...,
+				)
+				quotePending = false
 			}
 			chains = append(chains, chain)
 			cleaned = append(cleaned, strings.TrimSpace(plain))
