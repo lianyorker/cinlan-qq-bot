@@ -1794,6 +1794,12 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			expanded = append(expanded, splitMarkerLines(part)...)
 		}
 		parts = capBurstParts(expanded, s.cfg.MaxReplyChunks)
+		// Opt-in thumb-slip: a rare bubble carries a real typo, corrected
+		// in the next bubble when there's room under the chunk cap.
+		if s.cfg.TypoSim {
+			parts = maybeTypoPart(parts, rand.Float64(),
+				len(parts) < s.cfg.MaxReplyChunks)
+		}
 		// Humans don't re-send a phrase they coined one turn ago — trim
 		// or drop parts that echo her own recent sends verbatim.
 		if filtered := filterSelfEcho(

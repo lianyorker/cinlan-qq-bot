@@ -291,7 +291,11 @@ type Config struct {
 
 	// Humanization layer — makes the bot behave like a person rather than
 	// a vending machine. All persona-agnostic; personas stay operator-owned.
-	TypingSim     bool          // human-like delay before sending
+	TypingSim bool // human-like delay before sending
+	// TypoSim occasionally sends a bubble with a typo then corrects it —
+	// the strongest human tell we have, and the riskiest one, so it's
+	// opt-in via QQ_TYPO_SIM (default off).
+	TypoSim       bool
 	TypingBase    time.Duration // base delay before first reply part
 	TypingPerRune time.Duration // extra delay per rune of the first part
 	TypingMax     time.Duration // cap for the typing delay
@@ -704,6 +708,7 @@ func Load() (Config, error) {
 	cfg.MessageDedupeTTL = parseDuration("BOT_MESSAGE_DEDUPE_TTL", 10*time.Minute, true, &errs)
 
 	cfg.TypingSim = parseBool("QQ_TYPING_SIM", true, &errs)
+	cfg.TypoSim = parseBool("QQ_TYPO_SIM", false, &errs)
 	cfg.TypingBase = parseDuration("QQ_TYPING_BASE", 1200*time.Millisecond, true, &errs)
 	cfg.TypingPerRune = parseDuration("QQ_TYPING_PER_RUNE", 55*time.Millisecond, true, &errs)
 	cfg.TypingMax = parseDuration("QQ_TYPING_MAX", 8*time.Second, true, &errs)

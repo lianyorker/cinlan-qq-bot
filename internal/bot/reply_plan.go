@@ -1,10 +1,12 @@
 package bot
 
 import (
+	"math/rand"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/domain"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
@@ -743,4 +745,80 @@ func expandReplyParts(parts []string, maxRunes, maxChunks int) ([]string, bool) 
 
 func isTextReplyChain(chain message.Chain) bool {
 	return len(chain) == 1 && chain[0].Type == message.TypeText
+}
+
+// typoChance is the per-reply odds of shipping a bubble with a typo.
+// Opt-in via QQ_TYPO_SIM — rare enough to read as a slip, not a quirk.
+const typoChance = 0.015
+
+// maybeTypoPart corrupts a random text bubble the way thumbs do —
+// swapped neighbours, a doubled character, or a dropped one — then
+// appends the self-correction bubble "*正确写法" when the chunk budget
+// has room. Without room the typo just flies: people typo constantly
+// without fixing, that's human too.
+func maybeTypoPart(parts []string, roll float64, room bool) []string {
+	if roll >= typoChance {
+		return parts
+	}
+	cands := make([]int, 0, len(parts))
+	for i, p := range parts {
+		if isMarkerPart(p) {
+			continue
+		}
+		han := 0
+		for _, r := range p {
+			if unicode.Is(unicode.Han, r) {
+				han++
+			}
+		}
+		if han >= 6 {
+			cands = append(cands, i)
+		}
+	}
+	if len(cands) == 0 {
+		return parts
+	}
+	idx := cands[rand.Intn(len(cands))]
+	runes := []rune(parts[idx])
+	pos := rand.Intn(len(runes))
+	mutated := make([]rune, 0, len(runes)+1)
+	var frag []rune
+	switch rand.Intn(3) {
+	case 0: // swap neighbours: 今天→天今
+		if pos >= len(runes)-1 {
+			pos = len(runes) - 2
+		}
+		if pos < 0 {
+			return parts
+		}
+		mutated = append(mutated, runes[:pos]...)
+		mutated = append(mutated, runes[pos+1], runes[pos])
+		mutated = append(mutated, runes[pos+2:]...)
+		frag = runes[pos:min(pos+2, len(runes))]
+	case 1: // doubled char: 的→的的
+		mutated = append(mutated, runes[:pos+1]...)
+		mutated = append(mutated, runes[pos])
+		mutated = append(mutated, runes[pos+1:]...)
+		lo := pos - 1
+		if lo < 0 {
+			lo = 0
+		}
+		frag = runes[lo:min(pos+2, len(runes))]
+	default: // dropped char
+		mutated = append(mutated, runes[:pos]...)
+		mutated = append(mutated, runes[pos+1:]...)
+		lo := pos - 1
+		if lo < 0 {
+			lo = 0
+		}
+		frag = runes[lo:min(pos+2, len(runes))]
+	}
+	out := make([]string, 0, len(parts)+1)
+	out = append(out, parts[:idx]...)
+	out = append(out, string(mutated))
+	if room {
+		out = append(out, "*"+string(frag))
+	}
+	out = append(out, parts[idx+1:]...)
+	return out
 }

@@ -146,6 +146,30 @@ func TestFilterSelfEchoDropsPureRepeatButKeepsFallback(t *testing.T) {
 	}
 }
 
+func TestMaybeTypoPart(t *testing.T) {
+	base := []string{"阳光明媚特别适合出门散步"}
+	if got := maybeTypoPart(base, 0.5, true); len(got) != 1 || got[0] != base[0] {
+		t.Fatalf("high roll must pass through: %#v", got)
+	}
+	got := maybeTypoPart(base, 0, true)
+	if len(got) != 2 {
+		t.Fatalf("typo with room should append correction: %#v", got)
+	}
+	if got[0] == base[0] {
+		t.Fatal("first part should carry the mutation")
+	}
+	if !strings.HasPrefix(got[1], "*") || len([]rune(got[1])) < 3 {
+		t.Fatalf("correction bubble malformed: %q", got[1])
+	}
+	got = maybeTypoPart(base, 0, false)
+	if len(got) != 1 || got[0] == base[0] {
+		t.Fatalf("no room: typo flies bare, got %#v", got)
+	}
+	if got := maybeTypoPart([]string{"[[MEME:嘲笑]]", "嗯嗯"}, 0, true); len(got) != 2 {
+		t.Fatalf("markers and short parts are not typo candidates: %#v", got)
+	}
+}
+
 func TestParseMemeMarker(t *testing.T) {
 	if query, ok := parseMemeMarker("[[MEME:害羞]]"); !ok || query != "害羞" {
 		t.Fatalf("parseMemeMarker() = %q, %v", query, ok)
