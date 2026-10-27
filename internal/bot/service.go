@@ -201,8 +201,16 @@ type Service struct {
 	attentionCounter uint64
 	spamMu           sync.Mutex
 	spamRepeats      map[string]spamRepeatEntry
-	fatigueMu        sync.Mutex
-	chatFatigue      map[string]fatigueEntry
+	// echoMu guards the meme-chain tracker: echoChains counts distinct
+	// users echoing the same line in a chat, echoJoinAt throttles her own
+	// tags so one meme run doesn't turn her into a parrot, and echoRoll
+	// is a swappable 0-99 roller for tests.
+	echoMu      sync.Mutex
+	echoChains  map[string]echoChainEntry
+	echoJoinAt  map[string]time.Time
+	echoRoll    func() int
+	fatigueMu   sync.Mutex
+	chatFatigue map[string]fatigueEntry
 	// socialMu guards the neglect tracker: lastSpoke is when she last
 	// said something in the chat, lastNeglect the last time being
 	// ignored cost her mood — a sting per quiet stretch, not per snub.

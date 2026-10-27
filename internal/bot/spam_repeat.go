@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/pipeline"
@@ -341,4 +342,146 @@ func (s *Service) checkRepeatSpam(
 		// scold nudge so the persona calls them out in character.
 		return false
 	}
+}
+
+// echoChainEntry tracks a live meme run: several DIFFERENT users echoing
+// the same normalized line in one chat inside a short window. Unlike
+// spamRepeatEntry — one user spamming — a chain is a group bit she may
+// choose to tag along on, mood willing, exactly once per run.
+type echoChainEntry struct {
+	norm   string
+	users  map[string]struct{}
+	count  int
+	first  time.Time
+	joined bool
+}
+
+const (
+	// echoChainWindow is how close the echoes have to land to feel like
+	// one spontaneous run instead of a coincidence.
+	echoChainWindow = 30 * time.Second
+	// echoChainMinUsers is the crowd size that makes it a bit — one
+	// repeat is a coincidence, two plus is a chain.
+	echoChainMinUsers = 2
+	// echoChainMinRunes keeps stray one-word agreements ("好"/"行"/"6")
+	// from registering as memes; real chains echo a phrase.
+	echoChainMinRunes = 5
+	// echoJoinCooldown stops her from tagging every passing meme — a
+	// person who's already chimed in lets the next one go.
+	echoJoinCooldown = 2 * time.Minute
+)
+
+// noteEchoChain records one echo and returns how many distinct users are
+// in the current run. Counter resets when the line changes or the
+// window lapses.
+func (s *Service) noteEchoChain(key, userID, text string) int {
+	norm := normalizeRepeatText(text)
+	if norm == "" || utf8.RuneCountInString(norm) < echoChainMinRunes {
+		return 0
+	}
+	s.echoMu.Lock()
+	defer s.echoMu.Unlock()
+	if s.echoChains == nil {
+		s.echoChains = make(map[string]echoChainEntry)
+	}
+	now := s.now()
+	if len(s.echoChains) > 512 {
+		for k, entry := range s.echoChains {
+			if now.Sub(entry.first) >= echoChainWindow {
+				delete(s.echoChains, k)
+			}
+		}
+	}
+	entry, ok := s.echoChains[key]
+	if !ok || entry.norm != norm || now.Sub(entry.first) >= echoChainWindow {
+		entry = echoChainEntry{
+			norm:  norm,
+			users: make(map[string]struct{}),
+			first: now,
+		}
+	}
+	entry.users[userID] = struct{}{}
+	entry.count++
+	s.echoChains[key] = entry
+	return len(entry.users)
+}
+
+// rollEchoChance maps her current mood to a participation chance out of
+// 100: upbeat she jumps on the bit more often, grumpy mostly lets it
+// pass, mid-tier is a coin flip. Mood carries the vibe — no schedule.
+func (s *Service) rollEchoChance(selfID, chatType, chatID string) int {
+	if !s.cfg.MoodEnabled || s.chatPrefs == nil {
+		return 30
+	}
+	switch mood := s.chatPrefs.MoodScore(
+		platform.PlatformQQOneBot, selfID, chatType, chatID, s.now(),
+	); {
+	case mood >= 40:
+		return 45
+	case mood >= 0:
+		return 25
+	case mood > -40:
+		return 10
+	default:
+		return 0
+	}
+}
+
+// tryEchoJoin decides whether she tags along on the meme chain running
+// in this chat. The chance rides her mood; she joins at most once per
+// run and then cools off so she doesn't echo every bit. Returns the
+// echoed line when she joins ("" = she sits this one out) — the caller
+// annotates the prompt so the persona can riff, echo, or lob a line of
+// her own rather than parroting verbatim.
+func (s *Service) tryEchoJoin(state *flowState) string {
+	if state.chatType != platform.ChatGroup {
+		return ""
+	}
+	key := state.platform + ":" + state.chatType + ":" + state.chatID
+	if s.noteEchoChain(key, state.userID, state.text) < echoChainMinUsers {
+		return ""
+	}
+	s.echoMu.Lock()
+	entry, ok := s.echoChains[key]
+	if !ok || entry.joined {
+		s.echoMu.Unlock()
+		return ""
+	}
+	if last, has := s.echoJoinAt[key]; has &&
+		s.now().Sub(last) < echoJoinCooldown {
+		s.echoMu.Unlock()
+		return ""
+	}
+	s.echoMu.Unlock()
+
+	chance := s.rollEchoChance(state.selfID, state.chatType, state.chatID)
+	if chance <= 0 {
+		return ""
+	}
+	roll := 0
+	if s.echoRoll != nil {
+		roll = s.echoRoll()
+	} else if r, err := rand.Int(rand.Reader, big.NewInt(100)); err == nil {
+		roll = int(r.Int64())
+	}
+	if roll >= chance {
+		return ""
+	}
+	s.echoMu.Lock()
+	if entry, ok := s.echoChains[key]; ok {
+		entry.joined = true
+		s.echoChains[key] = entry
+	}
+	if s.echoJoinAt == nil {
+		s.echoJoinAt = make(map[string]time.Time)
+	}
+	s.echoJoinAt[key] = s.now()
+	s.echoMu.Unlock()
+	s.logger.Info(
+		"echo chain join",
+		"chat_type", state.chatType,
+		"chat_id", state.chatID,
+		"echoed", normalizeRepeatText(state.text),
+	)
+	return state.text
 }

@@ -84,6 +84,20 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		// conversation turn, not ambient noise.
 		return nil
 	}
+	// A meme chain rolling through the room isn't business, but a person
+	// with a mood sometimes tags along — mood-weighted chance, once per
+	// run. If she passes the roll it falls through to the classifier,
+	// which ignores it as chatter — the same way a person lurking lets
+	// the bit go by.
+	if echoed := s.tryEchoJoin(state); echoed != "" {
+		s.stats.attentionReplies.Add(1)
+		state.echoJoinIn = true
+		state.promptText = "（群里好几个人在复读同一句话接龙：" +
+			echoed +
+			"——你想跟就跟着起哄或随口一句，不想理就当没看见）" +
+			state.promptText
+		return nil
+	}
 	if !s.allowAttentionDecision(state.rateLimitID) {
 		s.stats.attentionRateLimited.Add(1)
 		s.stats.attentionIgnored.Add(1)

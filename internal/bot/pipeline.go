@@ -111,6 +111,9 @@ type flowState struct {
 	// so the reply rides as a short continuation instead of a fresh
 	// multi-bubble burst.
 	followUpContinuation bool
+	// echoJoinIn marks a reply that tagged along on a group meme chain —
+	// a person chiming in drops a line or two, never a paragraph.
+	echoJoinIn bool
 }
 
 func (s *Service) newPipeline() *pipeline.Pipeline {
@@ -1763,9 +1766,10 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		s.paceReply(state.reply)
 	}
 	maxParts := s.cfg.MaxReplyChunks
-	if state.followUpContinuation && maxParts > followUpMaxChunks {
-		// Same-moment follow-up: a real person taps out one or two short
-		// bubbles here, not another full burst.
+	if (state.followUpContinuation || state.echoJoinIn) &&
+		maxParts > followUpMaxChunks {
+		// Same-moment follow-up or meme tag-along: a real person taps out
+		// one or two short bubbles here, not another full burst.
 		maxParts = followUpMaxChunks
 	}
 	chain := state.outbound

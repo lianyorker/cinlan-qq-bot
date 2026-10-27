@@ -531,6 +531,71 @@ func attentionService(
 	return service
 }
 
+func platformEventFrom(messageID, text string, mentioned bool, userID string) platform.Event {
+	event := platformEvent(messageID, text, mentioned)
+	event.UserID = userID
+	return event
+}
+
+func TestEchoChainJoinsWhenMoodRollPasses(t *testing.T) {
+	agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
+		if strings.HasPrefix(request.RequestID, "attention:") {
+			return attentionResponse("ignore", "chatter", 0.9, "复读接龙"), nil
+		}
+		return domain.AgentResponse{Reply: "不知道，需要佬们科研一下"}, nil
+	}}
+	sender := &fakeSender{}
+	service := smartAttentionService(t, agentClient, sender)
+	service.echoRoll = func() int { return 0 } // mood says she tags along
+
+	service.handlePlatformEvent(context.Background(),
+		platformEventFrom("echo-1", "不知道，需要佬们科研一下", false, "u1"))
+	service.handlePlatformEvent(context.Background(),
+		platformEventFrom("echo-2", "不知道，需要佬们科研一下", false, "u2"))
+
+	// First echo went through the judge and got ignored; the second forms
+	// the chain — she joins straight into the answer without a judge call.
+	if len(agentClient.requests) != 2 {
+		t.Fatalf("agent requests = %d, want judge + joined answer",
+			len(agentClient.requests))
+	}
+	answer := agentClient.requests[1].Text
+	if !strings.Contains(answer, "复读同一句话接龙") {
+		t.Fatalf("join annotation missing from prompt: %q", answer)
+	}
+	if len(sender.messages) != 1 ||
+		sender.messages[0].text != "不知道，需要佬们科研一下" {
+		t.Fatalf("sender messages = %#v", sender.messages)
+	}
+}
+
+func TestEchoChainLurksWhenMoodRollFails(t *testing.T) {
+	agentClient := &fakeAgent{reply: func(request domain.AgentRequest) (domain.AgentResponse, error) {
+		if strings.HasPrefix(request.RequestID, "attention:") {
+			return attentionResponse("ignore", "chatter", 0.9, "复读接龙"), nil
+		}
+		return domain.AgentResponse{Reply: "不知道，需要佬们科研一下"}, nil
+	}}
+	sender := &fakeSender{}
+	service := smartAttentionService(t, agentClient, sender)
+	service.echoRoll = func() int { return 99 } // not feeling it — she lurks
+
+	service.handlePlatformEvent(context.Background(),
+		platformEventFrom("echo-1", "不知道，需要佬们科研一下", false, "u1"))
+	service.handlePlatformEvent(context.Background(),
+		platformEventFrom("echo-2", "不知道，需要佬们科研一下", false, "u2"))
+
+	// Both echoes hit the judge, both ignored — nobody answered.
+	if len(sender.messages) != 0 {
+		t.Fatalf("she should lurk, sender messages = %#v", sender.messages)
+	}
+	if len(agentClient.requests) != 2 ||
+		!strings.HasPrefix(agentClient.requests[0].RequestID, "attention:") ||
+		!strings.HasPrefix(agentClient.requests[1].RequestID, "attention:") {
+		t.Fatalf("both should be judge calls: %#v", agentClient.requests)
+	}
+}
+
 func platformEvent(messageID, text string, mentioned bool) platform.Event {
 	chain := make(message.Chain, 0, 2)
 	if mentioned {
