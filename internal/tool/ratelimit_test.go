@@ -33,7 +33,7 @@ func TestMediaLimiterSharesCooldownAcrossMediaTools(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.Response == nil || result.Response.Reply != "操作太频繁了，稍等一会再试。" {
+	if result.Response == nil || result.Response.Reply != "你催太急啦 缓口气再来" {
 		t.Fatalf("second result = %#v", result)
 	}
 	if calls.Load() != 1 {
@@ -78,7 +78,7 @@ func TestMediaLimiterWindowAndConcurrency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if third.Response == nil || third.Response.Reply != "当前图片任务有点多，稍后再试。" {
+	if third.Response == nil || third.Response.Reply != "手头还排着几张图 等下再发" {
 		t.Fatalf("concurrency result = %#v", third)
 	}
 	close(release)

@@ -1577,7 +1577,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	if err != nil {
 		state.agentErr = err
 		if errors.Is(err, agent.ErrInputImageUnavailable) {
-			state.reply = "这张图我没读取到。请重新发送原图，并在同一条消息里 @我。"
+			state.reply = "这图我没读到 原图重发一条记得@我"
 		} else {
 			state.reply = state.errorReply
 		}

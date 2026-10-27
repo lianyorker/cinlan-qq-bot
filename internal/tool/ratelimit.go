@@ -111,21 +111,21 @@ func (l *MediaLimiter) failureText(name, reason string) string {
 		strings.Contains(lower, "审核") ||
 		strings.Contains(lower, "拒绝") ||
 		strings.Contains(lower, "违规"):
-		return "这个描述被拦了，换个说法我再试试"
+		return "被平台审核吞了 换个说法我再试"
 	case strings.Contains(lower, "timeout") ||
 		strings.Contains(lower, "deadline") ||
 		strings.Contains(lower, "connection") ||
 		strings.Contains(lower, "download"):
-		return "生图服务超时了，等会再试"
+		return "破网转半天没出来 等下再试"
 	case strings.Contains(lower, "quota") ||
 		strings.Contains(lower, "insufficient"):
-		return "生图额度用完了，明天再来"
+		return "今天画图的额度用完了 明天再画"
 	}
 	switch name {
 	case "generate_image":
-		return "生图失败了，稍后再试试～"
+		return "图没画出来 等下再试试"
 	default:
-		return "生成失败了，稍后再试试～"
+		return "没弄成 等下再试"
 	}
 }
 
@@ -166,14 +166,14 @@ func (l *MediaLimiter) acquire(actor Actor) (func(), func(), *domain.AgentRespon
 	}
 	if l.cooldown > 0 && len(state.accepted) > 0 &&
 		now.Sub(state.accepted[len(state.accepted)-1]) < l.cooldown {
-		return nil, nil, terminalMediaResponse("操作太频繁了，稍等一会再试。")
+		return nil, nil, terminalMediaResponse("你催太急啦 缓口气再来")
 	}
 	if l.limit > 0 && len(state.accepted) >= l.limit {
 		return nil, nil, terminalMediaResponse(fmt.Sprintf(
-			"今天的次数用完啦（%d/%d），明天再来。", l.limit, l.limit))
+			"今天 %d 张都画完了 明天再来", l.limit))
 	}
 	if l.active >= l.maxConcurrent {
-		return nil, nil, terminalMediaResponse("当前图片任务有点多，稍后再试。")
+		return nil, nil, terminalMediaResponse("手头还排着几张图 等下再发")
 	}
 	state.accepted = append(state.accepted, now)
 	l.active++

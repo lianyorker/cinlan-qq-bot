@@ -377,7 +377,7 @@ func TestUnreadableImageReturnsSpecificReply(t *testing.T) {
 	service.handlePlatformEvent(context.Background(), event)
 
 	if len(sender.messages) != 1 ||
-		!strings.Contains(sender.messages[0].text, "重新发送原图") {
+		!strings.Contains(sender.messages[0].text, "原图重发") {
 		t.Fatalf("sender messages = %#v", sender.messages)
 	}
 }
