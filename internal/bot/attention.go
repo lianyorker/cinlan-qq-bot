@@ -60,7 +60,8 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 	}
 
 	direct := state.eventMentioned ||
-		state.replyPolicy.AllowsUser(state.userID)
+		state.replyPolicy.AllowsUser(state.userID) ||
+		s.isOwnerUser(state.userID)
 	// An engaged continuation — her recent move or reply — keeps the
 	// channel warm: even a bare "好的" may be answering her question.
 	engaged := s.pendingGameMove(state) || s.pendingFollowUp(state)

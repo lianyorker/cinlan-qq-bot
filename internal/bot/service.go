@@ -352,6 +352,19 @@ func (s *Service) SetPeerSelfIDs(selfIDs []string) {
 	s.peerSelfIDs = peers
 }
 
+// isOwnerUser reports whether userID is in the global creator list
+// (BOT_OWNER_USER_IDS). The owner is whitelisted in every binding —
+// not just for admin-tier tools but as the person who built her, which
+// the prompt layer uses to drop the stranger distance.
+func (s *Service) isOwnerUser(userID string) bool {
+	for _, id := range s.cfg.OwnerUserIDs {
+		if strings.TrimSpace(id) == userID {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Service) isPeerSelf(userID string) bool {
 	if len(s.peerSelfIDs) == 0 {
 		return false

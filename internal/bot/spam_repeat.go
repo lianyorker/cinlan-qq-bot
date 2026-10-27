@@ -243,7 +243,7 @@ func (s *Service) checkMentionFatigue(
 	// Whitelisted users are exempt — stonewalling them looks human to
 	// everyone else but breaks moderation and testing. Group owner/admin
 	// titles alone no longer confer this exemption.
-	if state.replyPolicy.AllowsUser(state.userID) {
+	if state.replyPolicy.AllowsUser(state.userID) || s.isOwnerUser(state.userID) {
 		return false
 	}
 	key := state.platform + ":" + state.chatType + ":" + state.chatID

@@ -58,7 +58,7 @@ func (s *Service) stageModeration(
 	if pol == nil || s.groupModerator == nil || s.warnStore == nil {
 		return nil
 	}
-	if state.replyPolicy.AllowsUser(state.userID) {
+	if state.replyPolicy.AllowsUser(state.userID) || s.isOwnerUser(state.userID) {
 		return nil
 	}
 

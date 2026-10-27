@@ -367,6 +367,28 @@ func TestMentionedImageReachesMultimodalAgentRequest(t *testing.T) {
 	}
 }
 
+func TestOwnerUserGetsPrivilegedAndCreatorNoteGlobally(t *testing.T) {
+	cfg := testBotConfig(t)
+	cfg.OwnerUserIDs = []string{"77777"}
+	agentClient := &fakeAgent{response: domain.AgentResponse{Reply: "在呢"}}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+
+	// The binding carries no allowed_users — owner status alone must
+	// grant privileged treatment and tell the model who he is.
+	event := testEventFrom("owner-1", "在吗", true, "77777", "owner")
+	service.handleEvent(context.Background(), event)
+
+	if len(agentClient.requests) != 1 {
+		t.Fatalf("owner message dropped: %#v", agentClient.requests)
+	}
+	prompt := agentClient.requests[0].SystemPrompt
+	if !strings.Contains(prompt, "把你做出来的人") ||
+		!strings.Contains(prompt, "熟人") {
+		t.Fatalf("owner notes missing from prompt: %s", prompt)
+	}
+}
+
 func TestUnreadableImageReturnsSpecificReply(t *testing.T) {
 	agentClient := &fakeAgent{err: agent.ErrInputImageUnavailable}
 	sender := &fakeSender{}

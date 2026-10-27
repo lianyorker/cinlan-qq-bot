@@ -117,6 +117,12 @@ type Config struct {
 	// personas never argue with each other in public.
 	PeerBotIDs      []string
 	AdminUserIDs    []string
+	// OwnerUserIDs is the global creator/owner whitelist (BOT_OWNER_USER_IDS).
+	// Unlike per-binding allowed_users it applies everywhere: every binding,
+	// every group, every private chat — owner messages bypass the attention
+	// classifier, moderation and spam ladders, and the persona is told this
+	// person built her.
+	OwnerUserIDs    []string
 	ChatPrefsFile   string
 	AffinityFile    string
 	IQChartAPIBase  string
@@ -479,6 +485,7 @@ func Load() (Config, error) {
 	cfg.AgentRetryMax = parseDuration("AGENT_RETRY_MAX", 5*time.Second, true, &errs)
 
 	cfg.AdminUserIDs = parseStringList(envOrAllowEmpty("BOT_ADMIN_USER_IDS", ""))
+	cfg.OwnerUserIDs = parseStringList(envOrAllowEmpty("BOT_OWNER_USER_IDS", ""))
 
 	cfg.ImageMode = strings.ToLower(envOrAllowEmpty("IMAGE_API_MODE", ""))
 	cfg.ImageAPIURL = envOrAllowEmpty("IMAGE_API_URL", "")

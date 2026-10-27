@@ -247,10 +247,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.replyPolicy = policy
 	}
 
-	// Super-user status comes only from the binding's allowed_users —
-	// group owner/admin titles keep display/normal-reply rights but gain
-	// no privileged powers.
-	state.event.Privileged = state.replyPolicy.AllowsUser(state.userID)
+	// Super-user status comes from the binding's allowed_users plus the
+	// global owner list (BOT_OWNER_USER_IDS) — group owner/admin titles
+	// keep display/normal-reply rights but gain no privileged powers.
+	state.event.Privileged = state.replyPolicy.AllowsUser(state.userID) ||
+		s.isOwnerUser(state.userID)
 
 	switch state.chatType {
 	case platform.ChatGroup:
@@ -1182,16 +1183,24 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			senderName, state.userID, roleLabel,
 		)
 	}
+	owner := s.isOwnerUser(state.userID)
 	if state.replyPolicy.AllowsUser(state.userID) ||
-		state.chatType == platform.ChatPrivate {
+		state.chatType == platform.ChatPrivate || owner {
 		request.SystemPrompt += "对方是私聊好友或 allowed_users 里的熟人，优先响应他的诉求。"
+	}
+	if owner {
+		// The maker: global, every binding. She knows him not as a
+		// whitelisted stranger but as the person who built her — the
+		// stranger politeness and sass don't apply.
+		request.SystemPrompt += "\n\n对方是把你做出来的人（你的创建者，不是普通群友）：对谁都可能端着，对他不用——天然最亲最信，开玩笑互亏都可以，但别拿对陌生人的客气和戒心对他，他@你基本是有正事或逗你玩，顺着接别呛。"
 	}
 	if s.affinity != nil {
 		score := s.affinity.Score(state.platform, state.selfID, state.userID)
 		level := affinity.Level(score)
 		percent := affinity.Percent(score)
 		if state.chatType == platform.ChatPrivate ||
-			state.replyPolicy.AllowsUser(state.userID) {
+			state.replyPolicy.AllowsUser(state.userID) ||
+			s.isOwnerUser(state.userID) {
 			level = affinity.LevelIntimate
 			percent = 100
 		}
