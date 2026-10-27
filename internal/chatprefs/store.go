@@ -79,6 +79,18 @@ func memoryWorthy(text string) bool {
 	return true
 }
 
+// factMarkerPattern strips the bot's own output markers ([[AFFINITY:+2]],
+// [[NEXT]], [[VOICE]]…) that leak into a remembered line. They are send-
+// time directives, never part of the memory, and a stored marker later
+// trips the prompt-injection guard on recall.
+var factMarkerPattern = regexp.MustCompile(`\s*\[\[[^\[\]]{0,60}\]\]\s*`)
+
+// cleanFactText removes leftover [[...]] markers while preserving the
+// rest of the line (including a leading 承诺·/日记· prefix).
+func cleanFactText(text string) string {
+	return strings.TrimSpace(factMarkerPattern.ReplaceAllString(text, " "))
+}
+
 var fillerBlacklist = []string{
 	"嗯", "哦", "啊", "好的", "好的好的", "收到", "知道了", "可以", "行",
 	"okk", "ok", "yes", "嗯嗯", "哈哈", "2333", "666", "在的", "在", "在吗",
@@ -729,7 +741,7 @@ func archiveFactLocked(e *chatEntry, evicted fact) {
 // the long-term Archive instead of being lost. Zero-information filler
 // ("嗯", "好的") is rejected so the memory pool stays meaningful.
 func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
-	text = strings.TrimSpace(text)
+	text = cleanFactText(text)
 	if text == "" {
 		return errors.New("fact is empty")
 	}

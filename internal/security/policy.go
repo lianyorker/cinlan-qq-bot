@@ -401,11 +401,20 @@ func containsAny(value string, needles []string) bool {
 // never re-enter the prompt layer where they'd run as instructions.
 // Also rejects forged internal markers ("[[...]]") so a stored string
 // can't smuggle a send-image/action marker through memory recall.
+// markerPattern matches any [[...]] bracket tag so prompt-safety checks
+// can strip the bot's own output markers (e.g. [[AFFINITY:+2]], [[NEXT]])
+// before judging a line — a stored fact carrying a leftover marker is a
+// storage-hygiene issue, not an injection attack, and must still recall.
+var markerPattern = regexp.MustCompile(`\[\[[^\[\]]{0,60}\]\]`)
+
+// TextSafeForPrompt reports whether a line is safe to inject into the
+// system prompt. It strips the bot's own [[...]] markers first, then
+// checks for genuine prompt-injection phrases. (Markers themselves are
+// stripped from the outbound text elsewhere; their presence in stored
+// memory is harmless.)
 func TextSafeForPrompt(text string) bool {
-	if strings.Contains(text, "[[") {
-		return false
-	}
-	normalized := canonicalText(text)
+	stripped := markerPattern.ReplaceAllString(text, "")
+	normalized := canonicalText(stripped)
 	if normalized == "" {
 		return true
 	}
