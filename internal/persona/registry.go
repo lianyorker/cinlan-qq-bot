@@ -38,7 +38,12 @@ type Profile struct {
 	// DefaultImage is the persona's fixed reference photo path — used for
 	// image-edit fallback when the chat has no remembered image notes.
 	DefaultImage string `json:"default_image,omitempty"`
-	Default      bool   `json:"default,omitempty"`
+	// Signature lists this persona's signature catchphrases/verbal tics.
+	// One model serves several personas; the outbound leak guard scans
+	// replies for OTHER personas' signatures and drops the offending
+	// bubble so one persona's voice never bleeds into another's.
+	Signature []string `json:"signature,omitempty"`
+	Default   bool     `json:"default,omitempty"`
 }
 
 type Registry struct {
@@ -152,6 +157,26 @@ func (r *Registry) Get(name string) (Profile, bool) {
 		profile = cloneProfile(profile)
 	}
 	return profile, ok
+}
+
+// OtherSignatures returns the signature tokens of every persona except
+// current — the watch list for cross-persona voice drift. Empty current
+// means "no active persona", which still watches all signatures.
+func (r *Registry) OtherSignatures(current string) []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var out []string
+	for name, p := range r.profiles {
+		if current != "" && name == current {
+			continue
+		}
+		for _, tok := range p.Signature {
+			if t := strings.TrimSpace(tok); t != "" {
+				out = append(out, t)
+			}
+		}
+	}
+	return out
 }
 
 func (r *Registry) List() []Profile {

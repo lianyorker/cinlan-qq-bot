@@ -372,3 +372,34 @@ func TestEnforceShortBubblesBusinessCapWider(t *testing.T) {
 		t.Fatalf("business reply under cap should stay whole: %d parts", len(got))
 	}
 }
+
+func TestStripPassMarkers(t *testing.T) {
+	if cleaned, passed := stripPassMarkers("[[PASS]]"); !passed || cleaned != "" {
+		t.Fatalf("bare PASS should abstain: cleaned=%q passed=%v", cleaned, passed)
+	}
+	if cleaned, passed := stripPassMarkers(" [[pass]] \n"); !passed || cleaned != "" {
+		t.Fatalf("lowercase/spaced marker should abstain: cleaned=%q", cleaned)
+	}
+	if cleaned, passed := stripPassMarkers("嗯 [[PASS]]"); passed || cleaned != "嗯" {
+		t.Fatalf("marker stripped, content stays: cleaned=%q passed=%v", cleaned, passed)
+	}
+	if cleaned, passed := stripPassMarkers("好的 [[PASS]] 这就去"); passed || cleaned != "好的  这就去" {
+		t.Fatalf("mixed content keeps content: cleaned=%q passed=%v", cleaned, passed)
+	}
+	if _, passed := stripPassMarkers("正常回复"); passed {
+		t.Fatal("no marker should not pass")
+	}
+}
+
+func TestSignatureHit(t *testing.T) {
+	sigs := []string{"嗯……", "呜哇"}
+	if hit := signatureHit("呜哇你怎么这样", sigs); hit != "呜哇" {
+		t.Fatalf("expected leak hit, got %q", hit)
+	}
+	if hit := signatureHit("正常说话没问题", sigs); hit != "" {
+		t.Fatalf("clean part should pass, got %q", hit)
+	}
+	if hit := signatureHit("随便什么", nil); hit != "" {
+		t.Fatalf("empty sigs never hit, got %q", hit)
+	}
+}

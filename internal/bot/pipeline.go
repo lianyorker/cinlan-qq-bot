@@ -1768,6 +1768,21 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if s.affinity != nil {
 		state.reply = s.extractAffinityDelta(state)
 	}
+	// [[PASS]] = she saw it and chose silence. Honour the abstain
+	// instead of forcing a filler reply — the quiet is the reply.
+	if cleaned, passed := stripPassMarkers(state.reply); passed {
+		s.logger.Info(
+			"reply passed",
+			"chat_type", state.chatType,
+			"chat_id", state.chatID,
+		)
+		if state.sessionID != "" {
+			s.sessions.AddObservation(state.sessionID, "[看到了没回]")
+		}
+		return nil
+	} else {
+		state.reply = cleaned
+	}
 	// Typing pace: a person never answers a paragraph in 0ms. Delay the
 	// first outgoing text by reply length — short lines stay instant.
 	// Plugin/canned replies keep their snappiness.
@@ -1896,6 +1911,40 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			parts = filtered
 			if len(parts) == 0 {
 				return nil
+			}
+		}
+		{
+			// Voice-drift guard: one model voices several personas — if
+			// another persona's signature catchphrase leaks into her
+			// bubble, drop the bubble rather than rewriting it (rewrites
+			// drift worse than silence).
+			if s.personas != nil {
+				current := state.personaName
+				if current == "" {
+					if p, ok := s.personas.Default(); ok {
+						current = p.Name
+					}
+				}
+				if sigs := s.personas.OtherSignatures(current); len(sigs) > 0 {
+					filtered := parts[:0]
+					for _, part := range parts {
+						if hit := signatureHit(part, sigs); hit != "" {
+							s.logger.Warn(
+								"persona signature leak dropped",
+								"persona", current,
+								"leak", hit,
+								"chat_type", state.chatType,
+								"chat_id", state.chatID,
+							)
+							continue
+						}
+						filtered = append(filtered, part)
+					}
+					parts = filtered
+					if len(parts) == 0 {
+						return nil
+					}
+				}
 			}
 		}
 		{
@@ -2187,6 +2236,24 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			return nil
 		}
 		chain = message.Chain{message.Text(state.reply)}
+	}
+	if s.personas != nil {
+		current := state.personaName
+		if current == "" {
+			if p, ok := s.personas.Default(); ok {
+				current = p.Name
+			}
+		}
+		if hit := signatureHit(state.reply, s.personas.OtherSignatures(current)); hit != "" {
+			s.logger.Warn(
+				"persona signature leak dropped",
+				"persona", current,
+				"leak", hit,
+				"chat_type", state.chatType,
+				"chat_id", state.chatID,
+			)
+			return nil
+		}
 	}
 	if !state.allowLinks {
 		var removed bool

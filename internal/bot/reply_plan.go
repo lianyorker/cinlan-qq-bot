@@ -385,6 +385,33 @@ var inlineMarkerPattern = regexp.MustCompile(
 		`|\[\[[^\[\]]{1,60}\]\]`, // unknown [[..]] — dropped at split
 )
 
+// passMarkerPattern matches the [[PASS]] abstain token — the model's
+// explicit "saw it, nothing to say" signal. Outputting it alone means
+// the turn is dropped silently instead of forcing a filler reply.
+var passMarkerPattern = regexp.MustCompile(`(?i)\[\[\s*PASS\s*\]\]`)
+
+// stripPassMarkers removes [[PASS]] tokens from the reply. passed is
+// true when the marker was present and nothing else survives — she saw
+// the message and deliberately stayed quiet.
+func stripPassMarkers(text string) (cleaned string, passed bool) {
+	if !passMarkerPattern.MatchString(text) {
+		return text, false
+	}
+	cleaned = strings.TrimSpace(passMarkerPattern.ReplaceAllString(text, ""))
+	return cleaned, cleaned == ""
+}
+
+// signatureHit reports which foreign-persona signature token leaked
+// into the bubble, or "" when the part is clean.
+func signatureHit(part string, sigs []string) string {
+	for _, s := range sigs {
+		if s != "" && strings.Contains(part, s) {
+			return s
+		}
+	}
+	return ""
+}
+
 // splitMarkerLines splits a reply part into sub-parts so a marker mixed
 // with text ("嗯 抱着了\n[[MEME:害羞]]" or "骂你[[MEME:无语]]") becomes its
 // own bubble — resolvable markers turn into image sends, unresolvable

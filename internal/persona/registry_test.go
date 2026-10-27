@@ -44,3 +44,23 @@ func TestRegistryNormalizesAndClonesRoutingScope(t *testing.T) {
 		t.Fatal("routing scope leaked a mutable registry slice")
 	}
 }
+
+func TestRegistryOtherSignatures(t *testing.T) {
+	registry := NewRegistry()
+	if err := registry.Register(Profile{Name: "alpha", SystemPrompt: "a", Signature: []string{"呜哇", "哼唧"}}); err != nil {
+		t.Fatalf("Register(alpha): %v", err)
+	}
+	if err := registry.Register(Profile{Name: "beta", SystemPrompt: "b", Signature: []string{"嗯……", " "}}); err != nil {
+		t.Fatalf("Register(beta): %v", err)
+	}
+	got := registry.OtherSignatures("alpha")
+	if len(got) != 1 || got[0] != "嗯……" {
+		t.Fatalf("only foreign signatures expected: %#v", got)
+	}
+	if got := registry.OtherSignatures(""); len(got) != 3 {
+		t.Fatalf("empty current watches all: %#v", got)
+	}
+	if got := registry.OtherSignatures("beta"); len(got) != 2 {
+		t.Fatalf("alpha signatures expected: %#v", got)
+	}
+}
