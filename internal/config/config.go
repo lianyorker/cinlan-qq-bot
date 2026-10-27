@@ -320,6 +320,12 @@ type Config struct {
 	ASRAPIKey string
 	ASRModel  string
 
+	// WebSearch configures an optional SearXNG-style JSON endpoint for
+	// the web_search tool. Empty URL falls back to a keyless
+	// DuckDuckGo scrape — zero config needed, lower reliability.
+	WebSearchAPIURL string
+	WebSearchAPIKey string
+
 	HandoffReply string
 	ResumeReply  string
 	ClearReply   string
@@ -667,6 +673,9 @@ func Load() (Config, error) {
 	cfg.ASRAPIURL = envOrAllowEmpty("ASR_API_URL", "")
 	cfg.ASRAPIKey = envOrAllowEmpty("ASR_API_KEY", "")
 	cfg.ASRModel = envOrAllowEmpty("ASR_MODEL", "")
+
+	cfg.WebSearchAPIURL = envOrAllowEmpty("WEB_SEARCH_API_URL", "")
+	cfg.WebSearchAPIKey = envOrAllowEmpty("WEB_SEARCH_API_KEY", "")
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {

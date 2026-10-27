@@ -87,6 +87,13 @@ func registerLocalExtensions(
 	); registerErr != nil {
 		logger.Error("failed to register remember tool", "error", registerErr)
 	}
+	// Live web lookup for things her training data misses — fresh model
+	// names, group jargon, prices. Keyless DDG fallback keeps it free.
+	if registerErr := service.ToolRegistry().Register(
+		interaction.WebSearchTool(cfg.WebSearchAPIURL, cfg.WebSearchAPIKey),
+	); registerErr != nil {
+		logger.Error("failed to register web search tool", "error", registerErr)
+	}
 	// channel_action bridges the agent to the platform Call surface —
 	// reads open to everyone, writes/moderation admin-gated.
 	if platforms != nil {
