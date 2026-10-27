@@ -28,6 +28,27 @@ func TestPlanReplyPartsFoldsBareNewlineInShortCasual(t *testing.T) {
 	}
 }
 
+func TestPlanReplyPartsFoldAddsCommaAtBareBoundary(t *testing.T) {
+	// Two breath-fragments fold with a comma — "看完了快去睡觉\n眼睛都
+	// 快睁不开了" reads "…睡觉，眼睛都…" not a mashed run-on, and not
+	// two staged bubbles.
+	parts := planReplyParts("看完了快去睡觉\n眼睛都快睁不开了", 4)
+	want := []string{"看完了快去睡觉，眼睛都快睁不开了"}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts = %#v want %#v", parts, want)
+	}
+}
+
+func TestPlanReplyPartsOverflowMergeFoldsShortFragments(t *testing.T) {
+	// Over-budget [[NEXT]] fragments merge into the last bubble; short
+	// casual pieces fold comma-joined instead of stacking \n lines.
+	parts := planReplyParts("晚安啦宝[[NEXT]]终于肯睡了[[NEXT]]快钻被窝[[NEXT]]梦里见mua", 2)
+	want := []string{"晚安啦宝", "终于肯睡了，快钻被窝，梦里见mua"}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("parts = %#v want %#v", parts, want)
+	}
+}
+
 func TestPlanReplyPartsKeepsNewlinesInLongContent(t *testing.T) {
 	// Structured/longer replies need their line breaks — folding steps
 	// or explanations into one run-on would mangle them.

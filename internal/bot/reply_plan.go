@@ -311,12 +311,30 @@ func planReplyParts(reply string, maxParts int) []string {
 	}
 	// Up to maxParts [[NEXT]] bursts ride through as separate bubbles —
 	// people fire several short messages, not two giant ones. Any
-	// excess merges into the last bubble so nothing is lost.
+	// excess merges into the last bubble so nothing is lost. Short
+	// casual fragments merged this way fold continuous (comma at
+	// unpunctuated boundaries) — a "\n"-joined stack of 5-char lines
+	// reads staged for the same reason a mid-bubble break does.
 	if len(parts) <= maxParts {
 		return parts
 	}
 	head := append([]string{}, parts[:maxParts-1]...)
-	return append(head, strings.Join(parts[maxParts-1:], "\n"))
+	rest := parts[maxParts-1:]
+	merged := strings.Join(rest, "\n")
+	if len(rest) <= 4 {
+		total := 0
+		foldable := true
+		for _, p := range rest {
+			if strings.ContainsAny(p, "\n[") {
+				foldable = false
+			}
+			total += len([]rune(p))
+		}
+		if foldable && total <= 60 {
+			merged = foldJoin(rest)
+		}
+	}
+	return append(head, merged)
 }
 
 // joinBubbleLines rejoins the lines inside one [[NEXT]] segment. On QQ,
@@ -340,9 +358,44 @@ func joinBubbleLines(lines []string) string {
 		}
 	}
 	if len(lines) <= 4 && total <= 60 {
-		return strings.Join(lines, "")
+		return foldJoin(lines)
 	}
 	return strings.Join(lines, "\n")
+}
+
+// foldJoin glues short folded lines into one continuous message. An
+// unpunctuated boundary gets a comma so the breath still reads ("看完了
+// 快去睡觉" + "眼睛都快睁不开了" → "…睡觉，眼睛都…"), while lines that
+// already carry their own pause (。？！~ space) or start with a [[marker]]
+// join bare so we never inject a stray comma before a send marker.
+func foldJoin(lines []string) string {
+	var b strings.Builder
+	for i, ln := range lines {
+		if i > 0 && needsFoldComma(b.String(), ln) {
+			b.WriteString("，")
+		}
+		b.WriteString(ln)
+	}
+	return b.String()
+}
+
+func needsFoldComma(prev, next string) bool {
+	pr := []rune(strings.TrimRight(prev, " \t"))
+	nr := []rune(strings.TrimLeft(next, " \t"))
+	if len(pr) == 0 || len(nr) == 0 {
+		return false
+	}
+	if strings.HasPrefix(next, "[[") {
+		return false
+	}
+	last, first := pr[len(pr)-1], nr[0]
+	if strings.ContainsRune("。！？!?…~～—，、；;：:)）】\"'』」", last) {
+		return false
+	}
+	if strings.ContainsRune("。！？!?…~～，、)）】\"'』」", first) {
+		return false
+	}
+	return true
 }
 
 // capBurstParts re-enforces the bubble budget after splitMarkerLines
