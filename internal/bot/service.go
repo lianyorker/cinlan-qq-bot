@@ -1087,6 +1087,9 @@ func (s *Service) sendTextParts(
 			return false
 		}
 		s.stats.replied.Add(1)
+		if index == 0 {
+			s.noteSpoke(chatType, chatID)
+		}
 	}
 	return true
 }
@@ -1177,6 +1180,26 @@ func (s *Service) noteSpoke(chatType, chatID string) {
 	s.socialMu.Lock()
 	s.lastSpoke[chatType+":"+chatID] = s.now()
 	s.socialMu.Unlock()
+}
+
+// recentReplyWindow marks how fresh her last send must be for an
+// inbound message to count as a same-moment follow-up rather than a new
+// topic — a person who just replied and immediately gets another line
+// taps out a short continuation, not a fresh burst.
+const recentReplyWindow = 90 * time.Second
+
+// followUpMaxChunks caps the bubble burst for a same-moment follow-up
+// reply — short continuations, not a second full burst.
+const followUpMaxChunks = 2
+
+// justRepliedRecently reports whether her last send in this chat landed
+// inside recentReplyWindow. Read-only over lastSpoke; used to annotate
+// and dampen back-to-back private replies.
+func (s *Service) justRepliedRecently(chatType, chatID string) bool {
+	s.socialMu.Lock()
+	defer s.socialMu.Unlock()
+	spoke, ok := s.lastSpoke[chatType+":"+chatID]
+	return ok && s.now().Sub(spoke) < recentReplyWindow
 }
 
 // neglected reports whether she spoke recently and this inbound group

@@ -106,6 +106,11 @@ type flowState struct {
 	// pokeEvent marks an inbound 戳一戳 notice that we let flow through
 	// the pipeline like a tap on the shoulder (cooldown-gated).
 	pokeEvent bool
+	// followUpContinuation marks a private message that arrived while her
+	// previous reply was still settling — same moment, not a new topic,
+	// so the reply rides as a short continuation instead of a fresh
+	// multi-bubble burst.
+	followUpContinuation bool
 }
 
 func (s *Service) newPipeline() *pipeline.Pipeline {
@@ -383,6 +388,13 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	if state.chatType == platform.ChatPrivate {
 		state.sessionID = state.platform + ":self:" + state.selfID + ":private:" + state.chatID
 		state.promptText = state.text
+		if state.text != "" && s.justRepliedRecently(state.chatType, state.chatID) {
+			// He followed up while her last bubbles were still landing —
+			// the annotation keeps her continuing the thread instead of
+			// re-answering, and the flag dampens the burst at send time.
+			state.followUpContinuation = true
+			state.promptText = "（你上一条回复刚发出去，对面紧接着又补了一句）" + state.text
+		}
 	} else {
 		state.sessionID = state.platform + ":self:" + state.selfID + ":group:" + state.chatID
 		text := state.text
@@ -1684,13 +1696,19 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	if !state.pluginHandled {
 		s.paceReply(state.reply)
 	}
+	maxParts := s.cfg.MaxReplyChunks
+	if state.followUpContinuation && maxParts > followUpMaxChunks {
+		// Same-moment follow-up: a real person taps out one or two short
+		// bubbles here, not another full burst.
+		maxParts = followUpMaxChunks
+	}
 	chain := state.outbound
 	if chain.Empty() {
 		chain = message.Chain{message.Text(state.reply)}
 	}
 	if isTextReplyChain(chain) {
 		var parts []string
-		if s.cfg.MaxReplyChunks <= 1 {
+		if maxParts <= 1 {
 			// Splitting disabled — deliver everything as one message;
 			// [[NEXT]] degrades to a line break rather than truncating.
 			if single := strings.TrimSpace(strings.ReplaceAll(
@@ -1699,7 +1717,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				parts = []string{single}
 			}
 		} else {
-			planned := planReplyParts(state.reply, s.cfg.MaxReplyChunks)
+			planned := planReplyParts(state.reply, maxParts)
 			if len(planned) <= 1 {
 				// Bubble-splitting rides her mood — happy babbles, sulky
 				// clips — so the cadence drifts instead of repeating a
@@ -1717,7 +1735,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			parts, truncated = expandReplyParts(
 				planned,
 				s.cfg.MaxReplyRunes,
-				s.cfg.MaxReplyChunks,
+				maxParts,
 			)
 			// She doesn't paste "[truncated]" — a person who ran out of
 			// room just says the group can't hold the rest.
@@ -1839,12 +1857,12 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		for _, part := range parts {
 			expanded = append(expanded, splitMarkerLines(part)...)
 		}
-		parts = capBurstParts(expanded, s.cfg.MaxReplyChunks)
+		parts = capBurstParts(expanded, maxParts)
 		// Opt-in thumb-slip: a rare bubble carries a real typo, corrected
 		// in the next bubble when there's room under the chunk cap.
 		if s.cfg.TypoSim {
 			parts = maybeTypoPart(parts, rand.Float64(),
-				len(parts) < s.cfg.MaxReplyChunks)
+				len(parts) < maxParts)
 		}
 		// Humans don't re-send a phrase they coined one turn ago — trim
 		// or drop parts that echo her own recent sends verbatim.
