@@ -90,7 +90,7 @@ func registerLocalExtensions(
 	// Live web lookup for things her training data misses — fresh model
 	// names, group jargon, prices. Keyless DDG fallback keeps it free.
 	if registerErr := service.ToolRegistry().Register(
-		interaction.WebSearchTool(cfg.WebSearchAPIURL, cfg.WebSearchAPIKey),
+		interaction.WebSearchTool(cfg.WebSearchAPIURL, cfg.WebSearchAPIKey, cfg.WebSearchProxy),
 	); registerErr != nil {
 		logger.Error("failed to register web search tool", "error", registerErr)
 	}

@@ -322,9 +322,11 @@ type Config struct {
 
 	// WebSearch configures an optional SearXNG-style JSON endpoint for
 	// the web_search tool. Empty URL falls back to a keyless
-	// DuckDuckGo scrape — zero config needed, lower reliability.
+	// Bing → DuckDuckGo scrape chain — zero config needed, lower
+	// reliability. WebSearchProxy pins an explicit http/socks5 proxy.
 	WebSearchAPIURL string
 	WebSearchAPIKey string
+	WebSearchProxy  string
 
 	HandoffReply string
 	ResumeReply  string
@@ -676,6 +678,7 @@ func Load() (Config, error) {
 
 	cfg.WebSearchAPIURL = envOrAllowEmpty("WEB_SEARCH_API_URL", "")
 	cfg.WebSearchAPIKey = envOrAllowEmpty("WEB_SEARCH_API_KEY", "")
+	cfg.WebSearchProxy = envOrAllowEmpty("WEB_SEARCH_PROXY", "")
 
 	applyWelcomeFile(&cfg, &errs)
 	if err := cfg.Validate(); err != nil {

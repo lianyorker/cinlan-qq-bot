@@ -20,12 +20,14 @@ import (
 //     (GET <url>?q=<query>&format=json, results[] = {title, content, url}).
 //     Works with a self-hosted searxng instance or any endpoint that
 //     speaks the same shape. WEB_SEARCH_API_KEY adds a Bearer header.
-//   - unset → DuckDuckGo lite HTML scrape (no key), instant-answer
-//     JSON as a final fallback when the scrape comes back empty.
+//   - unset → Bing web search scrape (reachable from CN servers),
+//     then DuckDuckGo lite HTML scrape, then DDG instant-answer JSON.
+//   - WEB_SEARCH_PROXY optionally routes all search traffic through a
+//     http/https/socks5 proxy; unset → HTTP(S)_PROXY env is honoured.
 const (
 	webSearchMaxResults  = 5
 	webSearchMaxRunes    = 1600
-	webSearchHTTPTimeout = 15 * time.Second
+	webSearchHTTPTimeout = 8 * time.Second
 	webSearchUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36"
 )
 
@@ -36,16 +38,19 @@ type webSearchResult struct {
 }
 
 var (
-	ddgLinkRe    = regexp.MustCompile(`<a[^>]+class="result-link"[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
-	ddgSnippetRe = regexp.MustCompile(`<td[^>]+class="result-snippet"[^>]*>(.*?)</td>`)
-	htmlTagRe    = regexp.MustCompile(`<[^>]+>`)
+	ddgLinkRe     = regexp.MustCompile(`<a[^>]+class="result-link"[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
+	ddgSnippetRe  = regexp.MustCompile(`<td[^>]+class="result-snippet"[^>]*>(.*?)</td>`)
+	bingItemRe    = regexp.MustCompile(`(?s)<li class="[^"]*b_algo[^"]*"[^>]*>(.*?)</li>`)
+	bingTitleRe   = regexp.MustCompile(`(?s)<h2[^>]*>.*?<a[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
+	bingSnippetRe = regexp.MustCompile(`(?s)<p[^>]*>(.*?)</p>`)
+	htmlTagRe     = regexp.MustCompile(`<[^>]+>`)
 )
 
 // WebSearchTool gives the persona live web lookup for questions its
 // training data misses — release names, group jargon, fresh prices.
 // Group jargon note for the model: never quote raw URLs back to the
 // chat when allow_links strips them anyway.
-func WebSearchTool(apiURL, apiKey string) tool.Definition {
+func WebSearchTool(apiURL, apiKey, proxy string) tool.Definition {
 	return tool.Definition{
 		Name: "web_search",
 		Description: "联网搜索一下（像人打开搜索引擎查一下）。问的是你没听过的新东西、黑话、" +
@@ -72,7 +77,7 @@ func WebSearchTool(apiURL, apiKey string) tool.Definition {
 			if query == "" {
 				return tool.Result{Error: "query 是空的"}, nil
 			}
-			results, err := runWebSearch(ctx, apiURL, apiKey, query)
+			results, err := runWebSearch(ctx, apiURL, apiKey, proxy, query)
 			if err != nil {
 				return tool.Result{Error: "没搜到：" + err.Error()}, nil
 			}
@@ -84,31 +89,116 @@ func WebSearchTool(apiURL, apiKey string) tool.Definition {
 	}
 }
 
+// webSearchClient honours WEB_SEARCH_PROXY when set, else the standard
+// HTTP_PROXY/HTTPS_PROXY environment variables.
+func webSearchClient(proxy string) (*http.Client, error) {
+	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
+	if p := strings.TrimSpace(proxy); p != "" {
+		proxyURL, err := url.Parse(p)
+		if err != nil {
+			return nil, fmt.Errorf("WEB_SEARCH_PROXY: %w", err)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	return &http.Client{Timeout: webSearchHTTPTimeout, Transport: transport}, nil
+}
+
 func runWebSearch(
 	ctx context.Context,
-	apiURL, apiKey, query string,
+	apiURL, apiKey, proxy, query string,
 ) ([]webSearchResult, error) {
+	client, err := webSearchClient(proxy)
+	if err != nil {
+		return nil, err
+	}
 	if strings.TrimSpace(apiURL) != "" {
-		return searchJSONEndpoint(ctx, apiURL, apiKey, query)
+		return searchJSONEndpoint(ctx, client, apiURL, apiKey, query)
 	}
-	results, err := searchDuckDuckGoLite(ctx, query)
-	if err == nil && len(results) > 0 {
-		return results, nil
-	}
-	fallback, fbErr := searchDuckDuckGoInstant(ctx, query)
-	if fbErr != nil {
-		if err != nil {
-			return nil, err
+	var firstErr error
+	for _, backend := range []func(context.Context, *http.Client, string) ([]webSearchResult, error){
+		searchBing,
+		searchDuckDuckGoLite,
+		searchDuckDuckGoInstant,
+	} {
+		results, err := backend(ctx, client, query)
+		if err == nil && len(results) > 0 {
+			return results, nil
 		}
-		return nil, fbErr
+		if firstErr == nil && err != nil {
+			firstErr = err
+		}
+		if ctx.Err() != nil {
+			break
+		}
 	}
-	return fallback, nil
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, nil
+}
+
+// searchBing scrapes bing.com — reachable from mainland-CN servers,
+// where the DuckDuckGo domains are blocked outright.
+func searchBing(
+	ctx context.Context,
+	client *http.Client,
+	query string,
+) ([]webSearchResult, error) {
+	endpoint := "https://www.bing.com/search?q=" + url.QueryEscape(query) + "&mkt=zh-CN"
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", webSearchUserAgent)
+	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("bing status %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		return nil, err
+	}
+	return parseBingResults(string(body)), nil
+}
+
+func parseBingResults(page string) []webSearchResult {
+	results := make([]webSearchResult, 0, webSearchMaxResults)
+	for _, item := range bingItemRe.FindAllStringSubmatch(page, webSearchMaxResults*2) {
+		if len(results) >= webSearchMaxResults {
+			break
+		}
+		block := item[1]
+		title := bingTitleRe.FindStringSubmatch(block)
+		if title == nil {
+			continue
+		}
+		href := html.UnescapeString(title[1])
+		if !strings.HasPrefix(href, "http") {
+			continue
+		}
+		snippet := ""
+		if p := bingSnippetRe.FindStringSubmatch(block); p != nil {
+			snippet = cleanHTMLText(p[1])
+		}
+		results = append(results, webSearchResult{
+			Title:   cleanHTMLText(title[2]),
+			Snippet: snippet,
+			URL:     href,
+		})
+	}
+	return results
 }
 
 // searchJSONEndpoint queries a SearXNG-compatible endpoint: it appends
 // q=<query>&format=json to the configured URL and reads results[].
 func searchJSONEndpoint(
 	ctx context.Context,
+	client *http.Client,
 	apiURL, apiKey, query string,
 ) ([]webSearchResult, error) {
 	sep := "?"
@@ -125,7 +215,6 @@ func searchJSONEndpoint(
 	if apiKey != "" {
 		req.Header.Set("Authorization", "Bearer "+apiKey)
 	}
-	client := &http.Client{Timeout: webSearchHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -163,6 +252,7 @@ func searchJSONEndpoint(
 // layout whose result links still carry the target URL in uddg=.
 func searchDuckDuckGoLite(
 	ctx context.Context,
+	client *http.Client,
 	query string,
 ) ([]webSearchResult, error) {
 	endpoint := "https://lite.duckduckgo.com/lite/?q=" + url.QueryEscape(query)
@@ -171,7 +261,6 @@ func searchDuckDuckGoLite(
 		return nil, err
 	}
 	req.Header.Set("User-Agent", webSearchUserAgent)
-	client := &http.Client{Timeout: webSearchHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -215,6 +304,7 @@ func searchDuckDuckGoLite(
 // knows encyclopedic facts, so it is the last resort, not the first.
 func searchDuckDuckGoInstant(
 	ctx context.Context,
+	client *http.Client,
 	query string,
 ) ([]webSearchResult, error) {
 	endpoint := "https://api.duckduckgo.com/?format=json&no_redirect=1&no_html=1&q=" +
@@ -224,7 +314,6 @@ func searchDuckDuckGoInstant(
 		return nil, err
 	}
 	req.Header.Set("User-Agent", webSearchUserAgent)
-	client := &http.Client{Timeout: webSearchHTTPTimeout}
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
