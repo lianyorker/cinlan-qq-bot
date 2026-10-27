@@ -564,17 +564,19 @@ func stripSpeakerPrefix(text, name string) string {
 // 80 runes never split and a third bubble is reserved for real essays.
 func softSplitReply(reply string, roll, moodAdj float64) []string {
 	runes := []rune(reply)
-	if len(runes) < 80 {
+	if len(runes) < 40 {
 		return []string{reply}
 	}
 	var chance float64
 	switch {
+	case len(runes) < 60:
+		chance = 0.25
+	case len(runes) < 100:
+		chance = 0.50
 	case len(runes) < 160:
-		chance = 0.30
-	case len(runes) < 240:
-		chance = 0.55
+		chance = 0.70
 	default:
-		chance = 0.80
+		chance = 0.85
 	}
 	chance += moodAdj
 	if chance < 0.05 {
@@ -610,6 +612,71 @@ func softSplitReply(reply string, roll, moodAdj float64) []string {
 		parts = append(parts, rest)
 	}
 	return parts
+}
+
+// enforceShortBubbles hard-caps a single bubble's length for casual chat.
+// softSplitReply is probabilistic ("does this read human"); this is the
+// floor that keeps a real person's one-thought-per-message rhythm: a
+// bubble over maxRunes is chopped at the nearest punctuation/space so a
+// reply never arrives as one wall of five stacked intentions. Parts that
+// carry a [[...]] marker are left whole — markers must ride their own
+// bubble intact. Business/technical replies pass a larger maxRunes.
+func enforceShortBubbles(text string, maxRunes int) []string {
+	if maxRunes <= 0 {
+		return []string{text}
+	}
+	// Marker-bearing parts (e.g. [[MEME]], [[AT]]) stay whole.
+	if strings.Contains(text, "[[") {
+		return []string{text}
+	}
+	runes := []rune(text)
+	if len(runes) <= maxRunes {
+		return []string{text}
+	}
+	var parts []string
+	for len(runes) > maxRunes {
+		cutAt := -1
+		// Prefer a sentence boundary in the back half of the window.
+		for i := maxRunes; i >= maxRunes/2; i-- {
+			if isSentenceEnd(runes[i]) {
+				cutAt = i + 1
+				break
+			}
+		}
+		if cutAt < 0 {
+			for i := maxRunes; i >= maxRunes/2; i-- {
+				if runes[i] == ' ' || runes[i] == '　' {
+					cutAt = i + 1
+					break
+				}
+			}
+		}
+		if cutAt < 0 || cutAt > len(runes) {
+			cutAt = maxRunes
+		}
+		if part := strings.TrimSpace(string(runes[:cutAt])); part != "" {
+			parts = append(parts, part)
+		}
+		runes = []rune(strings.TrimSpace(string(runes[cutAt:])))
+	}
+	if tail := strings.TrimSpace(string(runes)); tail != "" {
+		parts = append(parts, tail)
+	}
+	if len(parts) == 0 {
+		return []string{text}
+	}
+	return parts
+}
+
+// isSentenceEnd reports whether a rune is a natural bubble-break point —
+// the punctuation a person would end a short message on.
+func isSentenceEnd(r rune) bool {
+	switch r {
+	case '，', ',', '。', '！', '!', '？', '?', '；', ';',
+		'~', '～', '…', '、', '）', ')', '」', '”':
+		return true
+	}
+	return false
 }
 
 // bestSoftSplitAt finds the sentence-ending boundary nearest the middle

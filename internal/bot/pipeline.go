@@ -904,9 +904,75 @@ func (s *Service) stageRateLimit(_ context.Context, event *pipeline.Context) err
 	return nil
 }
 
+// shouldSkipReply decides whether a private-chat message is one a real
+// person would read and not bother answering — a bare "嗯"/"哦"/"好的",
+// or a day-to-day share that needs no reply. Probability rides message
+// length, mood (sulky = more likely to leave on read) and affinity
+// (closer = less likely to ignore). Questions and anything substantive
+// always get answered.
+func (s *Service) shouldSkipReply(state *flowState) bool {
+	if !s.cfg.ReadNoReply {
+		return false
+	}
+	text := strings.TrimSpace(state.text)
+	textRunes := []rune(text)
+	// Substantive or questioning messages always get a reply.
+	if len(textRunes) > 10 || strings.ContainsAny(text, "?？吗呢吧呀啊") {
+		return false
+	}
+	var baseChance float64
+	switch {
+	case len(textRunes) <= 1:
+		baseChance = 0.40 // "嗯" "哦"
+	case len(textRunes) <= 3:
+		baseChance = 0.25 // "好的" "行"
+	case len(textRunes) <= 6:
+		baseChance = 0.10 // "知道了" "收到"
+	default:
+		return false
+	}
+	if s.cfg.MoodEnabled && s.chatPrefs != nil {
+		moodScore := s.chatPrefs.MoodScore(
+			state.platform, state.selfID, state.chatType, state.chatID, s.now())
+		if moodScore <= -30 {
+			baseChance += 0.15
+		} else if moodScore >= 30 {
+			baseChance -= 0.10
+		}
+	}
+	if s.affinity != nil {
+		score := s.affinity.Score(state.platform, state.selfID, state.userID)
+		switch {
+		case score >= 60: // 亲近
+			baseChance -= 0.15
+		case score >= 20: // 熟悉
+			baseChance -= 0.05
+		}
+	}
+	if baseChance < 0.02 {
+		baseChance = 0.02
+	} else if baseChance > 0.50 {
+		baseChance = 0.50
+	}
+	return rand.Float64() < baseChance
+}
+
 func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error {
 	state := stateFrom(event)
 	if state.ignored || state.pluginHandled || state.sessionID == "" {
+		return nil
+	}
+	// Read-no-reply: a real person doesn't answer every "嗯"/"哦"/"好的".
+	// Private chat only — group reply is already gated by the attention
+	// stage. She still logs that she saw it (so a later follow-up knows
+	// she read and skipped) but produces no reply this turn.
+	if state.chatType == platform.ChatPrivate && s.shouldSkipReply(state) {
+		if s.sessions != nil {
+			s.sessions.AddObservation(state.sessionID,
+				"[看到了没回] "+state.promptText)
+		}
+		state.ignored = true
+		event.Stop("read_no_reply")
 		return nil
 	}
 	// She reads before she thinks — a long message takes a visible beat.
@@ -1857,7 +1923,32 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		for _, part := range parts {
 			expanded = append(expanded, splitMarkerLines(part)...)
 		}
-		parts = capBurstParts(expanded, maxParts)
+		// Hard length floor: casual chat bubbles over the cap get chopped
+		// at punctuation so a reply never lands as one wall of stacked
+		// intentions (the "学什么 治你服帖 放空 带我玩 快搬砖" tell).
+		// The cap is a safety ceiling (not the 15-rune ideal the prompt
+		// asks for) so a single complete sentence isn't needlessly split —
+		// prompt drives brevity, code only catches the walls.
+		// Business/technical chats (knowledge-backed bindings) keep a
+		// larger cap so an answer can actually be explained.
+		bubbleCap := 32
+		burstCap := maxParts
+		if len(state.knowledgeBases) > 0 {
+			bubbleCap = 90
+		} else if burstCap < 6 {
+			// Chopped casual replies may need a few more bubbles than the
+			// normal burst budget — let them through instead of merging the
+			// chops straight back into a wall.
+			burstCap = 6
+		}
+		if bubbleCap > 0 {
+			chopped := make([]string, 0, len(expanded))
+			for _, part := range expanded {
+				chopped = append(chopped, enforceShortBubbles(part, bubbleCap)...)
+			}
+			expanded = chopped
+		}
+		parts = capBurstParts(expanded, burstCap)
 		// Opt-in thumb-slip: a rare bubble carries a real typo, corrected
 		// in the next bubble when there's room under the chunk cap.
 		if s.cfg.TypoSim {

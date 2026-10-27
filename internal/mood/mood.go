@@ -97,36 +97,36 @@ func Scene(now time.Time, moodScore int) string {
 	var scene string
 	switch h := now.Hour(); {
 	case h >= 6 && h < 9:
-		scene = "刚起床没多久，还有点迷糊"
+		scene = "刚醒 还没清醒"
 	case h >= 9 && h < 12:
 		if weekend {
-			scene = "周末上午，瘫着刷手机"
+			scene = "周末 瘫着刷手机"
 		} else {
-			scene = "上午，摸一会儿忙一会儿"
+			scene = "上班 摸鱼中"
 		}
 	case h >= 12 && h < 14:
-		scene = "刚吃完午饭，犯困"
+		scene = "午饭刚吃完 犯困"
 	case h >= 14 && h < 18:
 		if weekend {
-			scene = "周末下午，闲得发慌"
+			scene = "周末下午 没啥事"
 		} else {
-			scene = "下午，熬着等天黑"
+			scene = "下午 上班摸鱼"
 		}
 	case h >= 18 && h < 19:
-		scene = "晚饭点儿，想着吃点啥"
+		scene = "晚饭时间 想吃啥呢"
 	case h >= 19 && h < 23:
-		scene = "晚上瘫着，一天里最闲的时候"
+		scene = "晚上 躺着玩手机"
 	case h >= 23 || h < 6:
-		scene = "大半夜，困得眼皮打架"
+		scene = "半夜 困了"
 	default:
 		return ""
 	}
 	switch {
 	case moodScore <= -30:
-		scene += "，心情不太好"
+		scene += " 心情不好"
 	case moodScore >= 30:
-		scene += "，心情不错"
+		scene += " 心情不错"
 	}
 	return "（你现在的状态：" + scene +
-		"——被问到在干嘛时按这个说，别编出矛盾的来）"
+		"——被问在干嘛就说这个 别编别的 也别原封不动念 用自己的话说）"
 }

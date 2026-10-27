@@ -305,3 +305,40 @@ func TestSplitReplyNoBoundaryHardCuts(t *testing.T) {
 		t.Fatalf("expected 2 chunks, got %#v", parts)
 	}
 }
+
+func TestEnforceShortBubblesChopsLongCasual(t *testing.T) {
+	// 50-rune single bubble stuffing several intentions must chop into
+	// multiple short bubbles at punctuation.
+	long := "学什么，学怎么把你治得服服帖帖吗，哼，脑子要放空，带我玩呢，宝快去搬砖别摸鱼了"
+	parts := enforceShortBubbles(long, 15)
+	if len(parts) < 2 {
+		t.Fatalf("expected chop into >=2 bubbles, got %#v", parts)
+	}
+	for _, p := range parts {
+		if len([]rune(p)) > 20 { // 15 cap + small slack for boundary seek
+			t.Fatalf("bubble too long: %q (%d runes)", p, len([]rune(p)))
+		}
+	}
+}
+
+func TestEnforceShortBubblesLeavesShortWhole(t *testing.T) {
+	if got := enforceShortBubbles("学什么", 15); len(got) != 1 || got[0] != "学什么" {
+		t.Fatalf("short text should pass through: %#v", got)
+	}
+}
+
+func TestEnforceShortBubblesLeavesMarkerWhole(t *testing.T) {
+	// Marker-bearing parts must never be chopped even if long.
+	m := "这是一段很长很长的话但是里面有标记所以不能被切断处理好吗[[MEME:嘲笑]]"
+	if got := enforceShortBubbles(m, 15); len(got) != 1 {
+		t.Fatalf("marker part must stay whole: %#v", got)
+	}
+}
+
+func TestEnforceShortBubblesBusinessCapWider(t *testing.T) {
+	// 60-rune technical answer under an 80 cap stays one bubble.
+	tech := strings.Repeat("部署步骤说明", 10) // 60 runes
+	if got := enforceShortBubbles(tech, 80); len(got) != 1 {
+		t.Fatalf("business reply under cap should stay whole: %d parts", len(got))
+	}
+}
