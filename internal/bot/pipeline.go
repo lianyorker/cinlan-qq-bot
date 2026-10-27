@@ -1780,10 +1780,16 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		var parts []string
 		if maxParts <= 1 {
 			// Splitting disabled — deliver everything as one message;
-			// [[NEXT]] degrades to a line break rather than truncating.
-			if single := strings.TrimSpace(strings.ReplaceAll(
+			// [[NEXT]] degrades to the same line fold casual text gets.
+			var lines []string
+			for _, ln := range strings.Split(strings.ReplaceAll(
 				state.reply, naturalReplyBreak, "\n",
-			)); single != "" {
+			), "\n") {
+				if t := strings.TrimSpace(ln); t != "" {
+					lines = append(lines, t)
+				}
+			}
+			if single := strings.TrimSpace(joinBubbleLines(lines)); single != "" {
 				parts = []string{single}
 			}
 		} else {

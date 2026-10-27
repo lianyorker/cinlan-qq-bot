@@ -10,9 +10,39 @@ import (
 
 func TestPlanReplyPartsFoldsBlankLinesWithoutSplitting(t *testing.T) {
 	parts := planReplyParts("嗯 抱着了\n\n[[MEME:害羞]]", 4)
-	want := []string{"嗯 抱着了\n[[MEME:害羞]]"}
+	// Short casual lines fold flat — splitMarkerLines still extracts the
+	// marker downstream, so the join is equivalent.
+	want := []string{"嗯 抱着了[[MEME:害羞]]"}
 	if !reflect.DeepEqual(parts, want) {
 		t.Fatalf("planReplyParts() = %#v, want %#v", parts, want)
+	}
+}
+
+func TestPlanReplyPartsFoldsBareNewlineInShortCasual(t *testing.T) {
+	// Model emitted a bare newline instead of [[NEXT]] — QQ Enter sends,
+	// so a mid-bubble break in banter reads staged. Fold it flat.
+	parts := planReplyParts("年纪轻轻就虚啦？\n知道自己天天熬夜伤身了吼", 4)
+	want := []string{"年纪轻轻就虚啦？知道自己天天熬夜伤身了吼"}
+	if !reflect.DeepEqual(parts, want) {
+		t.Fatalf("planReplyParts() = %#v, want %#v", parts, want)
+	}
+}
+
+func TestPlanReplyPartsKeepsNewlinesInLongContent(t *testing.T) {
+	// Structured/longer replies need their line breaks — folding steps
+	// or explanations into one run-on would mangle them.
+	reply := "部署分三步走：先把新二进制传上去当 .new，确认能起来再说\n然后备份旧文件再 mv 过去\n最后重启服务看 active 状态确认没问题"
+	parts := planReplyParts(reply, 4)
+	if len(parts) != 1 || !strings.Contains(parts[0], "\n") {
+		t.Fatalf("long structured reply must keep newlines, got %#v", parts)
+	}
+}
+
+func TestPlanReplyPartsKeepsFenceNewlines(t *testing.T) {
+	reply := "```go\nfmt.Println(1)\n```"
+	parts := planReplyParts(reply, 4)
+	if len(parts) != 1 || strings.Count(parts[0], "\n") != 2 {
+		t.Fatalf("fenced block must keep newlines, got %#v", parts)
 	}
 }
 

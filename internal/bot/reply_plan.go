@@ -297,12 +297,15 @@ func planReplyParts(reply string, maxParts int) []string {
 	for _, segment := range strings.Split(reply, naturalReplyBreak) {
 		// Stray blank lines inside a thought get folded to a single newline —
 		// only an explicit [[NEXT]] may start a new bubble.
-		segments := splitOnBlankLines(segment)
-		for i := range segments {
-			segments[i] = strings.TrimSpace(segments[i])
+		var lines []string
+		for _, piece := range splitOnBlankLines(segment) {
+			for _, ln := range strings.Split(piece, "\n") {
+				if t := strings.TrimSpace(ln); t != "" {
+					lines = append(lines, t)
+				}
+			}
 		}
-		joined := strings.Join(segments, "\n")
-		if part := strings.TrimSpace(joined); part != "" {
+		if part := joinBubbleLines(lines); part != "" {
 			parts = append(parts, part)
 		}
 	}
@@ -314,6 +317,32 @@ func planReplyParts(reply string, maxParts int) []string {
 	}
 	head := append([]string{}, parts[:maxParts-1]...)
 	return append(head, strings.Join(parts[maxParts-1:], "\n"))
+}
+
+// joinBubbleLines rejoins the lines inside one [[NEXT]] segment. On QQ,
+// pressing Enter sends the message — a real person can hardly produce a
+// mid-bubble line break, so when the model emits a bare newline inside
+// short casual chatter it reads staged. Fold those into one continuous
+// line; structured or longer content (steps, lists, code) keeps its
+// newlines because joining them would destroy the content itself.
+func joinBubbleLines(lines []string) string {
+	switch len(lines) {
+	case 0:
+		return ""
+	case 1:
+		return lines[0]
+	}
+	total := 0
+	for _, ln := range lines {
+		total += len([]rune(ln))
+		if strings.HasPrefix(ln, "```") {
+			return strings.Join(lines, "\n")
+		}
+	}
+	if len(lines) <= 4 && total <= 60 {
+		return strings.Join(lines, "")
+	}
+	return strings.Join(lines, "\n")
 }
 
 // capBurstParts re-enforces the bubble budget after splitMarkerLines
