@@ -27,10 +27,12 @@ for (const ln of fs.readFileSync(path.join(ROOT, ".env"), "utf8").split("\n")) {
   const m = ln.match(/^([A-Z0-9_]+)=(.*)$/);
   if (m) env[m[1]] = m[2].trim();
 }
-const API_URL = env.AGENT_API_URL, API_KEY = env.AGENT_API_KEY;
-const MODEL = env.AGENT_MODEL, JUDGE_MODEL = JUDGE || env.AGENT_MODEL;
+const API_URL = arg("url", env.AGENT_API_URL);
+const API_KEY = arg("key", env.AGENT_API_KEY);
+const MODEL = arg("model", env.AGENT_MODEL);
+const JUDGE_MODEL = JUDGE || MODEL;
 if (!API_URL || !API_KEY || !MODEL) {
-  console.error("missing AGENT_API_URL/KEY/MODEL in .env");
+  console.error("missing api url/key/model (.env or --url --key --model)");
   process.exit(2);
 }
 

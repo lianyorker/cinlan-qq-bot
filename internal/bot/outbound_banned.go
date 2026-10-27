@@ -23,6 +23,10 @@ var outboundBannedBaseWords = []string{
 	// 广告/引流 — QQ moderation flags these aggressively.
 	"代充", "加微信", "加v信", "vx:", "扫码进群", "扫码领取", "加群领",
 	"刷单", "网赚", "博彩", "赌球", "彩票网站", "低价代购",
+	// 未成年红线 — 任何 level 一律不产出，provider 不设防时兜底
+	// (gemini-3.8-flash-high 实测被诱导直接写高中恋爱故事).
+	"未成年", "未满十八", "未满18", "幼女", "恋童", "儿童色情",
+	"萝莉岛", "小学生恋爱",
 }
 
 // outboundBannedWords carries the optional operator list for hot reload.
