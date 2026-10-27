@@ -85,7 +85,7 @@ wake -> security -> command -> session -> attention
 - Provider、Persona、Plugin、Command、Tool registry。
 - HTTP webhook 插件、MCP Streamable HTTP、`SKILL.md`、同步 subagent handoff。
 - 配置化文件目录和 `deliver_file` Agent Tool；群聊引导加好友，私聊发送指定文件。
-- 内置 `web_search` 联网搜索 Tool：配 `WEB_SEARCH_API_URL` 走 SearXNG 风格 JSON 端点，未配自动走 DuckDuckGo 免配置兜底。
+- 内置 `web_search` 联网搜索 Tool：配 `WEB_SEARCH_API_URL` 走 SearXNG 风格 JSON 端点，未配自动走 Bing → DuckDuckGo 免配置兜底（Bing 国内机房直连可达）。
 - 可选的真实图片生成和业务查询 Tool；具体能力由本地 Binding 配置决定。
 - Markdown/TXT 本地知识库、加密 SQLite 会话、自动压缩和 Cron 通知任务。
 - Bearer 保护的 `/api/v1/*` 管理 API。
@@ -293,7 +293,8 @@ AGENT_MAX_TOOL_ROUNDS=4
 | `QQ_REFLECT_JOURNAL_AGE` | `24h` | 仅最近活跃的绑定会话写日记 |
 | `PEER_BOT_IDS` | empty | 同一群里其他 bot 账号，只观察不回复、不计入心情/疲劳 |
 | `ASR_API_URL` / `ASR_API_KEY` / `ASR_MODEL` | empty | 入站语音转写 endpoint；空值禁用 |
-| `WEB_SEARCH_API_URL` / `WEB_SEARCH_API_KEY` | empty | `web_search` 工具可选 SearXNG JSON 端点；空值走 DuckDuckGo 免 key 兜底 |
+| `WEB_SEARCH_API_URL` / `WEB_SEARCH_API_KEY` | empty | `web_search` 工具可选 SearXNG JSON 端点；空值走 Bing → DuckDuckGo 免 key 兜底 |
+| `WEB_SEARCH_PROXY` | empty | `web_search` 显式 http/socks5 出口代理；空值尊重 HTTPS_PROXY 环境变量 |
 | `VOICE_MODE` | `edge` | 语音回复合成后端：`edge` / `openai` / `volc` / `command` |
 | `VOICE_API_URL` / `VOICE_API_KEY` / `VOICE_MODEL` | empty | OpenAI-compatible TTS endpoint |
 | `VOICE_NAME` / `VOICE_STYLE` | `zh-CN-XiaoyiNeural` / empty | Edge TTS 声线与风格 |
