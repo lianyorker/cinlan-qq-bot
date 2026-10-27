@@ -301,7 +301,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		} else {
 			state.sessionID = state.platform + ":self:" + state.selfID + ":group:" + state.chatID
 		}
-		s.recallText.put(state.sessionID+":"+state.messageID, truncateRunes(state.text, 40))
+		s.recallText.put(
+			state.sessionID+":"+state.messageID,
+			state.event.SenderName,
+			truncateRunes(state.text, 40),
+		)
 		s.sessions.AddObservation(state.sessionID, "[其他机器人 "+state.userID+"] "+state.text)
 		state.ignored = true
 		event.Stop("peer_account")
@@ -381,13 +385,30 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		state.promptText = state.text
 	} else {
 		state.sessionID = state.platform + ":self:" + state.selfID + ":group:" + state.chatID
-		state.promptText = groupPromptText(state.event.SenderName, state.userID, state.text)
+		text := state.text
+		// Ambient replies lose their anchor when PlainText drops the reply
+		// segment — re-anchor "（回复 某人：…）" from the snippet cache so
+		// side conversations in history read as threads, not loose lines.
+		// Messages addressed to her keep the richer fetched quote instead.
+		if !state.eventMentioned && !s.pendingFollowUp(state) {
+			if replyID := state.event.Chain.ReplyID(); replyID != "" {
+				if hit := s.recallText.get(state.sessionID + ":" + replyID); hit.Text != "" {
+					who := strings.TrimSpace(hit.Sender)
+					if who == "" {
+						who = "对方"
+					}
+					text = "（回复 " + who + "：" + hit.Text + "）" + text
+				}
+			}
+		}
+		state.promptText = groupPromptText(state.event.SenderName, state.userID, text)
 	}
 	state.rateLimitID = state.platform + ":self:" + state.selfID + ":actor:" + state.userID
 	// Stash the raw text under its message ID — if this message gets
 	// recalled later, the notice handler can quote what disappeared.
 	s.recallText.put(
 		state.sessionID+":"+state.messageID,
+		state.event.SenderName,
 		truncateRunes(state.text, 40),
 	)
 	if state.pokeEvent {
@@ -2154,18 +2175,25 @@ func factAge(now, at time.Time) string {
 // by sessionID+messageID so a recall notice can log WHAT was withdrawn
 // instead of only that something was. Global FIFO cap — the window only
 // needs to outlive the typical send→regret→recall gap.
+// recallSnippet pairs a stashed inbound text with its sender so both
+// recall notices and reply-context annotations can say WHO it was.
+type recallSnippet struct {
+	Sender string
+	Text   string
+}
+
 type recallSnippets struct {
 	mu    sync.Mutex
 	order []string
-	texts map[string]string
+	texts map[string]recallSnippet
 	limit int
 }
 
 func newRecallSnippets(limit int) *recallSnippets {
-	return &recallSnippets{limit: limit, texts: map[string]string{}}
+	return &recallSnippets{limit: limit, texts: map[string]recallSnippet{}}
 }
 
-func (c *recallSnippets) put(key, text string) {
+func (c *recallSnippets) put(key, sender, text string) {
 	if c == nil || key == "" || text == "" {
 		return
 	}
@@ -2174,16 +2202,16 @@ func (c *recallSnippets) put(key, text string) {
 	if _, ok := c.texts[key]; !ok {
 		c.order = append(c.order, key)
 	}
-	c.texts[key] = text
+	c.texts[key] = recallSnippet{Sender: sender, Text: text}
 	for len(c.order) > c.limit {
 		delete(c.texts, c.order[0])
 		c.order = c.order[1:]
 	}
 }
 
-func (c *recallSnippets) get(key string) string {
+func (c *recallSnippets) get(key string) recallSnippet {
 	if c == nil {
-		return ""
+		return recallSnippet{}
 	}
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -3050,8 +3078,8 @@ func (s *Service) observeGroupMemberNotice(ctx context.Context, state *flowState
 		// id — the snippet cache still has what it said.
 		snippet := ""
 		if sessionID != "" && state.messageID != "" {
-			if s := s.recallText.get(sessionID + ":" + state.messageID); s != "" {
-				snippet = "（原文：" + s + "）"
+			if hit := s.recallText.get(sessionID + ":" + state.messageID); hit.Text != "" {
+				snippet = "（原文：" + hit.Text + "）"
 			}
 		}
 		if noticeType == "friend_recall" {
