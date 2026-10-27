@@ -1363,36 +1363,48 @@ func (s *Service) typingDelay(first string) time.Duration {
 	return delay
 }
 
+// sulkDelayGroupCap bounds any pre-reply stall in a group so a bad mood
+// reads as tone, not a dead-air vanish-then-burst. A real person who's
+// grumpy answers shorter and snippier — the words carry it, not minutes
+// of silence.
+const sulkDelayGroupCap = 5 * time.Second
+
 // sulkDelay is the pre-reply stall of a person who isn't in the mood:
-// grumpy she lets the message sit (45–90s at mood<=-40, 15–45s below
-// zero), sleepy she drifts off mid-read (15–45s). Happy or neutral
-// returns zero — eagerness should never be delayed.
+// grumpy or sleepy she takes a beat before answering. Private 1:1 never
+// stalls — a person you're talking to directly doesn't leave you on read
+// for a minute then dump everything; the mood lives in the reply's words.
+// In a group the stall is kept to a few seconds (sulkDelayGroupCap) so it
+// still feels like a beat, never absence. Happy/neutral returns zero.
 func (s *Service) sulkDelay(selfID, chatType, chatID string) time.Duration {
-	if s.chatPrefs == nil {
+	if s.chatPrefs == nil || chatType == platform.ChatPrivate {
 		return 0
 	}
 	now := s.now()
 	var lo, hi time.Duration
 	switch {
 	case s.cfg.Asleep(now):
-		lo, hi = 15*time.Second, 45*time.Second
+		lo, hi = 2*time.Second, 5*time.Second
 	case s.cfg.Waking(now):
-		lo, hi = 8*time.Second, 25*time.Second
+		lo, hi = 1*time.Second, 4*time.Second
 	case s.cfg.MoodEnabled:
 		switch mood := s.chatPrefs.MoodScore(
 			platform.PlatformQQOneBot, selfID, chatType, chatID, now,
 		); {
 		case mood <= -40:
-			lo, hi = 45*time.Second, 90*time.Second
+			lo, hi = 3*time.Second, 5*time.Second
 		case mood < 0:
-			lo, hi = 15*time.Second, 45*time.Second
+			lo, hi = 1*time.Second, 4*time.Second
 		default:
 			return 0
 		}
 	default:
 		return 0
 	}
-	return lo + time.Duration(rand.Int63n(int64(hi-lo)+1))
+	d := lo + time.Duration(rand.Int63n(int64(hi-lo)+1))
+	if d > sulkDelayGroupCap {
+		d = sulkDelayGroupCap
+	}
+	return d
 }
 
 // readDelay simulates actually reading the inbound message before

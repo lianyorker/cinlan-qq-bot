@@ -625,11 +625,11 @@ func Load() (Config, error) {
 	cfg.VoiceMoodEmotion = parseBool("VOICE_MOOD_EMOTION", false, &errs)
 	cfg.TypingBase = parseDuration("QQ_TYPING_BASE", 1200*time.Millisecond, true, &errs)
 	cfg.TypingPerRune = parseDuration("QQ_TYPING_PER_RUNE", 55*time.Millisecond, true, &errs)
-	cfg.TypingMax = parseDuration("QQ_TYPING_MAX", 8*time.Second, true, &errs)
+	cfg.TypingMax = parseDuration("QQ_TYPING_MAX", 4*time.Second, true, &errs)
 	cfg.ReadDelayPerRune = parseDuration(
 		"QQ_READ_DELAY_PER_RUNE", 20*time.Millisecond, true, &errs)
 	cfg.ReadDelayMax = parseDuration(
-		"QQ_READ_DELAY_MAX", 4*time.Second, true, &errs)
+		"QQ_READ_DELAY_MAX", 2*time.Second, true, &errs)
 	cfg.MoodEnabled = parseBool("QQ_MOOD_ENABLED", true, &errs)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)

@@ -411,6 +411,53 @@ func TestRunPlatformBatchesConsecutiveMessagesFromSameUser(t *testing.T) {
 	}
 }
 
+func TestInFlightMessagesCoalesceIntoOneFollowUpTurn(t *testing.T) {
+	cfg := testBotConfig(t)
+	cfg.GroupBatchWindow = 20 * time.Millisecond
+	cfg.PrivateBatchWindow = 20 * time.Millisecond
+	cfg.ReplyPartDelay = 0
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	var calls int
+	agentClient := &fakeAgent{reply: func(domain.AgentRequest) (domain.AgentResponse, error) {
+		calls++
+		if calls == 1 {
+			entered <- struct{}{}
+			<-release
+		}
+		return domain.AgentResponse{Reply: "好"}, nil
+	}}
+	sender := &fakeSender{}
+	service := New(cfg, agentClient, sender, session.New(10, time.Hour), testLogger())
+	events := make(chan platform.Event, 4)
+	runDone := make(chan struct{})
+	go func() {
+		service.RunPlatform(context.Background(), events)
+		close(runDone)
+	}()
+
+	events <- platformEvent("c1", "第一段", true)
+	<-entered // turn 1 is now blocked inside the agent
+
+	// These two arrive while she's still replying — they must fold into a
+	// single follow-up turn, not spawn two more serialized turns.
+	events <- platformEvent("c2", "第二段", true)
+	events <- platformEvent("c3", "第三段", true)
+	time.Sleep(60 * time.Millisecond) // let the worker merge them into pending
+
+	close(release) // turn 1 finishes → done signal flushes the coalesced turn
+	close(events)
+	<-runDone
+
+	if len(agentClient.requests) != 2 {
+		t.Fatalf("agent requests = %d, want 2 (turn1 + one coalesced follow-up)", len(agentClient.requests))
+	}
+	followUp := agentClient.requests[1].Text
+	if !strings.Contains(followUp, "第二段") || !strings.Contains(followUp, "第三段") {
+		t.Fatalf("follow-up turn did not coalesce both messages: %q", followUp)
+	}
+}
+
 func TestDisallowedGroupDoesNotEnterBatchWindow(t *testing.T) {
 	cfg := testBotConfig(t)
 	cfg.GroupBatchWindow = time.Second
