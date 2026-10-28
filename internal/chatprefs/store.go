@@ -783,8 +783,16 @@ func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 		return errors.New("nothing worth remembering")
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, s.now())
+	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, s.now())
+	vec := s.vec
+	s.mu.Unlock()
+	// Warm the dense arm for the fresh memory — facts evicted into the
+	// Archive were already warmed here when they entered, so long-term
+	// recall keeps its remote cosine instead of falling back forever.
+	if err == nil && vec != nil {
+		vec.WarmAsync(text)
+	}
+	return err
 }
 
 // addFactLocked does the append/dedupe/prune under the held lock so
@@ -1079,8 +1087,15 @@ func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, li
 	// The query itself usually misses the remote cache — without a
 	// cached query vector CachedSimilarity can never blend dense
 	// similarity, so warm it in the background for the next turn.
+	// Same for archive memories added before the remote arm existed:
+	// batch-warm so long-term recall stops degrading to local-only.
 	if vec != nil {
 		vec.WarmAsync(query)
+		archiveTexts := make([]string, 0, len(archive))
+		for _, f := range archive {
+			archiveTexts = append(archiveTexts, f.Text)
+		}
+		vec.WarmBatch(archiveTexts)
 	}
 
 	// Phase 2: score and rank with no lock held — pure CPU, zero IO.

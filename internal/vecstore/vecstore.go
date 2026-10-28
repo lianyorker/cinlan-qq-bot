@@ -162,6 +162,66 @@ func LocalSimilarity(a, b string) float64 {
 	return Cosine(LocalVector(a), LocalVector(b))
 }
 
+// CachedVector returns the cached remote embedding for text if present —
+// zero IO, safe on hot paths. Callers are expected to have arranged
+// warm-up (WarmAsync at write/index time); a miss simply means the dense
+// arm is cold for this text and the caller should fall back.
+func (e *Engine) CachedVector(text string) ([]float32, bool) {
+	if e == nil || !e.RemoteEnabled() {
+		return nil, false
+	}
+	key := hashKey(e.cfg.Model, strings.TrimSpace(text))
+	e.mu.RLock()
+	vec, ok := e.cache[key]
+	e.mu.RUnlock()
+	return vec, ok
+}
+
+// WarmBatch warms a set of texts in the background — one lock acquisition
+// collects every cold key, then each unique miss fetches in its own
+// goroutine deduped against in-flight calls. Used to give long-tail data
+// (archived memories) the dense recall arm without per-item lock churn
+// on the hot path.
+func (e *Engine) WarmBatch(texts []string) {
+	if e == nil || !e.RemoteEnabled() {
+		return
+	}
+	e.mu.Lock()
+	type pending struct {
+		text string
+		key  string
+	}
+	var cold []pending
+	for _, text := range texts {
+		text = strings.TrimSpace(text)
+		if text == "" {
+			continue
+		}
+		key := hashKey(e.cfg.Model, text)
+		if _, ok := e.cache[key]; ok {
+			continue
+		}
+		if _, flying := e.warming[key]; flying {
+			continue
+		}
+		e.warming[key] = struct{}{}
+		cold = append(cold, pending{text: text, key: key})
+	}
+	e.mu.Unlock()
+	for _, item := range cold {
+		go func(p pending) {
+			defer func() {
+				e.mu.Lock()
+				delete(e.warming, p.key)
+				e.mu.Unlock()
+			}()
+			ctx, cancel := context.WithTimeout(context.Background(), e.cfg.Timeout)
+			defer cancel()
+			_, _ = e.RemoteVector(ctx, p.text)
+		}(item)
+	}
+}
+
 // ConceptOverlap counts how many semantic concept clusters are shared between
 // two texts — useful as a deterministic semantic boost on top of lexical match.
 func ConceptOverlap(a, b string) int {

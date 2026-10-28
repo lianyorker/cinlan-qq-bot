@@ -60,11 +60,30 @@ func NewStore() *Store {
 }
 
 // SetVecEngine attaches an optional dual-mode vector engine for hybrid BM25 +
-// dense embedding retrieval.
+// dense embedding retrieval. Already-indexed documents are warmed so the
+// remote cosine arm is hot regardless of engine wiring order.
 func (s *Store) SetVecEngine(v *vecstore.Engine) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.vec = v
+	if v != nil && v.RemoteEnabled() {
+		for _, document := range s.docs {
+			v.WarmAsync(embedText(document.Document))
+		}
+	}
+	s.mu.Unlock()
+}
+
+// embedText is the stable text a document is embedded with — title plus a
+// fixed head slice, independent of the query. Query-dependent windows
+// (snippet at the keyword hit) change the cache key every search and feed
+// the embedder mid-sentence fragments; a fixed prefix keeps cache hits and
+// coherent semantics.
+func embedText(document Document) string {
+	runes := []rune(strings.TrimSpace(document.Content))
+	if len(runes) > maxSnippetRunes {
+		runes = runes[:maxSnippetRunes]
+	}
+	return document.Title + "\n" + string(runes)
 }
 
 func (s *Store) Add(document Document) error {
@@ -100,7 +119,14 @@ func (s *Store) Add(document Document) error {
 		length:   len(terms),
 		localVec: vecstore.LocalVector(fullText),
 	}
+	vec := s.vec
 	s.mu.Unlock()
+	// Warm the remote embedding at index time on the stable text so the
+	// search hot path can read the dense arm from cache only — remote
+	// calls happen once per document, not once per query per document.
+	if vec != nil {
+		vec.WarmAsync(embedText(document))
+	}
 	return nil
 }
 
@@ -233,10 +259,9 @@ func (s *Store) search(
 			score += cos * 1.5
 		}
 		if len(queryRemoteVec) > 0 && vecEng != nil {
-			ctx, cancel := context.WithTimeout(context.Background(), 1500*time.Millisecond)
-			docRemote, err := vecEng.RemoteVector(ctx, document.Title+"\n"+snippet(document.Content, queryTerms))
-			cancel()
-			if err == nil && len(docRemote) == len(queryRemoteVec) {
+			// Cache-only dense arm: documents were warmed at index time on
+			// their stable embedText, so this loop never touches the network.
+			if docRemote, ok := vecEng.CachedVector(embedText(document.Document)); ok && len(docRemote) == len(queryRemoteVec) {
 				if rcos := vecstore.Cosine(queryRemoteVec, docRemote); rcos >= 0.35 {
 					score += rcos * 3.0
 				}
