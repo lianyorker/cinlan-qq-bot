@@ -34,6 +34,7 @@ type Call struct {
 
 type Actor struct {
 	UserID    string
+	UserName  string // sender nickname, for user-tagged memories
 	Platform  string
 	ChatType  string
 	ChatID    string

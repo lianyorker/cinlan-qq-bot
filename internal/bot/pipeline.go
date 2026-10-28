@@ -817,6 +817,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			Arguments: arguments,
 			Actor: tool.Actor{
 				UserID:     state.userID,
+				UserName:   state.event.SenderName,
 				Platform:   state.platform,
 				ChatType:   state.chatType,
 				ChatID:     state.chatID,
@@ -1364,9 +1365,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 				lead = "你隐约记得"
 				hedge = "，记不清就说大概"
 			}
+			speaker := ""
+			if state.chatType == "group" && f.UserName != "" {
+				speaker = "——" + f.UserName + "说的"
+			}
 			recalled = append(recalled, fmt.Sprintf(
-				"%s（%s记的%s）：%s%s",
-				lead, factAge(now, f.CreatedAt), hedge, f.Text, factMoodHint(f.Mood),
+				"%s（%s记的%s）：%s%s%s",
+				lead, factAge(now, f.CreatedAt), hedge, f.Text, speaker, factMoodHint(f.Mood),
 			))
 		}
 		if len(recalled) > 0 {
@@ -2649,8 +2654,9 @@ func (s *Service) noteTheirPromise(state *flowState) {
 		if n := len([]rune(snippet)); n < 6 || n > 40 {
 			continue
 		}
-		_ = s.chatPrefs.AddFact(state.platform, state.selfID, state.chatType, state.chatID,
-			"他答应·"+who+"："+snippet)
+		_ = s.chatPrefs.AddFactForUser(state.platform, state.selfID, state.chatType, state.chatID,
+			state.userID, state.event.SenderName,
+			"他答应·"+who+"·"+snippet)
 	}
 }
 

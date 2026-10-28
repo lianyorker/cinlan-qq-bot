@@ -604,6 +604,7 @@ func (c *HTTPClient) executeTool(
 		Arguments: arguments,
 		Actor: tool.Actor{
 			UserID:     input.UserID,
+			UserName:   input.SenderName,
 			Platform:   input.Platform,
 			ChatType:   input.ChatType,
 			ChatID:     input.ChatID,

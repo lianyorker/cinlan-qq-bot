@@ -329,3 +329,28 @@ func TestForgetFactReachesArchive(t *testing.T) {
 		t.Fatalf("archive still holds %d facts", len(e.Archive))
 	}
 }
+
+
+func TestFactForUserTagsSpeaker(t *testing.T) {
+	s := newTestStore(t)
+	if err := s.AddFactForUser("qq-onebot", "10001", "group", "g1",
+		"u42", "阿伟", "他喜欢猫"); err != nil {
+		t.Fatal(err)
+	}
+	facts := s.FactsSnapshot("qq-onebot", "10001", "group", "g1")
+	if len(facts) != 1 {
+		t.Fatalf("facts=%d", len(facts))
+	}
+	if facts[0].UserID != "u42" || facts[0].UserName != "阿伟" {
+		t.Fatalf("speaker lost: %+v", facts[0])
+	}
+	// Plain AddFact stays untagged.
+	if err := s.AddFact("qq-onebot", "10001", "group", "g1", "群公告周五截止"); err != nil {
+		t.Fatal(err)
+	}
+	for _, f := range s.FactsSnapshot("qq-onebot", "10001", "group", "g1") {
+		if f.Text == "群公告周五截止" && (f.UserID != "" || f.UserName != "") {
+			t.Fatalf("anonymous fact got tagged: %+v", f)
+		}
+	}
+}

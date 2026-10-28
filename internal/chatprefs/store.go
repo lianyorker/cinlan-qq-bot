@@ -49,6 +49,11 @@ type fact struct {
 	LastSeenAt time.Time `json:"last_seen_at,omitempty"`
 	Weight     float64   `json:"weight,omitempty"`
 	Mood       int       `json:"mood,omitempty"`
+	// UserID/UserName tag who the memory is about in group chats —
+	// empty for self notes and mixed-source distillations. Snapshotted
+	// at write time so a rename doesn't rewrite history.
+	UserID   string `json:"user_id,omitempty"`
+	UserName string `json:"user_name,omitempty"`
 }
 
 // factWeight normalizes the heat multiplier; stored zero / corrupt
@@ -830,7 +835,7 @@ func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 		return errors.New("nothing worth remembering")
 	}
 	s.mu.Lock()
-	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, s.now())
+	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, "", "", s.now())
 	vec := s.vec
 	s.mu.Unlock()
 	// Warm the dense arm for the fresh memory — facts evicted into the
@@ -842,9 +847,30 @@ func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 	return err
 }
 
+// AddFactForUser is AddFact plus who the memory is about — in group
+// chats recall surfaces "阿伟说的" instead of blending every member
+// into one anonymous pool. Private chats need no tag; pass empty.
+func (s *Store) AddFactForUser(platform, selfID, chatType, chatID, userID, userName, text string) error {
+	text = cleanFactText(text)
+	if text == "" {
+		return errors.New("fact is empty")
+	}
+	if !memoryWorthy(text) {
+		return errors.New("nothing worth remembering")
+	}
+	s.mu.Lock()
+	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, userID, userName, s.now())
+	vec := s.vec
+	s.mu.Unlock()
+	if err == nil && vec != nil {
+		vec.WarmAsync(text)
+	}
+	return err
+}
+
 // addFactLocked does the append/dedupe/prune under the held lock so
 // ReplaceFact can fall back without re-locking.
-func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
+func (s *Store) addFactLocked(e *chatEntry, text, userID, userName string, now time.Time) error {
 	currentMood := decayedMood(e, now)
 	for i, f := range e.Facts {
 		if f.Text == text {
@@ -876,6 +902,7 @@ func (s *Store) addFactLocked(e *chatEntry, text string, now time.Time) error {
 	e.Facts = append(e.Facts, fact{
 		Text: text, CreatedAt: now, LastSeenAt: now, Mood: currentMood,
 		Weight: initWeight,
+		UserID: userID, UserName: userName,
 	})
 	return s.saveLocked()
 }
@@ -1068,7 +1095,7 @@ func (s *Store) ReplaceFact(platform, selfID, chatType, chatID, target, text str
 		e.Facts[idx].LastSeenAt = now
 		return s.saveLocked()
 	}
-	return s.addFactLocked(e, text, now)
+	return s.addFactLocked(e, text, "", "", now)
 }
 
 // ForgetFact drops the closest matching fact — deliberate forgetting.

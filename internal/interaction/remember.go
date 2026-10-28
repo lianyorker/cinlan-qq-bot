@@ -143,8 +143,9 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 					return tool.Result{Content: fmt.Sprintf(
 						"记下了对 %s 的印象", about)}, nil
 				}
-				if err := prefs.AddFact(
-					call.Actor.Platform, call.Actor.SelfID, call.Actor.ChatType, call.Actor.ChatID, content,
+				if err := prefs.AddFactForUser(
+					call.Actor.Platform, call.Actor.SelfID, call.Actor.ChatType, call.Actor.ChatID,
+					call.Actor.UserID, call.Actor.UserName, content,
 				); err != nil {
 					return tool.Result{Error: "没记住：" + err.Error()}, nil
 				}
