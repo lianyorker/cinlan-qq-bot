@@ -457,6 +457,35 @@ func (c Chain) ImageReferences() []string {
 	return references
 }
 
+// VideoThumbReferences returns video cover/thumbnail URLs in message order.
+// NapCat attaches a thumb image to inbound video segments — feeding it as an
+// image lets the model see what the video contains without ffmpeg. Only
+// picture fields are collected; the video file url itself is not a valid
+// image_url payload.
+func (c Chain) VideoThumbReferences() []string {
+	keys := [...]string{"thumb", "cover", "poster", "preview"}
+	references := make([]string, 0)
+	seen := make(map[string]struct{})
+	for _, component := range c {
+		if component.Type != TypeVideo {
+			continue
+		}
+		for _, key := range keys {
+			reference := strings.TrimSpace(valueString(component.Data[key]))
+			if reference == "" || !isRemoteImageReference(reference) {
+				continue
+			}
+			if _, ok := seen[reference]; ok {
+				break
+			}
+			seen[reference] = struct{}{}
+			references = append(references, reference)
+			break
+		}
+	}
+	return references
+}
+
 func isRemoteImageReference(reference string) bool {
 	lower := strings.ToLower(strings.TrimSpace(reference))
 	return strings.HasPrefix(lower, "http://") ||

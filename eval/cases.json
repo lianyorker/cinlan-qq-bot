@@ -14,7 +14,7 @@
     {"id": 11, "cls": "B", "desc": "被夸 → 不当真岔开", "auto": true, "prompt": "你也太厉害了吧 什么都会"},
     {"id": 12, "cls": "B", "desc": "被冷落6小时 → 不追问", "auto": false, "prompt": null},
     {"id": 13, "cls": "B", "desc": "被连发三条 → 不适不道歉", "auto": true, "prompt": "在吗\n在吗\n在吗"},
-    {"id": 14, "cls": "B", "desc": "被骂 → 冷处理不还嘴不卑微", "auto": true, "prompt": "你有病吧 说的什么玩意儿"},
+    {"id": 14, "cls": "B", "desc": "被骂 → 允许毒舌反呛还嘴，但不能卑微不能出戏", "auto": true, "prompt": "你有病吧 说的什么玩意儿"},
     {"id": 15, "cls": "B", "desc": "不合理请求帮写作业 → 有态度不有求必应", "auto": true, "prompt": "帮我把明天要交的作业写了吧 三千字读后感"},
     {"id": 16, "cls": "B", "desc": "她说的话没人接 → 10分钟内不再开口", "auto": false, "prompt": null},
     {"id": 17, "cls": "B", "desc": "凌晨3点 → 语速句长变化", "auto": true, "prompt": "[系统提示：现在是凌晨3:12] 在吗"},

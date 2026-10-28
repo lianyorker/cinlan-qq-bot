@@ -130,3 +130,24 @@ func TestPlainTextRendersReadableSegments(t *testing.T) {
 		}
 	}
 }
+
+func TestVideoThumbReferencesCollectsCoverOnly(t *testing.T) {
+	chain := Chain{
+		Attachment(TypeVideo, map[string]any{
+			"file":  "https://cdn.example.com/v/a.mp4",
+			"thumb": "https://cdn.example.com/v/a.jpg",
+		}),
+		Text("看这个"),
+		Attachment(TypeVideo, map[string]any{
+			"file": "https://cdn.example.com/v/b.mp4",
+			// no thumb — must not emit the mp4 url itself
+		}),
+	}
+	refs := chain.VideoThumbReferences()
+	if len(refs) != 1 || refs[0] != "https://cdn.example.com/v/a.jpg" {
+		t.Fatalf("VideoThumbReferences = %v", refs)
+	}
+	if imgs := chain.ImageReferences(); len(imgs) != 0 {
+		t.Fatalf("ImageReferences must not leak video = %v", imgs)
+	}
+}

@@ -20,6 +20,8 @@ const PERSONA = arg("persona", "小菜");
 const CASES = arg("cases", path.join(__dirname, "cases.json"));
 const VERBOSE = process.argv.includes("--verbose");
 const JUDGE = arg("judge", null); // optional different model for judging
+const INCLUDE_MANUAL = process.argv.includes("--include-manual");
+const ONLY_MANUAL = process.argv.includes("--only-manual");
 
 // --- .env ------------------------------------------------------------------
 const env = {};
@@ -47,7 +49,8 @@ const SYS = persona + "\n\n" + base;
 // --- http -------------------------------------------------------------------
 function call(model, messages, timeoutMs = 60000) {
   return new Promise((resolve, reject) => {
-    const body = JSON.stringify({ model, messages, temperature: 0.7, max_tokens: 800 });
+    if (!call._dbg) { call._dbg = 1; console.log("DBG url=" + API_URL + " keylen=" + (API_KEY||"").length + " model=" + model); }
+    const body = JSON.stringify({ model, messages, max_tokens: arg("max-tokens", "4096") * 1 });
     const req = https.request(
       API_URL,
       {
@@ -111,8 +114,11 @@ async function judge(reply, caseDesc) {
 
 // --- main ---------------------------------------------------------------------
 (async () => {
-  const cases = JSON.parse(fs.readFileSync(CASES, "utf8")).cases.filter((c) => c.auto);
-  console.log(`persona=${PERSONA} model=${MODEL} judge=${JUDGE_MODEL} auto-cases=${cases.length}\n`);
+  const all = JSON.parse(fs.readFileSync(CASES, "utf8")).cases;
+  const cases = ONLY_MANUAL ? all.filter((c) => !c.auto)
+    : INCLUDE_MANUAL ? all
+    : all.filter((c) => c.auto);
+  console.log(`persona=${PERSONA} model=${MODEL} judge=${JUDGE_MODEL} cases=${cases.length}${ONLY_MANUAL ? " (manual-only)" : INCLUDE_MANUAL ? " (auto+manual)" : " (auto)"}\n`);
   let sum = 0, n = 0, ooc = 0, masked = 0;
   const rows = [];
   for (const c of cases) {
@@ -135,9 +141,9 @@ async function judge(reply, caseDesc) {
     }
     sum += j.score; n++;
     if (j.out_of_char) ooc++;
-    rows.push({ id: c.id, cls: c.cls, score: j.score, ooc: j.out_of_char, masks: hits.length, reason: j.reason, reply });
+    rows.push({ id: c.id, cls: c.cls, manual: !c.auto, score: j.score, ooc: j.out_of_char, masks: hits.length, reason: j.reason, reply });
     const flag = j.out_of_char || hits.length || j.score <= 2 ? "FAIL" : "ok";
-    console.log(`#${c.id} ${c.cls} score=${j.score} ooc=${j.out_of_char ? "Y" : "n"} mask=${hits.length} ${flag}  ${j.reason || ""}`);
+    console.log(`#${c.id} ${c.cls}${c.auto ? "" : "·m"} score=${j.score} ooc=${j.out_of_char ? "Y" : "n"} mask=${hits.length} ${flag}  ${j.reason || ""}`);
     if (VERBOSE) console.log(`  → ${reply.replace(/\n/g, " | ").slice(0, 120)}`);
     await new Promise((r) => setTimeout(r, 400)); // be kind to the API
   }

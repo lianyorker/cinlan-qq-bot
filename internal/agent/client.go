@@ -757,7 +757,11 @@ func (c *HTTPClient) buildOpenAIMessages(
 		messages = append(messages, openAIMessage{Role: current.Role, Content: current.Content})
 	}
 	content := any(input.Text)
-	if references := input.Chain.ImageReferences(); len(references) > 0 {
+	references := append(
+		input.Chain.ImageReferences(),
+		input.Chain.VideoThumbReferences()...,
+	)
+	if len(references) > 0 {
 		parts := make([]openAIContentPart, 0, len(references)+1)
 		var lastImageErr error
 		text := strings.TrimSpace(input.Text)
