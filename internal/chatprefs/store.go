@@ -198,6 +198,14 @@ func (s *Store) SetVecEngine(v *vecstore.Engine) {
 	s.vec = v
 }
 
+// VecEngine exposes the attached engine read-only — callers outside
+// the package (history-chunk scoring) need it for the hybrid ranker.
+func (s *Store) VecEngine() *vecstore.Engine {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.vec
+}
+
 func Load(path, legacyPlatform string) (*Store, error) {
 	store := &Store{
 		path:     path,
@@ -587,7 +595,10 @@ func (s *Store) ImageForPrompt(platform, selfID, chatType, chatID, prompt string
 
 const (
 	maxFactsPerChat       = 40
-	maxArchivePerChat     = 400
+	// Archive is the only real deletion point in the whole memory
+	// chain — 400 filled in months on a long-lived chat, so capacity
+	// was raised to 2000 (sqlite cost is negligible).
+	maxArchivePerChat     = 2000
 	maxImpressionsPerChat = 60
 	maxProfilesPerPersona = 120
 	maxToneBansPerChat    = 20
@@ -690,6 +701,29 @@ func bestFactMatch(facts []fact, target string) int {
 		return -1
 	}
 	return best
+}
+
+// HybridTextScore applies the same three-arm scoring (CJK bigram +
+// concept clusters + cached dense similarity) to a raw text — used by
+// the session history index so old conversation chunks rank exactly
+// like remembered facts. Weight does not apply (raw history has none).
+func HybridTextScore(text, query string, vec *vecstore.Engine) int {
+	score := 0
+	grams := textBigrams(query)
+	for g := range textBigrams(text) {
+		if grams[g] {
+			score++
+		}
+	}
+	if concepts := vecstore.ConceptOverlap(text, query); concepts > 0 {
+		score += concepts * 2
+	}
+	if vec != nil && vec.RemoteEnabled() {
+		if sim := vec.CachedSimilarity(text, query); sim >= 0.45 {
+			score += int(sim * 6)
+		}
+	}
+	return score
 }
 
 // scoreFactHybrid combines CJK bigram overlap with local semantic concept
@@ -1001,6 +1035,27 @@ func (s *Store) ForgetFact(platform, selfID, chatType, chatID, target string) er
 	return errors.New("没找到要忘的内容")
 }
 
+// WarmFacts pre-warms remote embeddings for the chat's freshest facts —
+// called at compression time so the dense recall arm has hot vectors
+// instead of scoring cold-cache misses forever.
+func (s *Store) WarmFacts(platform, selfID, chatType, chatID string, limit int) {
+	s.mu.RLock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil {
+		s.mu.RUnlock()
+		return
+	}
+	facts := append([]fact(nil), e.Facts...)
+	vec := s.vec
+	s.mu.RUnlock()
+	if vec == nil {
+		return
+	}
+	for i := len(facts) - 1; i >= 0 && len(facts)-i <= limit; i-- {
+		vec.WarmAsync(facts[i].Text)
+	}
+}
+
 // RecallFacts returns up to limit facts matching the message, freshest
 // first — memories the conversation just pulled back into her head.
 // Searches both active Facts and long-term Archive via hybrid lexical +
@@ -1020,6 +1075,13 @@ func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, li
 	archive := append([]fact(nil), e.Archive...)
 	vec := s.vec
 	s.mu.RUnlock()
+
+	// The query itself usually misses the remote cache — without a
+	// cached query vector CachedSimilarity can never blend dense
+	// similarity, so warm it in the background for the next turn.
+	if vec != nil {
+		vec.WarmAsync(query)
+	}
 
 	// Phase 2: score and rank with no lock held — pure CPU, zero IO.
 	type scored struct {

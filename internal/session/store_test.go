@@ -85,6 +85,72 @@ func TestEncryptedSQLitePersistsWithoutPlaintext(t *testing.T) {
 	}
 }
 
+func TestHistoryChunksIndexSurvivesPersistAndRestart(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.db")
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	scope := "qq-onebot:self:1:group:2"
+
+	store, err := OpenEncryptedSQLite(20, time.Hour, path, key, "")
+	if err != nil {
+		t.Fatalf("OpenEncryptedSQLite() error = %v", err)
+	}
+	store.IndexHistory(scope, []HistoryChunk{
+		{SpanID: "s1", Seq: 0, Role: "user",
+			TS: time.Now().Add(-72 * time.Hour), Text: "上次说的那家瑞幸在哪"},
+		{SpanID: "s1", Seq: 1, Role: "assistant",
+			TS: time.Now().Add(-72 * time.Hour), Text: "就商场三楼拐角那家"},
+	})
+	// Persist rewrites messages+sessions whole — the chunk table must
+	// NOT cascade away with it (no FK on purpose).
+	store.AddExchange(scope, "新消息", "新回复")
+	if got := store.HistoryChunks(scope); len(got) != 2 ||
+		got[0].Text != "上次说的那家瑞幸在哪" {
+		t.Fatalf("chunks after persist = %#v", got)
+	}
+	store.Close()
+
+	restored, err := OpenEncryptedSQLite(20, time.Hour, path, key, "")
+	if err != nil {
+		t.Fatalf("restore error = %v", err)
+	}
+	defer restored.Close()
+	got := restored.HistoryChunks(scope)
+	if len(got) != 2 || got[1].Role != "assistant" ||
+		!strings.Contains(got[1].Text, "三楼") {
+		t.Fatalf("restored chunks = %#v", got)
+	}
+	// Chunks are long-term verbatim memory — ensure they never sit
+	// as plaintext in the db file.
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read db: %v", err)
+	}
+	if bytes.Contains(data, []byte("瑞幸")) {
+		t.Fatalf("chunk plaintext leaked into db")
+	}
+}
+
+func TestHistoryChunksClearedWithScope(t *testing.T) {
+	dir := t.TempDir()
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	scope := "qq-onebot:self:1:private:9"
+	store, err := OpenEncryptedSQLite(20, time.Hour,
+		filepath.Join(dir, "sessions.db"), key, "")
+	if err != nil {
+		t.Fatalf("open error = %v", err)
+	}
+	defer store.Close()
+	store.AddExchange(scope, "q", "a")
+	store.IndexHistory(scope, []HistoryChunk{
+		{SpanID: "s1", Seq: 0, Role: "user", TS: time.Now(), Text: "旧话"},
+	})
+	store.Delete(scope)
+	if got := store.HistoryChunks(scope); len(got) != 0 {
+		t.Fatalf("chunks should be deleted with scope, got %#v", got)
+	}
+}
+
 func TestEncryptedSQLiteMigratesAndArchivesLegacyJSON(t *testing.T) {
 	dir := t.TempDir()
 	legacyPath := filepath.Join(dir, "sessions.json")

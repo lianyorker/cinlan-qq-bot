@@ -60,7 +60,10 @@ type Engine struct {
 
 	mu    sync.RWMutex
 	cache map[string][]float32
-	dirty int
+	// warming dedupes in-flight WarmAsync fetches so the same text
+	// never fans out duplicate embedding calls.
+	warming map[string]struct{}
+	dirty   int
 	// cacheDim records the vector dimension the cache was built with.
 	// A model swap that changes dims silently invalidates stored
 	// vectors — comparing against cacheDim catches that and purges
@@ -87,6 +90,7 @@ func New(cfg Config) *Engine {
 		cfg:        cfg,
 		httpClient: &http.Client{Timeout: cfg.Timeout},
 		cache:      make(map[string][]float32),
+		warming:    make(map[string]struct{}),
 	}
 	if cfg.CachePath != "" {
 		_ = e.loadCache()
@@ -219,6 +223,43 @@ func LocalVector(text string) []float32 {
 
 	normalizeL2(vec)
 	return vec
+}
+
+// WarmAsync fires a background RemoteVector fetch when the text has no
+// cached embedding yet. Hot-path callers (fact recall, query scoring)
+// call this on a cache miss so the NEXT turn's CachedSimilarity finds
+// a warm remote vector instead of staying local-only. No-op when remote
+// is disabled; in-flight texts are deduped so bursts don't fan out.
+func (e *Engine) WarmAsync(text string) {
+	if e == nil || !e.RemoteEnabled() {
+		return
+	}
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	key := hashKey(e.cfg.Model, text)
+	e.mu.Lock()
+	if _, ok := e.cache[key]; ok {
+		e.mu.Unlock()
+		return
+	}
+	if _, flying := e.warming[key]; flying {
+		e.mu.Unlock()
+		return
+	}
+	e.warming[key] = struct{}{}
+	e.mu.Unlock()
+	go func() {
+		defer func() {
+			e.mu.Lock()
+			delete(e.warming, key)
+			e.mu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(context.Background(), e.cfg.Timeout)
+		defer cancel()
+		_, _ = e.RemoteVector(ctx, text)
+	}()
 }
 
 // RemoteVector fetches or looks up a cached dense embedding from the configured

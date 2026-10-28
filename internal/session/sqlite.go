@@ -187,6 +187,20 @@ func (b *sqliteBackend) initialize() error {
 			FOREIGN KEY (scope_hash) REFERENCES sessions(scope_hash) ON DELETE CASCADE
 		)`,
 		`CREATE INDEX IF NOT EXISTS idx_sessions_updated_at ON sessions(updated_at)`,
+		// history_chunks is the long-term retrieval index for raw
+		// turns the compressor drops. Deliberately NO foreign key:
+		// persistSQLiteLocked rewrites the sessions table every save
+		// and a cascade would wipe the whole index.
+		`CREATE TABLE IF NOT EXISTS history_chunks (
+			scope_hash BLOB NOT NULL,
+			span_id TEXT NOT NULL,
+			seq INTEGER NOT NULL,
+			role TEXT NOT NULL,
+			ts INTEGER NOT NULL,
+			content_cipher BLOB NOT NULL,
+			PRIMARY KEY (scope_hash, span_id, seq)
+		)`,
+		`CREATE INDEX IF NOT EXISTS idx_history_chunks_scope_ts ON history_chunks(scope_hash, ts)`,
 	} {
 		if _, err := b.db.Exec(statement); err != nil {
 			return fmt.Errorf("initialize SQLite session store: %w", err)
@@ -302,6 +316,96 @@ func (s *Store) loadSQLite() error {
 		return fmt.Errorf("iterate SQLite session messages: %w", err)
 	}
 	return nil
+}
+
+// maxChunksPerScope bounds the per-chat retrieval index — beyond it the
+// oldest spans drop first, matching the archive's slow-forget shape.
+const maxChunksPerScope = 800
+
+// indexChunksLocked appends compression-span chunks in their own
+// transaction. It never touches messages/sessions — the index must
+// survive the whole-table rewrite persist does every save.
+func (s *Store) indexChunksLocked(scope string, chunks []HistoryChunk) error {
+	if s.sqlite == nil {
+		return nil
+	}
+	scopeHash := s.sqlite.cipher.scopeHash(scope)
+	tx, err := s.sqlite.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin history chunk transaction: %w", err)
+	}
+	defer tx.Rollback()
+	for _, c := range chunks {
+		label := fmt.Sprintf("chunk:%s:%d", c.SpanID, c.Seq)
+		contentCipher, err := s.sqlite.cipher.seal(label, scopeHash, []byte(c.Text))
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(`
+			INSERT OR REPLACE INTO history_chunks
+				(scope_hash, span_id, seq, role, ts, content_cipher)
+			VALUES (?, ?, ?, ?, ?, ?)`,
+			scopeHash, c.SpanID, c.Seq, c.Role, c.TS.UnixNano(), contentCipher,
+		); err != nil {
+			return fmt.Errorf("insert history chunk: %w", err)
+		}
+	}
+	// Capacity: oldest timestamped chunks drop first — forgetting
+	// should be gradual, not a cliff.
+	if _, err := tx.Exec(`
+		DELETE FROM history_chunks WHERE scope_hash = ? AND (span_id, seq) NOT IN (
+			SELECT span_id, seq FROM history_chunks
+			WHERE scope_hash = ? ORDER BY ts DESC LIMIT ?
+		)`, scopeHash, scopeHash, maxChunksPerScope); err != nil {
+		return fmt.Errorf("prune history chunks: %w", err)
+	}
+	return tx.Commit()
+}
+
+// loadChunksLocked decrypts every indexed chunk for a scope — used to
+// fill the in-memory cache, never on the write path.
+func (s *Store) loadChunksLocked(scope string) ([]HistoryChunk, error) {
+	if s.sqlite == nil {
+		return nil, nil
+	}
+	scopeHash := s.sqlite.cipher.scopeHash(scope)
+	rows, err := s.sqlite.db.Query(`
+		SELECT span_id, seq, role, ts, content_cipher
+		FROM history_chunks WHERE scope_hash = ?
+		ORDER BY ts ASC`, scopeHash)
+	if err != nil {
+		return nil, fmt.Errorf("query history chunks: %w", err)
+	}
+	defer rows.Close()
+	var out []HistoryChunk
+	for rows.Next() {
+		var c HistoryChunk
+		var ts int64
+		var contentCipher []byte
+		if err := rows.Scan(&c.SpanID, &c.Seq, &c.Role, &ts, &contentCipher); err != nil {
+			return nil, fmt.Errorf("scan history chunk: %w", err)
+		}
+		label := fmt.Sprintf("chunk:%s:%d", c.SpanID, c.Seq)
+		plain, err := s.sqlite.cipher.open(label, scopeHash, contentCipher)
+		if err != nil {
+			return nil, err
+		}
+		c.Text = string(plain)
+		c.TS = time.Unix(0, ts)
+		out = append(out, c)
+	}
+	return out, rows.Err()
+}
+
+// deleteChunksLocked drops the index alongside a cleared/expired scope —
+// the chunk table has no cascade because it must survive persist's
+// full-table rewrite, so scope deletion cleans it up by hand.
+func (s *Store) deleteChunksLocked(scope string) {
+	if s.sqlite == nil {
+		return
+	}
+	scopeHash := s.sqlite.cipher.scopeHash(scope)
+	_, _ = s.sqlite.db.Exec(`DELETE FROM history_chunks WHERE scope_hash = ?`, scopeHash)
 }
 
 func (s *Store) persistSQLiteLocked() error {

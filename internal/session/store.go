@@ -57,9 +57,24 @@ type Snapshot struct {
 	Memory   string
 }
 
+// HistoryChunk is a retrieval-index slice of raw conversation the
+// compressor dropped — summary keeps the macro narrative, chunks keep
+// the quotable micro evidence. Text is decrypted on load.
+type HistoryChunk struct {
+	SpanID string    `json:"span_id"`
+	Seq    int       `json:"seq"`
+	Role   string    `json:"role"`
+	TS     time.Time `json:"ts"`
+	Text   string    `json:"text"`
+}
+
 type Store struct {
 	mu         sync.Mutex
 	entries    map[string]entry
+	// chunks caches the decrypted retrieval index per scope so recall
+	// doesn't hit sqlite+AES on every turn. Nil entries mean not yet
+	// loaded; written spans append into both cache and the table.
+	chunks     map[string][]HistoryChunk
 	maxHistory int
 	ttl        time.Duration
 	// semanticTTL is how long the compressed meaning (Summary+Memory)
@@ -101,6 +116,52 @@ func openLegacy(maxHistory int, ttl time.Duration, path string) (*Store, error) 
 		return nil, err
 	}
 	return store, nil
+}
+
+// IndexHistory appends raw-turn chunks to the scope's long-term
+// retrieval index. Called by the compressor the moment history is
+// dropped — the only window where the original words still exist
+// (persist rewrites the messages table whole, so dropped turns are
+// physically erased otherwise).
+func (s *Store) IndexHistory(scope string, chunks []HistoryChunk) {
+	if len(chunks) == 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.chunks == nil {
+		s.chunks = make(map[string][]HistoryChunk)
+	}
+	s.chunks[scope] = append(s.chunks[scope], chunks...)
+	if over := len(s.chunks[scope]) - maxChunksPerScope; over > 0 {
+		s.chunks[scope] = append(
+			[]HistoryChunk(nil), s.chunks[scope][over:]...,
+		)
+	}
+	if err := s.indexChunksLocked(scope, chunks); err != nil {
+		s.persistErr = err
+	}
+}
+
+// HistoryChunks returns the scope's indexed raw-turn chunks, oldest
+// first. First call lazily decrypts them from sqlite; afterwards the
+// in-memory cache serves the hot recall path.
+func (s *Store) HistoryChunks(scope string) []HistoryChunk {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.chunks == nil {
+		s.chunks = make(map[string][]HistoryChunk)
+	}
+	if cached, ok := s.chunks[scope]; ok {
+		return append([]HistoryChunk(nil), cached...)
+	}
+	loaded, err := s.loadChunksLocked(scope)
+	if err != nil {
+		s.persistErr = err
+		return nil
+	}
+	s.chunks[scope] = loaded
+	return append([]HistoryChunk(nil), loaded...)
 }
 
 // SetSemanticTTL overrides how long Summary/Memory survive after the
@@ -328,6 +389,8 @@ func (s *Store) Clear(key string) {
 	current.Memory = ""
 	current.UpdatedAt = s.now()
 	s.entries[key] = current
+	delete(s.chunks, key)
+	s.deleteChunksLocked(key)
 	s.persistLocked()
 }
 
@@ -354,6 +417,8 @@ func (s *Store) CleanupExpired() int {
 		if age >= s.ttl &&
 			(age >= semantic || !hasSemantics(current)) {
 			delete(s.entries, key)
+			delete(s.chunks, key)
+			s.deleteChunksLocked(key)
 			removed++
 		}
 	}
@@ -424,6 +489,8 @@ func (s *Store) Delete(key string) bool {
 		return false
 	}
 	delete(s.entries, key)
+	delete(s.chunks, key)
+	s.deleteChunksLocked(key)
 	s.persistLocked()
 	return true
 }
@@ -436,6 +503,10 @@ func (s *Store) ClearAll() int {
 		return 0
 	}
 	s.entries = make(map[string]entry)
+	s.chunks = make(map[string][]HistoryChunk)
+	if s.sqlite != nil {
+		_, _ = s.sqlite.db.Exec(`DELETE FROM history_chunks`)
+	}
 	s.persistLocked()
 	return count
 }
@@ -491,6 +562,8 @@ func (s *Store) getLocked(key string) (entry, bool) {
 		return current, true
 	}
 	delete(s.entries, key)
+	delete(s.chunks, key)
+	s.deleteChunksLocked(key)
 	return entry{}, false
 }
 

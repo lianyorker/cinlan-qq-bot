@@ -26,7 +26,9 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
 	"github.com/lianyorker/cinlan-qq-bot/internal/plugin"
 	"github.com/lianyorker/cinlan-qq-bot/internal/security"
+	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
+	"github.com/lianyorker/cinlan-qq-bot/internal/vecstore"
 )
 
 const flowStateKey = "cinlan.bot.flow"
@@ -1324,7 +1326,18 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		recalled := make([]string, 0)
 		recalledRunes := 0
-		for _, f := range s.chatPrefs.RecallFacts(state.platform, state.selfID, state.chatType, state.chatID, state.text, 5) {
+		// Anaphora expansion: "上次那事/还记得吗" carries no lexical
+		// overlap with the fact it's pointing at — rebuild the query
+		// from recent turns so the memory it means can surface.
+		recallQuery := expandRecallQuery(state.text, state.history)
+		// Low-frequency chats get a wider recall net: when each message
+		// is hours apart, every one of them matters more.
+		recallLimit := 5
+		if !state.prevActivityAt.IsZero() &&
+			now.Sub(state.prevActivityAt) >= 30*time.Minute {
+			recallLimit = 8
+		}
+		for _, f := range s.chatPrefs.RecallFacts(state.platform, state.selfID, state.chatType, state.chatID, recallQuery, recallLimit) {
 			if recentSet[f.Text] {
 				continue
 			}
@@ -1338,11 +1351,16 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 				continue
 			}
 			recalledRunes += len([]rune(f.Text))
-			// Fresh memories arrive sharp; anything past a week reads the
-			// way a person recalls it — half-sure, worth double-checking.
+			// Fresh memories arrive sharp; age blurs them the way a
+			// person's recall blurs — a week reads half-sure, a month
+			// reads "probably, don't quote me".
 			lead := "你突然想起"
 			hedge := ""
-			if now.Sub(f.CreatedAt) > 7*24*time.Hour {
+			switch age := now.Sub(f.CreatedAt); {
+			case age > 30*24*time.Hour:
+				lead = "你有点模糊地记得"
+				hedge = "，细节记不清别编，说大概"
+			case age > 7*24*time.Hour:
 				lead = "你隐约记得"
 				hedge = "，记不清就说大概"
 			}
@@ -1354,6 +1372,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if len(recalled) > 0 {
 			request.SystemPrompt += "\n\n这条消息让你想起的旧记忆，提不提随你：\n" +
 				strings.Join(recalled, "\n")
+		}
+		// Long-term verbatim index: chunks of raw turns the compressor
+		// dropped, scored through the same hybrid ranker as facts. This
+		// is how "三个月前那句原话" stays answerable.
+		if snippets := s.recallHistoryChunks(state, recallQuery, now); len(snippets) > 0 {
+			request.SystemPrompt += "\n\n更早的聊天原话片段（有点久远了，别一字不差复述，说个大概就行）：\n" +
+				strings.Join(snippets, "\n")
 		}
 		// Promises stay load-bearing — surfaced separately so the 承诺·
 		// facts don't drown inside the generic memory list.
@@ -3454,4 +3479,107 @@ var unrecognizedMarkerPattern = regexp.MustCompile(
 
 func stripUnrecognizedMarkers(text string) string {
 	return strings.TrimSpace(unrecognizedMarkerPattern.ReplaceAllString(text, ""))
+}
+
+// recallAnaphoraPattern marks messages that point back at something
+// already said — the fact they mean shares no bigram with these words,
+// so the query must be rebuilt from the recent turns around them.
+var recallAnaphoraPattern = regexp.MustCompile(
+	`上次|之前|上次说|那事|那个事|还记得|记得吗|你说过|刚才那个|前几天|那时候|那回`,
+)
+
+// expandRecallQuery rebuilds the recall query when the message is an
+// anaphora ("上次那事"). The bare text has near-zero overlap with the
+// stored fact — appending recent user turns gives the ranker real
+// lexical anchors. Cap keeps the query from diluting into noise.
+func expandRecallQuery(text string, history []domain.ChatMessage) string {
+	if !recallAnaphoraPattern.MatchString(text) {
+		return text
+	}
+	var b strings.Builder
+	b.WriteString(text)
+	kept := 0
+	for i := len(history) - 1; i >= 0 && kept < 20; i-- {
+		line := sentTimestampPattern.ReplaceAllString(history[i].Content, "")
+		line = strings.TrimSpace(line)
+		if line == "" || len([]rune(line)) > 80 {
+			continue
+		}
+		b.WriteString(" ")
+		b.WriteString(line)
+		kept++
+		if len([]rune(b.String())) > 400 {
+			break
+		}
+	}
+	return b.String()
+}
+
+// recallHistoryChunks surfaces verbatim fragments from the long-term
+// index — raw turns the compressor dropped, scored by the same hybrid
+// ranker facts use. Returns "[MM-DD 说话人] 片段" lines, top-3 within
+// a 300-rune budget, so "三个月前那句原话" stays answerable without
+// bloating the prompt.
+func (s *Service) recallHistoryChunks(
+	state *flowState, query string, now time.Time,
+) []string {
+	if s.sessions == nil || strings.TrimSpace(query) == "" {
+		return nil
+	}
+	chunks := s.sessions.HistoryChunks(state.sessionID)
+	if len(chunks) == 0 {
+		return nil
+	}
+	type hit struct {
+		c     session.HistoryChunk
+		score int
+	}
+	var hits []hit
+	for _, c := range chunks {
+		if sc := chatprefs.HybridTextScore(c.Text, query, s.chatPrefsVec()); sc >= recallMinChunkScore {
+			hits = append(hits, hit{c: c, score: sc})
+		}
+	}
+	if len(hits) == 0 {
+		return nil
+	}
+	slices.SortFunc(hits, func(a, b hit) int {
+		if a.score != b.score {
+			return b.score - a.score
+		}
+		return a.c.TS.Compare(b.c.TS) * -1 // tie-break: newer first
+	})
+	var out []string
+	runes := 0
+	for _, h := range hits {
+		if len(out) >= 3 || runes >= 300 {
+			break
+		}
+		text := h.c.Text
+		if !security.TextSafeForPrompt(text) {
+			continue
+		}
+		who := "对方"
+		if h.c.Role == "assistant" {
+			who = "你"
+		}
+		line := fmt.Sprintf("[%s %s] %s", h.c.TS.Format("01-02"), who, text)
+		runes += len([]rune(line))
+		out = append(out, line)
+	}
+	return out
+}
+
+// recallMinChunkScore mirrors recallMinScore in chatprefs — a chunk
+// needs real overlap before it surfaces as a quoted fragment.
+const recallMinChunkScore = 2
+
+// chatPrefsVec exposes the chatprefs store's vector engine for the
+// hybrid chunk scorer — nil when embeddings aren't configured, in
+// which case the scorer runs on bigram + concept arms only.
+func (s *Service) chatPrefsVec() *vecstore.Engine {
+	if s.chatPrefs == nil {
+		return nil
+	}
+	return s.chatPrefs.VecEngine()
 }
