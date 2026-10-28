@@ -354,3 +354,71 @@ func TestFactForUserTagsSpeaker(t *testing.T) {
 		}
 	}
 }
+
+// A memory she never re-lives loses retrieval strength: the same line
+// scores half after one half-life and eventually drops below the recall
+// floor — she half-forgets, exactly like a person.
+func TestRecallStrengthDecaysWithAge(t *testing.T) {
+	now := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	query := "阿茶喝咖啡"
+	grams := textBigrams(query)
+	fresh := fact{Text: "阿茶最近爱上手冲咖啡", CreatedAt: now, LastSeenAt: now}
+	s1 := scoreFactHybrid(fresh, query, grams, nil, now)
+	stale := fact{Text: fresh.Text, CreatedAt: now.Add(-factRecallHalfLife),
+		LastSeenAt: now.Add(-factRecallHalfLife)}
+	s2 := scoreFactHybrid(stale, query, grams, nil, now)
+	if s1 <= 0 {
+		t.Fatalf("fresh score=%d, want positive", s1)
+	}
+	if s2 >= s1 || s2 > s1/2+1 {
+		t.Fatalf("one half-life should ~halve the score: fresh=%d stale=%d", s1, s2)
+	}
+	// Four half-lives (~120d) on an ordinary chat memory must sink below
+	// the recall floor entirely.
+	s4 := newTestStore(t)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	clock := base
+	s4.SetClock(func() time.Time { return clock })
+	if err := s4.AddFact("qq-onebot", "10001", "group", "g1", "阿茶爱喝手冲咖啡"); err != nil {
+		t.Fatal(err)
+	}
+	if got := s4.RecallFacts("qq-onebot", "10001", "group", "g1", "咖啡", 3); len(got) == 0 {
+		t.Fatal("fresh fact should recall")
+	}
+	clock = base.Add(4*factRecallHalfLife + time.Hour)
+	if got := s4.RecallFacts("qq-onebot", "10001", "group", "g1", "咖啡", 3); len(got) != 0 {
+		t.Fatalf("stale fact should sink below recall floor, got %+v", got)
+	}
+}
+
+// Spontaneous recall prefers the half-forgotten band over the truly
+// ancient: a person goes "哦对了" about something on the edge of fading,
+// not about something buried for a year.
+func TestColdFactPrefersHalfForgottenBand(t *testing.T) {
+	s := newTestStore(t)
+	base := time.Date(2026, 10, 28, 12, 0, 0, 0, time.UTC)
+	clock := base.Add(-200 * 24 * time.Hour)
+	s.SetClock(func() time.Time { return clock })
+	_ = s.AddFact("qq-onebot", "10001", "group", "g1", "很久前的事")
+	clock = base.Add(-5 * 24 * time.Hour)
+	_ = s.AddFact("qq-onebot", "10001", "group", "g1", "五天前的事")
+	clock = base.Add(-24 * time.Hour)
+	_ = s.AddFact("qq-onebot", "10001", "group", "g1", "昨天的事")
+
+	got, ok := s.ColdFact("qq-onebot", "10001", "group", "g1", base, 72*time.Hour)
+	if !ok || got.Text != "五天前的事" {
+		t.Fatalf("band pick=%+v ok=%v, want 五天前的事", got, ok)
+	}
+
+	// No band candidates → falls back to the genuinely coldest trace.
+	s2 := newTestStore(t)
+	clock = base.Add(-200 * 24 * time.Hour)
+	s2.SetClock(func() time.Time { return clock })
+	_ = s2.AddFact("qq-onebot", "10001", "group", "g1", "远古记忆")
+	clock = base.Add(-100 * 24 * time.Hour)
+	_ = s2.AddFact("qq-onebot", "10001", "group", "g1", "较老的记忆")
+	got, ok = s2.ColdFact("qq-onebot", "10001", "group", "g1", base, 72*time.Hour)
+	if !ok || got.Text != "远古记忆" {
+		t.Fatalf("fallback pick=%+v ok=%v, want 远古记忆", got, ok)
+	}
+}

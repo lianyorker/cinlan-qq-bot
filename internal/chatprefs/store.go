@@ -6,6 +6,7 @@ package chatprefs
 import (
 	"encoding/json"
 	"errors"
+	"math"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -632,6 +633,15 @@ const (
 	// recentFactsPerPrompt keeps the freshest memories always visible;
 	// the rest only resurface when the current message brings them up.
 	recentFactsPerPrompt = 10
+	// factRecallHalfLife is the disuse half-life of retrieval strength:
+	// a memory untouched for 30 days recalls at half score, 60 days at
+	// a quarter — she half-forgets what she never re-lives.
+	factRecallHalfLife = 30 * 24 * time.Hour
+	// coldFactSweetSpot bounds the half-forgotten band for spontaneous
+	// recall: anchors in [minAge, sweetSpot] are memories on the edge of
+	// fading — the ones a person actually "suddenly remembers". Older
+	// traces only surface when nothing sits in the band.
+	coldFactSweetSpot = 14 * 24 * time.Hour
 	recallFactsPerPrompt = 5
 	// recallMinScore is the CJK-bigram overlap a fact needs before the
 	// bot "remembers" it mid-turn. 2 keeps real cues ("阿茶"+"咖啡")
@@ -752,9 +762,10 @@ func HybridTextScore(text, query string, vec *vecstore.Engine) int {
 // scoreFactHybrid combines CJK bigram overlap with local semantic concept
 // clusters and optional dense vector similarity so cross-word cues like
 // "天天熬夜写代码" <-> "睡眠不足想休息" still trigger memory recall.
-// The fact's Weight (memory heat) scales the final score — frequently
-// recalled memories resurface easier.
-func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.Engine) int {
+// The fact's Weight (memory heat) scales the final score, and retrieval
+// strength decays exponentially with anchor age — the same line pulls
+// half the score once it has sat untouched for a month.
+func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.Engine, now time.Time) int {
 	score := scoreFact(f, grams)
 	if concepts := vecstore.ConceptOverlap(f.Text, query); concepts > 0 {
 		score += concepts * 2
@@ -768,7 +779,12 @@ func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.
 			score += int(sim * 6)
 		}
 	}
-	return int(float64(score) * factWeight(f))
+	age := now.Sub(factAnchor(f))
+	if age < 0 {
+		age = 0
+	}
+	decay := math.Pow(0.5, age.Hours()/factRecallHalfLife.Hours())
+	return int(float64(score) * factWeight(f) * decay)
 }
 
 // legacyFactPrefix marks memories that faded into a long-ago trace —
@@ -1229,11 +1245,12 @@ func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, li
 		score    int
 		archived bool
 	}
+	now := s.now()
 	seenText := make(map[string]bool, len(facts))
 	hits := make([]scored, 0, len(facts)+len(archive))
 	for _, f := range facts {
 		seenText[f.Text] = true
-		if sc := scoreFactHybrid(f, query, grams, vec); sc >= recallMinScore {
+		if sc := scoreFactHybrid(f, query, grams, vec, now); sc >= recallMinScore {
 			hits = append(hits, scored{f: f, score: sc})
 		}
 	}
@@ -1241,7 +1258,7 @@ func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, li
 		if seenText[f.Text] {
 			continue
 		}
-		if sc := scoreFactHybrid(f, query, grams, vec); sc >= recallMinScore {
+		if sc := scoreFactHybrid(f, query, grams, vec, now); sc >= recallMinScore {
 			hits = append(hits, scored{f: f, score: sc, archived: true})
 		}
 	}
@@ -1270,7 +1287,7 @@ func (s *Store) RecallFacts(platform, selfID, chatType, chatID, query string, li
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if e := s.lookup(platform, selfID, chatType, chatID); e != nil {
-		now := s.now()
+		now = s.now()
 		bumpIn := func(list []fact, text string) bool {
 			for i := range list {
 				if list[i].Text == text {
@@ -1314,10 +1331,12 @@ func (s *Store) FactsSnapshot(platform, selfID, chatType, chatID string) []fact 
 	return append([]fact(nil), e.Facts...)
 }
 
-// ColdFact returns the memory she hasn't touched the longest — a fact
-// or archived trace whose anchor is at least minAge old. Proactive uses
-// it for the "suddenly remembered" beat instead of recycling the fresh
-// material she already saw yesterday.
+// ColdFact returns a half-forgotten memory for the "suddenly
+// remembered" beat: anchors in [minAge, coldFactSweetSpot] are still
+// close enough to the surface that re-living them reads like a person
+// going 哦对了 — not exhuming something dead for a decade. When the
+// band is empty she falls back to the coldest trace, the way an
+// ancient thing can still float up uninvited.
 func (s *Store) ColdFact(platform, selfID, chatType, chatID string, now time.Time, minAge time.Duration) (fact, bool) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
@@ -1325,8 +1344,8 @@ func (s *Store) ColdFact(platform, selfID, chatType, chatID string, now time.Tim
 	if e == nil {
 		return fact{}, false
 	}
-	var coldest fact
-	var best time.Time
+	var coldest, banded fact
+	var best, bandBest time.Time
 	for _, bucket := range [][]fact{e.Facts, e.Archive} {
 		for _, f := range bucket {
 			anchor := f.LastSeenAt
@@ -1339,7 +1358,17 @@ func (s *Store) ColdFact(platform, selfID, chatType, chatID string, now time.Tim
 			if best.IsZero() || anchor.Before(best) {
 				best, coldest = anchor, f
 			}
+			if now.Sub(anchor) <= coldFactSweetSpot &&
+				(bandBest.IsZero() || anchor.Before(bandBest)) {
+				bandBest, banded = anchor, f
+			}
 		}
+	}
+	// The sweet-spot winner is the OLDEST memory still inside the band —
+	// the one closest to slipping away entirely, so the touch does the
+	// most rescue work (spaced-repetition logic).
+	if !bandBest.IsZero() {
+		return banded, true
 	}
 	if best.IsZero() {
 		return fact{}, false
