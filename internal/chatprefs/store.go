@@ -54,6 +54,17 @@ type fact struct {
 	// at write time so a rename doesn't rewrite history.
 	UserID   string `json:"user_id,omitempty"`
 	UserName string `json:"user_name,omitempty"`
+	// Context binds the memory to the scene it was formed in — what
+	// they were talking about at the time, so recall can say "当时
+	// 你们在聊火锅" instead of the bare fact.
+	Context string `json:"context,omitempty"`
+	// Self marks autobiographical facts — "我那天挺难过" instead of
+	// "他那天骂我". Recall renders it as something she lived through,
+	// not something she observed about someone else.
+	Self bool `json:"self,omitempty"`
+	// TriggerAt is only set on Reminders entries — the moment this
+	// prospective memory should surface on its own.
+	TriggerAt time.Time `json:"trigger_at,omitempty"`
 }
 
 // factWeight normalizes the heat multiplier; stored zero / corrupt
@@ -139,6 +150,12 @@ type chatEntry struct {
 	// ("别老说emo" → "emo" lands here). Outbound replies get scrubbed
 	// before send — negative feedback that actually sticks.
 	ToneBans []string `json:"tone_bans,omitempty"`
+	// Reminders is the prospective-memory shelf: facts with a
+	// TriggerAt the reminder loop fires when due ("周三他考试" →
+	// Wednesday morning she remembers on her own). Separate from
+	// Facts so a pending reminder never leaks into ordinary recall
+	// before its time.
+	Reminders []fact `json:"reminders,omitempty"`
 }
 
 // persistedStore wraps the chat map with persona-scoped user profiles.
@@ -599,7 +616,7 @@ func (s *Store) ImageForPrompt(platform, selfID, chatType, chatID, prompt string
 }
 
 const (
-	maxFactsPerChat       = 50
+	maxFactsPerChat = 50
 	// Archive is the only real deletion point in the whole memory
 	// chain — 400 filled in months on a long-lived chat, so capacity
 	// was raised to 2000 (sqlite cost is negligible).
@@ -822,11 +839,54 @@ func fadeOldestArchive(e *chatEntry) {
 	}
 }
 
+// factOpts carries the optional tags a memory can be stamped with at
+// write time — speaker attribution, the scene it formed in, and the
+// autobiographical flag. All empty means an anonymous plain fact.
+type factOpts struct {
+	UserID   string
+	UserName string
+	Context  string
+	Self     bool
+}
+
 // AddFact stores a self-learned fact line for the chat. Duplicates are
 // ignored; over capacity the least-recently-recalled memory moves into
 // the long-term Archive instead of being lost. Zero-information filler
 // ("嗯", "好的") is rejected so the memory pool stays meaningful.
 func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
+	return s.addFactWithOpts(platform, selfID, chatType, chatID, text, factOpts{})
+}
+
+// AddFactForUser is AddFact plus who the memory is about — in group
+// chats recall surfaces "阿伟说的" instead of blending every member
+// into one anonymous pool. Private chats need no tag; pass empty.
+func (s *Store) AddFactForUser(platform, selfID, chatType, chatID, userID, userName, text string) error {
+	return s.addFactWithOpts(platform, selfID, chatType, chatID, text, factOpts{
+		UserID: userID, UserName: userName,
+	})
+}
+
+// AddFactWithContext is AddFactForUser plus the scene the memory formed
+// in — "当时在聊火锅" — so recall can re-attach the moment, not just
+// the bare fact. Pass empty context to behave like AddFactForUser.
+func (s *Store) AddFactWithContext(platform, selfID, chatType, chatID, userID, userName, context, text string) error {
+	return s.addFactWithOpts(platform, selfID, chatType, chatID, text, factOpts{
+		UserID: userID, UserName: userName, Context: context,
+	})
+}
+
+// AddSelfFact stores an autobiographical memory — something that
+// happened to HER ("我那天挺难过"), not something she observed about
+// someone else. Recall renders it in first person.
+func (s *Store) AddSelfFact(platform, selfID, chatType, chatID, text string) error {
+	return s.addFactWithOpts(platform, selfID, chatType, chatID, text, factOpts{
+		Self: true,
+	})
+}
+
+// addFactWithOpts is the shared write path: clean, quality-gate, then
+// append under lock with the given tags and warm the dense arm.
+func (s *Store) addFactWithOpts(platform, selfID, chatType, chatID, text string, o factOpts) error {
 	text = cleanFactText(text)
 	if text == "" {
 		return errors.New("fact is empty")
@@ -834,8 +894,12 @@ func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 	if !memoryWorthy(text) {
 		return errors.New("nothing worth remembering")
 	}
+	o.Context = strings.TrimSpace(o.Context)
+	if runes := []rune(o.Context); len(runes) > 30 {
+		o.Context = string(runes[:30])
+	}
 	s.mu.Lock()
-	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, "", "", s.now())
+	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, o, s.now())
 	vec := s.vec
 	s.mu.Unlock()
 	// Warm the dense arm for the fresh memory — facts evicted into the
@@ -847,30 +911,9 @@ func (s *Store) AddFact(platform, selfID, chatType, chatID, text string) error {
 	return err
 }
 
-// AddFactForUser is AddFact plus who the memory is about — in group
-// chats recall surfaces "阿伟说的" instead of blending every member
-// into one anonymous pool. Private chats need no tag; pass empty.
-func (s *Store) AddFactForUser(platform, selfID, chatType, chatID, userID, userName, text string) error {
-	text = cleanFactText(text)
-	if text == "" {
-		return errors.New("fact is empty")
-	}
-	if !memoryWorthy(text) {
-		return errors.New("nothing worth remembering")
-	}
-	s.mu.Lock()
-	err := s.addFactLocked(s.entry(platform, selfID, chatType, chatID), text, userID, userName, s.now())
-	vec := s.vec
-	s.mu.Unlock()
-	if err == nil && vec != nil {
-		vec.WarmAsync(text)
-	}
-	return err
-}
-
 // addFactLocked does the append/dedupe/prune under the held lock so
 // ReplaceFact can fall back without re-locking.
-func (s *Store) addFactLocked(e *chatEntry, text, userID, userName string, now time.Time) error {
+func (s *Store) addFactLocked(e *chatEntry, text string, o factOpts, now time.Time) error {
 	currentMood := decayedMood(e, now)
 	for i, f := range e.Facts {
 		if f.Text == text {
@@ -902,7 +945,8 @@ func (s *Store) addFactLocked(e *chatEntry, text, userID, userName string, now t
 	e.Facts = append(e.Facts, fact{
 		Text: text, CreatedAt: now, LastSeenAt: now, Mood: currentMood,
 		Weight: initWeight,
-		UserID: userID, UserName: userName,
+		UserID: o.UserID, UserName: o.UserName,
+		Context: o.Context, Self: o.Self,
 	})
 	return s.saveLocked()
 }
@@ -1095,7 +1139,7 @@ func (s *Store) ReplaceFact(platform, selfID, chatType, chatID, target, text str
 		e.Facts[idx].LastSeenAt = now
 		return s.saveLocked()
 	}
-	return s.addFactLocked(e, text, "", "", now)
+	return s.addFactLocked(e, text, factOpts{}, now)
 }
 
 // ForgetFact drops the closest matching fact — deliberate forgetting.
@@ -1722,4 +1766,97 @@ func (s *Store) flushLocked() error {
 	}
 	s.dirty = false
 	return nil
+}
+
+// maxRemindersPerChat bounds the prospective shelf — a chatty model
+// should not be able to queue dozens of future wake-ups.
+const maxRemindersPerChat = 10
+
+// AddReminder queues a prospective memory: text she remembers on her
+// own once triggerAt arrives ("周三他考试" fires Wednesday morning).
+// Kept off the ordinary recall path — a pending reminder must never
+// leak into replies before its time.
+func (s *Store) AddReminder(platform, selfID, chatType, chatID, text string, triggerAt time.Time) error {
+	text = cleanFactText(text)
+	if text == "" {
+		return errors.New("fact is empty")
+	}
+	if triggerAt.IsZero() {
+		return errors.New("no trigger time")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(platform, selfID, chatType, chatID)
+	now := s.now()
+	for i, r := range e.Reminders {
+		if r.Text == text {
+			e.Reminders[i].TriggerAt = triggerAt
+			return s.saveLocked()
+		}
+	}
+	if len(e.Reminders) >= maxRemindersPerChat {
+		// Shed the furthest-out reminder — the nearest deadline
+		// matters most, like a person keeping only what is next.
+		furthest := 0
+		for i := range e.Reminders {
+			if e.Reminders[i].TriggerAt.After(e.Reminders[furthest].TriggerAt) {
+				furthest = i
+			}
+		}
+		e.Reminders = append(e.Reminders[:furthest], e.Reminders[furthest+1:]...)
+	}
+	e.Reminders = append(e.Reminders, fact{
+		Text:       text,
+		CreatedAt:  now,
+		LastSeenAt: now,
+		TriggerAt:  triggerAt,
+	})
+	return s.saveLocked()
+}
+
+// DueReminder is a fired prospective memory with its routing keys —
+// the reminder loop pops these and turns them into a spontaneous
+// message to the chat.
+type DueReminder struct {
+	Platform string
+	SelfID   string
+	ChatType string
+	ChatID   string
+	Text     string
+	SavedAt  time.Time
+}
+
+// DueReminders pops every reminder whose trigger time has passed —
+// fired reminders are removed so they do not re-deliver every tick.
+func (s *Store) DueReminders(now time.Time) []DueReminder {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []DueReminder
+	dirty := false
+	for k, e := range s.data {
+		if len(e.Reminders) == 0 {
+			continue
+		}
+		platform, selfID, chatType, chatID := splitKey(k)
+		keep := e.Reminders[:0]
+		for _, r := range e.Reminders {
+			if r.TriggerAt.IsZero() || r.TriggerAt.After(now) {
+				keep = append(keep, r)
+				continue
+			}
+			out = append(out, DueReminder{
+				Platform: platform, SelfID: selfID,
+				ChatType: chatType, ChatID: chatID,
+				Text: r.Text, SavedAt: r.CreatedAt,
+			})
+		}
+		if len(keep) != len(e.Reminders) {
+			e.Reminders = keep
+			dirty = true
+		}
+	}
+	if dirty {
+		_ = s.saveLocked()
+	}
+	return out
 }

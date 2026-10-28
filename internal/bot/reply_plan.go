@@ -788,6 +788,11 @@ func isSentenceEnd(r rune) bool {
 	return false
 }
 
+// stubTailMin is the smallest trailing bubble worth sending — a cut
+// that strands fewer runes reads like a mistyped send, not a beat, so
+// the reply stays one bubble instead.
+const stubTailMin = 15
+
 // bestSoftSplitAt finds the sentence-ending boundary nearest the middle
 // of text, or -1 when no usable boundary exists.
 func bestSoftSplitAt(text string) int {
@@ -809,6 +814,9 @@ func bestSoftSplitAt(text string) int {
 		if score > bestScore {
 			bestScore, best = score, i
 		}
+	}
+	if best >= 0 && len(runes)-best-1 < stubTailMin {
+		return -1
 	}
 	return best
 }

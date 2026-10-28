@@ -818,6 +818,7 @@ func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) err
 			Actor: tool.Actor{
 				UserID:     state.userID,
 				UserName:   state.event.SenderName,
+				Scene:      truncateRunes(state.text, 40),
 				Platform:   state.platform,
 				ChatType:   state.chatType,
 				ChatID:     state.chatID,
@@ -1218,6 +1219,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			"\n\n对方和你的亲密度：%s（%d/100）。%s分数只用于你内心判断跟对方的距离，别往外报具体数字、别报「分」——对方问起亲密度或好感度时，像真人一样用等级感觉回答（刚认识/有点熟/聊得来/很亲）；对方要精确数字就让他发 /亲密度。",
 			level, percent, hint,
 		)
+		if scale := affinity.ScaleHint(level); scale != "" {
+			request.SystemPrompt += "\n\n" + scale
+		}
 		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
 		// Strangers get stranger treatment: warm but brief. Familiarity
 		// earned the rambling; someone she barely knows gets the polite
@@ -1369,9 +1373,28 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			if state.chatType == "group" && f.UserName != "" {
 				speaker = "——" + f.UserName + "说的"
 			}
+			scene := ""
+			if f.Context != "" {
+				scene = "（当时在聊" + f.Context + "）"
+			}
+			if f.Self {
+				// Autobiographical memory — she lived this, not
+				// observed it. First-person lead, no speaker tag.
+				selfLead := "你想起自己当时"
+				switch {
+				case now.Sub(f.CreatedAt) > 30*24*time.Hour:
+					selfLead = "你隐约记得自己当时"
+				}
+				recalled = append(recalled, fmt.Sprintf(
+					"%s（%s%s）：%s%s%s",
+					selfLead, factAge(now, f.CreatedAt), hedge,
+					f.Text, scene, factMoodHint(f.Mood),
+				))
+				continue
+			}
 			recalled = append(recalled, fmt.Sprintf(
-				"%s（%s记的%s）：%s%s%s",
-				lead, factAge(now, f.CreatedAt), hedge, f.Text, speaker, factMoodHint(f.Mood),
+				"%s（%s记的%s）：%s%s%s%s",
+				lead, factAge(now, f.CreatedAt), hedge, f.Text, scene, speaker, factMoodHint(f.Mood),
 			))
 		}
 		if len(recalled) > 0 {
@@ -2654,8 +2677,9 @@ func (s *Service) noteTheirPromise(state *flowState) {
 		if n := len([]rune(snippet)); n < 6 || n > 40 {
 			continue
 		}
-		_ = s.chatPrefs.AddFactForUser(state.platform, state.selfID, state.chatType, state.chatID,
+		_ = s.chatPrefs.AddFactWithContext(state.platform, state.selfID, state.chatType, state.chatID,
 			state.userID, state.event.SenderName,
+			truncateRunes(state.text, 30),
 			"他答应·"+who+"·"+snippet)
 	}
 }
@@ -3126,8 +3150,89 @@ func (s *Service) feelEvent(
 	if eventDesc == "" || s.sessions == nil {
 		return
 	}
+	// The monologue LLM no longer rides the reply path — the job lands
+	// on a background queue and the feeling surfaces from the next
+	// turn on, the way a real reaction settles a beat late. Tests that
+	// never started the worker keep the old synchronous behaviour.
+	if s.feelQueue != nil {
+		job := feelJob{
+			platform:  state.platform,
+			selfID:    state.selfID,
+			chatType:  state.chatType,
+			chatID:    state.chatID,
+			sessionID: state.sessionID,
+			persona:   state.personaName,
+			provider:  state.providerName,
+			delta:     delta,
+			desc:      eventDesc,
+		}
+		select {
+		case s.feelQueue <- job:
+		default:
+			// Queue full — feelings shed rather than pile up.
+		}
+		return
+	}
+	s.feelNow(ctx, state, delta, eventDesc)
+}
+
+// feelJob is one queued inner-monologue task — a snapshot, not a
+// flowState pointer, so the worker is safe even if the turn's state
+// gets reused.
+type feelJob struct {
+	platform, selfID, chatType, chatID string
+	sessionID, persona, provider       string
+	delta                              int
+	desc                               string
+}
+
+// feelNow runs the monologue inline — the pre-async path, kept for
+// tests and for callers without a worker.
+func (s *Service) feelNow(ctx context.Context, state *flowState, delta int, eventDesc string) {
 	note := s.voiceInnerMonologue(ctx, state, eventDesc)
 	s.sessions.AddObservation(state.sessionID, "[心情] "+note)
+	s.noteSelfMemory(state, delta, note)
+}
+
+// noteSelfMemory turns a strong inner reaction into an autobiographical
+// fact — "我那天挺难过" lives in her own story, not just a 24h session
+// note. Only |delta|>=3 earns a permanent entry; ambient nudges stay
+// ephemeral.
+func (s *Service) noteSelfMemory(state *flowState, delta int, note string) {
+	if s.chatPrefs == nil || state == nil || note == "" {
+		return
+	}
+	if delta >= -2 && delta <= 2 {
+		return
+	}
+	_ = s.chatPrefs.AddSelfFact(
+		state.platform, state.selfID, state.chatType, state.chatID,
+		"我·"+truncateRunes(note, 60),
+	)
+}
+
+// feelWorker drains the inner-monologue queue one job at a time so a
+// burst of ambient events serializes instead of spawning parallel LLM
+// calls.
+func (s *Service) feelWorker() {
+	for job := range s.feelQueue {
+		state := &flowState{
+			platform:     job.platform,
+			selfID:       job.selfID,
+			chatType:     job.chatType,
+			chatID:       job.chatID,
+			sessionID:    job.sessionID,
+			personaName:  job.persona,
+			providerName: job.provider,
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		note := s.voiceInnerMonologue(ctx, state, job.desc)
+		cancel()
+		if s.sessions != nil {
+			s.sessions.AddObservation(job.sessionID, "[心情] "+note)
+		}
+		s.noteSelfMemory(state, job.delta, note)
+	}
 }
 
 // feelAmbient is the quiet half of the inner life: automatic background

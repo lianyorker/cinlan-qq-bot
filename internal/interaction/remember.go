@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -48,6 +50,10 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 					"type":        "string",
 					"description": "可选：这条记忆是关于谁的QQ号，留空则为聊天公共事实",
 				},
+				"due": map[string]any{
+					"type":        "string",
+					"description": "可选：提醒时间——'2026-10-30 08:00'/'2026-10-30'/'15:04'/'30m'/'2h'/'1d'，带了这个就存成定时提醒",
+				},
 			},
 		},
 		Permission: tool.PermissionEveryone,
@@ -61,6 +67,7 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 				Content   string `json:"content"`
 				Old       string `json:"old"`
 				AboutUser string `json:"about_user"`
+				Due       string `json:"due"`
 			}
 			_ = json.Unmarshal(call.Arguments, &args)
 			action := strings.ToLower(strings.TrimSpace(args.Action))
@@ -70,6 +77,7 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 			content := strings.TrimSpace(args.Content)
 			old := strings.TrimSpace(args.Old)
 			about := strings.TrimSpace(args.AboutUser)
+			due := strings.TrimSpace(args.Due)
 			target := old
 			if target == "" {
 				target = content
@@ -131,6 +139,22 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 				if content == "" {
 					return tool.Result{Error: "没啥可记的"}, nil
 				}
+				if due != "" {
+					// Prospective memory — she reminds herself when the
+					// moment comes, no one has to nudge her.
+					at, err := parseDue(due, time.Now())
+					if err != nil {
+						return tool.Result{Error: "提醒时间没看懂：" + err.Error()}, nil
+					}
+					if err := prefs.AddReminder(
+						call.Actor.Platform, call.Actor.SelfID, call.Actor.ChatType, call.Actor.ChatID,
+						content, at,
+					); err != nil {
+						return tool.Result{Error: "没记住：" + err.Error()}, nil
+					}
+					return tool.Result{Content: fmt.Sprintf(
+						"到点我会想起来：%s", at.Format("01-02 15:04"))}, nil
+				}
 				if review != nil {
 					if err := screenContent(ctx, review, content); err != nil {
 						return tool.Result{Error: err.Error()}, nil
@@ -143,9 +167,9 @@ func RememberTool(prefs *chatprefs.Store, review Reviewer) tool.Definition {
 					return tool.Result{Content: fmt.Sprintf(
 						"记下了对 %s 的印象", about)}, nil
 				}
-				if err := prefs.AddFactForUser(
+				if err := prefs.AddFactWithContext(
 					call.Actor.Platform, call.Actor.SelfID, call.Actor.ChatType, call.Actor.ChatID,
-					call.Actor.UserID, call.Actor.UserName, content,
+					call.Actor.UserID, call.Actor.UserName, call.Actor.Scene, content,
 				); err != nil {
 					return tool.Result{Error: "没记住：" + err.Error()}, nil
 				}
@@ -183,4 +207,57 @@ func writeImpression(
 		return nil
 	}
 	return prefs.SetProfile(call.Actor.Platform, persona, about, content)
+}
+
+// parseDue reads the reminder time the model wrote — absolute
+// ("2026-10-30 08:00", "2026-10-30", "15:04"), or a shorthand offset
+// ("30m", "2h", "1d"). Times already past roll to the next sensible
+// day so "明天8点" written at night lands in the morning.
+func parseDue(raw string, now time.Time) (time.Time, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return time.Time{}, fmt.Errorf("没时间")
+	}
+	// Shorthand offsets: +30m / +2h / +1d (the + is optional).
+	if m := regexp.MustCompile(`^\+?(\d+)([mhd])$`).FindStringSubmatch(raw); m != nil {
+		n, _ := strconv.Atoi(m[1])
+		var d time.Duration
+		switch m[2] {
+		case "m":
+			d = time.Duration(n) * time.Minute
+		case "h":
+			d = time.Duration(n) * time.Hour
+		case "d":
+			d = time.Duration(n) * 24 * time.Hour
+		}
+		return now.Add(d), nil
+	}
+	// Clock-only: today at that time, or tomorrow if it already passed.
+	if m := regexp.MustCompile(`^(\d{1,2})[:：](\d{2})$`).FindStringSubmatch(raw); m != nil {
+		h, _ := strconv.Atoi(m[1])
+		min, _ := strconv.Atoi(m[2])
+		at := time.Date(now.Year(), now.Month(), now.Day(), h, min, 0, 0, now.Location())
+		if !at.After(now) {
+			at = at.Add(24 * time.Hour)
+		}
+		return at, nil
+	}
+	// Absolute datetime / date in the local zone.
+	for _, layout := range []string{
+		"2006-01-02 15:04", "2006-01-02 15:04:05",
+		"2006/01/02 15:04", "2006-01-02",
+	} {
+		if at, err := time.ParseInLocation(layout, raw, now.Location()); err == nil {
+			if layout == "2006-01-02" {
+				// Bare date = that morning, not midnight — she
+				// would not ping someone at 00:00.
+				at = at.Add(9 * time.Hour)
+			}
+			if !at.After(now) && layout == "2006-01-02" {
+				at = at.Add(24 * time.Hour)
+			}
+			return at, nil
+		}
+	}
+	return time.Time{}, fmt.Errorf("时间格式不认得，用 2026-10-30 08:00 或 2h 这种")
 }

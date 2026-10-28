@@ -155,6 +155,10 @@ type Service struct {
 	// occasional human reaction instead of a hair-trigger.
 	pokeBudget voiceBudget
 	feelBudget voiceBudget
+	// feelQueue carries inner-monologue jobs off the reply hot path —
+	// feelEvent enqueues (mood bump stays synchronous) and feelWorker
+	// drains them so the triggering turn never waits for an LLM.
+	feelQueue  chan feelJob
 	voiceQuota *voiceQuota
 	sessions   *session.Store
 	logger     *slog.Logger
@@ -334,7 +338,10 @@ func NewWithRuntime(
 	}
 	service.bannedWords = newOutboundBannedWords(strings.TrimSpace(cfg.OutboundBannedWordsFile))
 	service.judgeProvider = strings.TrimSpace(cfg.JudgeProvider)
+	service.feelQueue = make(chan feelJob, 32)
 	go service.voiceCacheLoop()
+	go service.feelWorker()
+	go service.reminderLoop()
 	service.flow = service.newPipeline()
 	return service
 }
@@ -1722,4 +1729,93 @@ func min(left, right int) int {
 		return left
 	}
 	return right
+}
+
+// reminderLoop is the prospective-memory heartbeat: every minute it pops
+// reminders whose time came and delivers them as spontaneous messages —
+// she remembers on her own; nobody has to nudge her. Asleep hours defer
+// the fire to wake-up, the way a person would not send a 4am reminder.
+func (s *Service) reminderLoop() {
+	tick := time.NewTicker(time.Minute)
+	defer tick.Stop()
+	for range tick.C {
+		if s.chatPrefs == nil || s.sender == nil {
+			continue
+		}
+		now := s.now()
+		for _, r := range s.chatPrefs.DueReminders(now) {
+			if s.cfg.Asleep(now) {
+				wake := time.Date(now.Year(), now.Month(), now.Day(),
+					s.cfg.SleepEnd, 0, 0, 0, now.Location())
+				if !wake.After(now) {
+					wake = wake.Add(24 * time.Hour)
+				}
+				_ = s.chatPrefs.AddReminder(r.Platform, r.SelfID, r.ChatType, r.ChatID, r.Text, wake)
+				continue
+			}
+			s.deliverReminder(r)
+		}
+	}
+}
+
+// deliverReminder turns a fired reminder into one natural bubble. With a
+// working agent the persona voices it herself; without one a plain
+// reminder line still lands the point instead of dropping it.
+func (s *Service) deliverReminder(r chatprefs.DueReminder) {
+	text := "对了，" + r.Text
+	if composed := s.composeReminderText(r); composed != "" {
+		text = composed
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := s.sender.Send(ctx, platform.Outbound{
+		ChatType: r.ChatType,
+		ChatID:   r.ChatID,
+		SelfID:   r.SelfID,
+		Chain:    message.Chain{message.Text(text)},
+	}); err != nil {
+		s.logger.Info("reminder send failed",
+			"chat_type", r.ChatType, "chat_id", r.ChatID,
+			"error", err.Error())
+		return
+	}
+	s.noteSpoke(r.ChatType, r.ChatID)
+	s.logger.Info("reminder delivered",
+		"chat_type", r.ChatType, "chat_id", r.ChatID,
+		"text", truncateRunes(r.Text, 30))
+}
+
+// composeReminderText asks the persona to voice her own reminder — the
+// fact she remembered is context, the output is what she would actually
+// say out loud.
+func (s *Service) composeReminderText(r chatprefs.DueReminder) string {
+	if s.providers == nil && s.agent == nil {
+		return ""
+	}
+	inner := "你之前给自己留了个提醒：「" + r.Text + "」。现在时间到了，" +
+		"像人一样自然地提起这件事（一两句话就行，别念提醒原文，别解释你在提醒）。"
+	if s.personas != nil && s.chatPrefs != nil {
+		persona := s.chatPrefs.PersonaName(r.Platform, r.SelfID, r.ChatType, r.ChatID)
+		if profile, ok := s.personas.Get(persona); ok && profile.SystemPrompt != "" {
+			inner = profile.SystemPrompt + "\n\n" + inner
+		}
+	}
+	request := domain.AgentRequest{
+		RequestID:     "remind:" + r.ChatID + ":" + truncateRunes(r.Text, 20),
+		Text:          inner,
+		RestrictTools: true,
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	var response domain.AgentResponse
+	var err error
+	if s.providers != nil {
+		response, err = s.providers.Reply(ctx, request)
+	} else {
+		response, err = s.agent.Reply(ctx, request)
+	}
+	if err != nil {
+		return ""
+	}
+	return truncateRunes(strings.TrimSpace(response.Reply), 120)
 }

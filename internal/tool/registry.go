@@ -33,8 +33,11 @@ type Call struct {
 }
 
 type Actor struct {
-	UserID    string
-	UserName  string // sender nickname, for user-tagged memories
+	UserID   string
+	UserName string // sender nickname, for user-tagged memories
+	// Scene is the inbound message text the tool call fired on —
+	// memory writes use it as the "当时你们在聊什么" anchor.
+	Scene     string
 	Platform  string
 	ChatType  string
 	ChatID    string

@@ -605,6 +605,7 @@ func (c *HTTPClient) executeTool(
 		Actor: tool.Actor{
 			UserID:     input.UserID,
 			UserName:   input.SenderName,
+			Scene:      actorScene(input.Text),
 			Platform:   input.Platform,
 			ChatType:   input.ChatType,
 			ChatID:     input.ChatID,
@@ -1385,4 +1386,14 @@ func contextError(err error) error {
 		return errors.New("agent API request canceled")
 	}
 	return err
+}
+
+// actorScene gives memory tools the inbound line a call fired on —
+// truncated so the scene anchor stays a hint, not a transcript.
+func actorScene(text string) string {
+	runes := []rune(strings.TrimSpace(text))
+	if len(runes) > 40 {
+		return string(runes[:40])
+	}
+	return string(runes)
 }

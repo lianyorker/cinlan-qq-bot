@@ -58,7 +58,17 @@ func TestSessionCompressionAndLearningStayInGroupScope(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("compress-1", "first", true))
 	service.handleEvent(context.Background(), testEvent("compress-2", "second", true))
 
-	snapshot := sessions.SnapshotState("qq-onebot:self:10001:group:30003")
+	// The post-compression feeling note lands asynchronously now —
+	// feelWorker needs a beat to voice and store it.
+	var snapshot session.Snapshot
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		snapshot = sessions.SnapshotState("qq-onebot:self:10001:group:30003")
+		if len(snapshot.History) >= 3 || time.Now().After(deadline) {
+			break
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if len(snapshot.History) != 3 ||
 		snapshot.Summary != "已讨论两个问题" ||
 		snapshot.Memory != "偏好简洁回答" {

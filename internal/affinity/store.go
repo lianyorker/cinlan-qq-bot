@@ -75,6 +75,26 @@ func GenericHint(level string) string {
 	return ""
 }
 
+// ScaleHint is the content-boundary half of intimacy — WHAT kind of
+// talk fits the distance, separate from GenericHint's tone guidance.
+// Intimacy decides the ceiling of what registers as normal: a stranger
+// gets polite small talk, someone close can hear her sulk.
+func ScaleHint(level string) string {
+	switch level {
+	case LevelStranger:
+		return "尺度：玩笑点到为止，不主动聊私人话题，不撒娇不卖萌——刚认识得有分寸。"
+	case LevelAcquaintance:
+		return "尺度：可以轻松闲聊，玩笑能开但别过头；私人话题他先提你再接。"
+	case LevelFamiliar:
+		return "尺度：互怼开玩笑随便来，关心可以主动——熟人没那么多讲究。"
+	case LevelClose:
+		return "尺度：亲昵称呼、撒娇、小情绪都可以上；他的私事你关心得理直气壮。"
+	case LevelIntimate:
+		return "尺度：基本放开——肉麻、任性、黏人、开玩笑都行，别把话说伤人就行。"
+	}
+	return ""
+}
+
 // dailyDeltaCap bounds how far one user's score can move per day —
 // [[AFFINITY:±N]] markers are clamped to ±5 each, but nothing stopped
 // a chatterbox from farming +5 all day long.
