@@ -159,6 +159,9 @@ func prosodyNormalizeVoiceClip(text string) string {
 	for _, pat := range voiceClipJunkPatterns {
 		text = pat.ReplaceAllString(text, "")
 	}
+	// Arabic numerals become spoken Chinese before the rune filter drops
+	// nothing — "3点" reads 三点, "2026年" reads 二零二六, "10086" 幺零零八六.
+	text = speechDigits(text)
 	// Keep only runes a voice can voice: letters, digits, CJK punctuation
 	// and the pause marks. Emoji, dingbats, control chars all go.
 	text = strings.Map(func(r rune) rune {
