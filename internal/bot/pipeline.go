@@ -390,6 +390,15 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			return nil
 		}
 	}
+	// She sleeps through ambient group chatter — only a direct @ or a
+	// real command wakes her at 3am, like a person whose phone is on
+	// silent. Private DMs still reach her (woken up).
+	if state.chatType == platform.ChatGroup && s.cfg.Asleep(s.now()) &&
+		!state.eventMentioned && !s.commandMessage(state.text) {
+		state.ignored = true
+		event.Stop("asleep_ambient")
+		return nil
+	}
 	state.text = strings.TrimSpace(state.text)
 	if state.chatType == platform.ChatPrivate {
 		state.sessionID = state.platform + ":self:" + state.selfID + ":private:" + state.chatID
@@ -1480,6 +1489,11 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if hint := mood.Hint(moodScore); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
+		// Rock-bottom mood earns the exit a real person always has:
+		// not answering. [[PASS]] sends nothing at all.
+		if moodScore <= -50 {
+			request.SystemPrompt += "\n\n你现在心情特别差——不想理他就整段只回 [[PASS]]（等于已读不回），或者只回一两个字打发。"
+		}
 		if hint := mood.Circadian(s.now()); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
@@ -1488,6 +1502,25 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if scene := mood.Scene(s.now(), moodScore); scene != "" {
 			request.SystemPrompt += "\n\n" + scene
 		}
+	}
+	// She sees filenames, not contents — a person who can't open an
+	// attachment says so instead of faking a reaction to a video she
+	// never watched.
+	mediaNote := ""
+	for _, c := range state.event.Chain {
+		switch c.Type {
+		case message.TypeVideo:
+			if mediaNote == "" {
+				mediaNote = "（他发了个视频——你只能看到文件名，内容看不了；好奇就问他里面是啥，别假装看过）"
+			}
+		case message.TypeFile:
+			if mediaNote == "" {
+				mediaNote = "（他发了个文件——你只能看到文件名，内容打不开；好奇就问他，别假装读过）"
+			}
+		}
+	}
+	if mediaNote != "" {
+		request.SystemPrompt += "\n\n" + mediaNote
 	}
 	// A person doesn't chat forever — after a long stretch she may wind
 	// the conversation down herself instead of waiting to be left on
@@ -2595,6 +2628,15 @@ func (s *Service) learnToneBan(state *flowState) {
 	if s.chatPrefs == nil || state.text == "" {
 		return
 	}
+	// Only people she's actually close to can shape her voice — a
+	// stranger yelling "别再说喵" doesn't get to censor her.
+	trusted := state.event.Privileged
+	if !trusted && s.affinity != nil {
+		trusted = s.affinity.Score(state.platform, state.selfID, state.userID) >= 20
+	}
+	if !trusted {
+		return
+	}
 	for _, m := range toneBanPattern.FindAllStringSubmatch(state.text, 3) {
 		ban := strings.Trim(m[1], "「」\"'‘’“”、，。！？!?,；;~～ ")
 		for _, suf := range []string{"了", "吧", "啊", "呀", "啦", "嘛", "的"} {
@@ -2681,8 +2723,81 @@ func (s *Service) noteTheirPromise(state *flowState) {
 			state.userID, state.event.SenderName,
 			truncateRunes(state.text, 30),
 			"他答应·"+who+"·"+snippet)
+		if at := promiseDueAt(snippet, s.now()); !at.IsZero() {
+			_ = s.chatPrefs.AddReminder(state.platform, state.selfID,
+				state.chatType, state.chatID,
+				"「"+who+"」答应过："+snippet, at)
+		}
 	}
 }
+
+// promiseDueAt digs a deadline out of a promise snippet — "明天还你"
+// fires tomorrow evening, "周三交" fires next Wednesday. A time-of-day
+// word narrows the hour; defaulting to evening matches how people
+// actually remember each other's promises.
+func promiseDueAt(text string, now time.Time) time.Time {
+	hour := 19
+	switch {
+	case strings.Contains(text, "早上"), strings.Contains(text, "上午"):
+		hour = 9
+	case strings.Contains(text, "中午"):
+		hour = 12
+	case strings.Contains(text, "下午"):
+		hour = 14
+	case strings.Contains(text, "晚上"), strings.Contains(text, "今晚"):
+		hour = 20
+	}
+	day := time.Date(now.Year(), now.Month(), now.Day(), hour, 0, 0, 0, now.Location())
+	switch {
+	case strings.Contains(text, "大后天"):
+		day = day.AddDate(0, 0, 3)
+	case strings.Contains(text, "后天"):
+		day = day.AddDate(0, 0, 2)
+	case strings.Contains(text, "明天"):
+		day = day.AddDate(0, 0, 1)
+	case strings.Contains(text, "今晚"), strings.Contains(text, "今天晚上"):
+		// Same evening — hour already resolved above.
+	default:
+		if m := promiseWeekdayRe.FindStringSubmatch(text); m != nil {
+			name := m[1]
+			if name == "" {
+				name = m[2]
+			}
+			target := promiseWeekdays[name]
+			delta := (target - int(now.Weekday()) + 7) % 7
+			if delta == 0 {
+				delta = 7
+			}
+			day = day.AddDate(0, 0, delta)
+		} else if m := promiseDateRe.FindStringSubmatch(text); m != nil {
+			mo, e1 := strconv.Atoi(m[1])
+			d, e2 := strconv.Atoi(m[2])
+			if e1 != nil || e2 != nil || mo < 1 || mo > 12 || d < 1 || d > 31 {
+				return time.Time{}
+			}
+			day = time.Date(now.Year(), time.Month(mo), d, hour, 0, 0, 0, now.Location())
+			if !day.After(now) {
+				day = day.AddDate(1, 0, 0)
+			}
+		} else {
+			return time.Time{}
+		}
+	}
+	if !day.After(now) {
+		return time.Time{}
+	}
+	return day
+}
+
+// promiseWeekdayRe catches 周三 / 星期五 style weekday anchors.
+var promiseWeekdayRe = regexp.MustCompile("周([一二三四五六日天])|星期([一二三四五六日天])")
+
+var promiseWeekdays = map[string]int{
+	"日": 0, "天": 0, "一": 1, "二": 2, "三": 3, "四": 4, "五": 5, "六": 6,
+}
+
+// promiseDateRe catches explicit dates: 10月30日 / 10-30 / 10.30.
+var promiseDateRe = regexp.MustCompile(`(\d{1,2})[月./-](\d{1,2})[日号]?`)
 
 // notePromise stores commitment-shaped outbound sentences as 承诺· facts.
 func (s *Service) notePromise(state *flowState) {

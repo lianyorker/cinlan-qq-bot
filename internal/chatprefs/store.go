@@ -1313,6 +1313,39 @@ func (s *Store) FactsSnapshot(platform, selfID, chatType, chatID string) []fact 
 	return append([]fact(nil), e.Facts...)
 }
 
+// ColdFact returns the memory she hasn't touched the longest — a fact
+// or archived trace whose anchor is at least minAge old. Proactive uses
+// it for the "suddenly remembered" beat instead of recycling the fresh
+// material she already saw yesterday.
+func (s *Store) ColdFact(platform, selfID, chatType, chatID string, now time.Time, minAge time.Duration) (fact, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil {
+		return fact{}, false
+	}
+	var coldest fact
+	var best time.Time
+	for _, bucket := range [][]fact{e.Facts, e.Archive} {
+		for _, f := range bucket {
+			anchor := f.LastSeenAt
+			if anchor.IsZero() {
+				anchor = f.CreatedAt
+			}
+			if anchor.IsZero() || now.Sub(anchor) < minAge {
+				continue
+			}
+			if best.IsZero() || anchor.Before(best) {
+				best, coldest = anchor, f
+			}
+		}
+	}
+	if best.IsZero() {
+		return fact{}, false
+	}
+	return coldest, true
+}
+
 // RecentFacts returns the newest keepAlways facts — the steady core of
 // what she still holds about this chat.
 func (s *Store) RecentFacts(platform, selfID, chatType, chatID string, keepAlways int) []fact {

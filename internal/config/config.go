@@ -302,6 +302,10 @@ type Config struct {
 	ProactivePrivate Allowlist
 	// ProactivePrivateIdle is the stricter silence floor for DMs.
 	ProactivePrivateIdle time.Duration
+	// ProactivePrivateMinAffinity lets non-whitelisted private chats
+	// receive proactive DMs once affinity reaches this score (60=亲近).
+	// 0 keeps the whitelist-only strict mode.
+	ProactivePrivateMinAffinity int
 	// ProactiveStaleMax drops chats whose last activity is this old —
 	// pinging someone silent for weeks reads weird, not cute.
 	ProactiveStaleMax time.Duration
@@ -662,6 +666,8 @@ func Load() (Config, error) {
 	cfg.ProactivePrivate = proactivePrivate
 	cfg.ProactivePrivateIdle = parseDuration(
 		"QQ_PROACTIVE_PRIVATE_IDLE", 2*time.Hour, true, &errs)
+	cfg.ProactivePrivateMinAffinity = parseInt(
+		"QQ_PROACTIVE_PRIVATE_MIN_AFFINITY", 60, 0, &errs)
 	cfg.ProactiveStaleMax = parseDuration(
 		"QQ_PROACTIVE_STALE_MAX", 168*time.Hour, true, &errs)
 

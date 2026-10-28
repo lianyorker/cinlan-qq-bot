@@ -534,8 +534,9 @@ func main() {
 			SleepStart:   cfg.SleepStart,
 			SleepEnd:     cfg.SleepEnd,
 			Allow:        proactiveAllow,
-			PrivateAllow: proactivePrivateAllow,
-			PrivateIdle:  cfg.ProactivePrivateIdle,
+			PrivateAllow:       proactivePrivateAllow,
+			PrivateIdle:        cfg.ProactivePrivateIdle,
+			PrivateMinAffinity: cfg.ProactivePrivateMinAffinity,
 			StaleMax:     cfg.ProactiveStaleMax,
 		},
 		proactive.Deps{

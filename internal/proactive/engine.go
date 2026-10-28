@@ -50,6 +50,10 @@ type Config struct {
 	// unprompted after 45 quiet minutes reads as needy; hours reads as
 	// thinking of them.
 	PrivateIdle time.Duration
+	// PrivateMinAffinity lets non-whitelisted private chats through once
+	// the user is this close — a friend she talks to daily can get a
+	// spontaneous DM without an operator opt-in. 0 keeps strict mode.
+	PrivateMinAffinity int
 	// StaleMax drops chats whose last activity is older than this —
 	// pinging someone silent for weeks reads weird, not cute. 0 = no cap.
 	StaleMax time.Duration
@@ -101,6 +105,7 @@ type Engine struct {
 	// or profile like can't refire every tick.
 	occasion map[string]string // chatKey -> last occasion date greeted
 	liked    map[string]string // userID  -> last like date
+	cold     map[string]string // chatKey -> last "suddenly remembered" date
 }
 
 func New(cfg Config, deps Deps) *Engine {
@@ -142,6 +147,7 @@ func New(cfg Config, deps Deps) *Engine {
 		hits:     map[string]int{},
 		occasion: map[string]string{},
 		liked:    map[string]string{},
+		cold:     map[string]string{},
 	}
 }
 
@@ -193,18 +199,26 @@ func (e *Engine) sweep(ctx context.Context) {
 			continue
 		}
 		for _, chatID := range rule.ChatIDs {
+			selfID := strings.TrimSpace(rule.SelfID)
+			if selfID == "" {
+				selfID = e.deps.DefaultSelfID
+			}
 			// Operator allowlists — groups default-open unless Allow is
-			// set; private chats are opt-in only via PrivateAllow.
+			// set; private chats need the whitelist OR real closeness:
+			// a friend she's already tight with can get a spontaneous
+			// DM the way a person reaches out, a stranger never can.
 			if chatType == platform.ChatGroup {
 				if e.cfg.Allow != nil && !e.cfg.Allow(chatID) {
 					continue
 				}
-			} else if e.cfg.PrivateAllow == nil || !e.cfg.PrivateAllow(chatID) {
-				continue
-			}
-			selfID := strings.TrimSpace(rule.SelfID)
-			if selfID == "" {
-				selfID = e.deps.DefaultSelfID
+			} else {
+				allowed := e.cfg.PrivateAllow != nil && e.cfg.PrivateAllow(chatID)
+				if !allowed && e.cfg.PrivateMinAffinity > 0 && e.deps.AffinityScore != nil {
+					allowed = e.deps.AffinityScore(plat, selfID, chatID) >= e.cfg.PrivateMinAffinity
+				}
+				if !allowed {
+					continue
+				}
 			}
 			// Calendar gestures run on their own track: a birthday or
 			// festival greeting fires once a day without waiting for the
@@ -374,6 +388,20 @@ func (e *Engine) asleep() bool {
 	return hour >= e.cfg.SleepStart || hour < e.cfg.SleepEnd
 }
 
+// markColdMemory stamps today's date so the "suddenly remembered" beat
+// fires at most once a day per chat.
+func (e *Engine) markColdMemory(plat, chatType, chatID string) bool {
+	key := plat + ":" + chatType + ":" + chatID
+	today := e.deps.Now().Format("2006-01-02")
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	if e.cold[key] == today {
+		return false
+	}
+	e.cold[key] = today
+	return true
+}
+
 // platformOf resolves a rule's platform, falling back to the engine's
 // own platform when the binding matches every adapter ("*").
 func (e *Engine) platformOf(rule binding.Rule) string {
@@ -539,6 +567,15 @@ func (e *Engine) fire(
 		if bans := e.deps.ChatPrefs.ToneBans(plat, selfID, chatType, chatID); len(bans) > 0 {
 			system += "\n他们让你别再说这些词：" +
 				strings.Join(bans, "、") + "——别用"
+		}
+		// The "suddenly remembered" beat — once a day she may surface
+		// a long-untouched memory, the way a person goes 哦对了 about
+		// something from weeks ago.
+		if e.markColdMemory(plat, chatType, chatID) && e.deps.Rand.Float64() < 0.4 {
+			if cf, ok := e.deps.ChatPrefs.ColdFact(plat, selfID, chatType, chatID, e.deps.Now(), 72*time.Hour); ok &&
+				security.TextSafeForPrompt(cf.Text) {
+				system += "\n你突然想起一件很久没提起的事：" + cf.Text + "（想顺着提就提，不想聊就算了）"
+			}
 		}
 	}
 	text := "（群里没人说话，你想说点什么就说）"
