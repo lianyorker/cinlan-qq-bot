@@ -128,8 +128,9 @@ func (f *fact) UnmarshalJSON(raw []byte) error {
 type chatEntry struct {
 	NotifyOff bool `json:"notify_off,omitempty"`
 	VoiceOff  bool `json:"voice_off,omitempty"`
-	// SingOn gates [[SING]] clips — default OFF until real singing lands.
-	SingOn     bool        `json:"sing_on,omitempty"`
+	// SingOff gates [[SING]] clips — enabled by default like voice;
+	// the model decides when singing fits the moment.
+	SingOff    bool        `json:"sing_off,omitempty"`
 	Persona    string      `json:"persona,omitempty"`
 	Notes      []string    `json:"notes,omitempty"`
 	ImageNotes []imageNote `json:"image_notes,omitempty"`
@@ -514,12 +515,12 @@ func (s *Store) VoiceEnabled(platform, selfID, chatType, chatID string) bool {
 	return e == nil || !e.VoiceOff
 }
 
-// SetSingEnabled toggles [[SING]] clips for the chat. Unlike voice,
-// singing defaults OFF — operators opt in with /唱歌 开启.
+// SetSingEnabled toggles [[SING]] clips for the chat. Enabled is the
+// default; the flag remains as a dormant kill switch.
 func (s *Store) SetSingEnabled(platform, selfID, chatType, chatID string, enabled bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.entry(platform, selfID, chatType, chatID).SingOn = enabled
+	s.entry(platform, selfID, chatType, chatID).SingOff = !enabled
 	return s.saveLocked()
 }
 
@@ -528,7 +529,7 @@ func (s *Store) SingEnabled(platform, selfID, chatType, chatID string) bool {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	e := s.lookup(platform, selfID, chatType, chatID)
-	return e != nil && e.SingOn
+	return e == nil || !e.SingOff
 }
 
 // SetPersona pins the active persona for the chat; empty restores the
