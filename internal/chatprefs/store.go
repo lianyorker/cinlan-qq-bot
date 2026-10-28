@@ -748,6 +748,11 @@ func scoreFactHybrid(f fact, query string, grams map[string]bool, vec *vecstore.
 	return int(float64(score) * factWeight(f))
 }
 
+// legacyFactPrefix marks memories that faded into a long-ago trace —
+// the model reads the prefix and naturally treats it as a distant
+// recollection rather than a recent fact.
+const legacyFactPrefix = "很久以前:"
+
 func archiveFactLocked(e *chatEntry, evicted fact) {
 	if strings.TrimSpace(evicted.Text) == "" {
 		return
@@ -759,15 +764,57 @@ func archiveFactLocked(e *chatEntry, evicted fact) {
 		}
 	}
 	if len(e.Archive) >= maxArchivePerChat {
-		oldest := 0
-		for i := range e.Archive {
-			if factAnchor(e.Archive[i]).Before(factAnchor(e.Archive[oldest])) {
-				oldest = i
-			}
-		}
-		e.Archive = append(e.Archive[:oldest], e.Archive[oldest+1:]...)
+		fadeOldestArchive(e)
 	}
 	e.Archive = append(e.Archive, evicted)
+}
+
+// fadeOldestArchive folds the stalest memories into one "long ago" line
+// instead of deleting them — old memories degrade to a vague trace like
+// a person's, never hard-truncated. The folded line inherits the oldest
+// anchor so it stays eligible for further fading on the next overflow,
+// and keeps a slightly lower weight so it surfaces weaker.
+func fadeOldestArchive(e *chatEntry) {
+	const foldCount = 10
+	if len(e.Archive) == 0 {
+		return
+	}
+	n := foldCount
+	if len(e.Archive) < n {
+		n = len(e.Archive)
+	}
+	idxs := make([]int, len(e.Archive))
+	for i := range idxs {
+		idxs[i] = i
+	}
+	sort.Slice(idxs, func(a, b int) bool {
+		return factAnchor(e.Archive[idxs[a]]).Before(factAnchor(e.Archive[idxs[b]]))
+	})
+	victims := idxs[:n]
+	oldestAnchor := factAnchor(e.Archive[victims[0]])
+	parts := make([]string, 0, n)
+	for _, vi := range victims {
+		t := strings.TrimSpace(strings.TrimPrefix(e.Archive[vi].Text, legacyFactPrefix))
+		runes := []rune(t)
+		if len(runes) > 40 {
+			runes = runes[:40]
+		}
+		if len(runes) > 0 {
+			parts = append(parts, string(runes))
+		}
+	}
+	sort.Sort(sort.Reverse(sort.IntSlice(victims)))
+	for _, vi := range victims {
+		e.Archive = append(e.Archive[:vi], e.Archive[vi+1:]...)
+	}
+	if len(parts) > 0 {
+		e.Archive = append(e.Archive, fact{
+			Text:       legacyFactPrefix + strings.Join(parts, ";"),
+			CreatedAt:  oldestAnchor,
+			LastSeenAt: oldestAnchor,
+			Weight:     0.8,
+		})
+	}
 }
 
 // AddFact stores a self-learned fact line for the chat. Duplicates are
@@ -1038,6 +1085,12 @@ func (s *Store) ForgetFact(platform, selfID, chatType, chatID, target string) er
 	}
 	if idx := bestFactMatch(e.Facts, target); idx >= 0 {
 		e.Facts = append(e.Facts[:idx], e.Facts[idx+1:]...)
+		return s.saveLocked()
+	}
+	// Deliberate forgetting reaches the Archive too — a memory the user
+	// asked her to drop should not resurface from the long-term pool.
+	if idx := bestFactMatch(e.Archive, target); idx >= 0 {
+		e.Archive = append(e.Archive[:idx], e.Archive[idx+1:]...)
 		return s.saveLocked()
 	}
 	return errors.New("没找到要忘的内容")

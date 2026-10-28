@@ -274,3 +274,58 @@ func TestRecallFactsSemanticAndArchivePool(t *testing.T) {
 		t.Fatalf("expected archived semantic memory to be recalled, got %#v", recalled)
 	}
 }
+
+
+func TestArchiveFadeFoldsOldestIntoLegacy(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return now })
+	e := s.entry("qq-onebot", "10001", "private", "u1")
+
+	// Fill the archive to capacity with distinct old memories.
+	for i := 0; i < maxArchivePerChat; i++ {
+		stamp := now.Add(-time.Duration(10000-i) * time.Minute)
+		e.Archive = append(e.Archive, fact{
+			Text:       "旧记忆片段" + string(rune('A'+i%26)) + string(rune('a'+i/26%26)),
+			CreatedAt:  stamp,
+			LastSeenAt: stamp,
+		})
+	}
+	before := len(e.Archive)
+	s.mu.Lock()
+	archiveFactLocked(e, fact{Text: "刚挤进来的新记忆", CreatedAt: now, LastSeenAt: now})
+	s.mu.Unlock()
+
+	// 10 oldest folded into 1 legacy line, then the evicted appended:
+	// before - 10 + 1 + 1.
+	want := before - 10 + 2
+	if len(e.Archive) != want {
+		t.Fatalf("archive len = %d, want %d", len(e.Archive), want)
+	}
+	legacy := 0
+	for _, f := range e.Archive {
+		if strings.HasPrefix(f.Text, "很久以前:") {
+			legacy++
+		}
+	}
+	if legacy != 1 {
+		t.Fatalf("legacy folded lines = %d, want 1", legacy)
+	}
+}
+
+func TestForgetFactReachesArchive(t *testing.T) {
+	s := newTestStore(t)
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	s.SetClock(func() time.Time { return now })
+	e := s.entry("qq-onebot", "10001", "private", "u1")
+	e.Archive = append(e.Archive, fact{
+		Text: "他讨厌吃香菜这件事", CreatedAt: now, LastSeenAt: now,
+	})
+
+	if err := s.ForgetFact("qq-onebot", "10001", "private", "u1", "讨厌吃香菜"); err != nil {
+		t.Fatalf("ForgetFact archive miss: %v", err)
+	}
+	if len(e.Archive) != 0 {
+		t.Fatalf("archive still holds %d facts", len(e.Archive))
+	}
+}
