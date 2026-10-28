@@ -594,7 +594,7 @@ func (s *Store) ImageForPrompt(platform, selfID, chatType, chatID, prompt string
 }
 
 const (
-	maxFactsPerChat       = 40
+	maxFactsPerChat       = 50
 	// Archive is the only real deletion point in the whole memory
 	// chain — 400 filled in months on a long-lived chat, so capacity
 	// was raised to 2000 (sqlite cost is negligible).

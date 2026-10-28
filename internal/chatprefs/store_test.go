@@ -248,7 +248,7 @@ func TestRecallFactsSemanticAndArchivePool(t *testing.T) {
 	if err := s.AddFact("qq-onebot", "10001", "private", "u1", "他经常熬夜通宵写代码"); err != nil {
 		t.Fatal(err)
 	}
-	for i := 0; i < 45; i++ {
+	for i := 0; i < maxFactsPerChat+5; i++ {
 		now = now.Add(time.Minute)
 		if err := s.AddFact("qq-onebot", "10001", "private", "u1", "日常琐事编号"+string(rune('A'+i%20))+string(rune('0'+i/20))); err != nil {
 			t.Fatal(err)
