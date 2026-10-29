@@ -895,7 +895,7 @@ func (s *Service) stageSession(_ context.Context, event *pipeline.Context) error
 		strings.HasSuffix(history[n-1].Content, state.promptText) {
 		history = history[:n-1]
 	}
-	state.history = foldSpam(history)
+	state.history = reframeInternalNotes(foldSpam(history))
 	state.summary = snapshot.Summary
 	if state.learning {
 		state.memory = snapshot.Memory
@@ -3694,6 +3694,31 @@ func foldSpam(history []domain.ChatMessage) []domain.ChatMessage {
 		i = j
 	}
 	return result
+}
+
+// internalNotePattern marks the stamped annotations AddObservation writes
+// — mood, action and room-event notes she records for herself. They live
+// in the user role by storage design, which made the model answer her own
+// memos as if the counterpart had spoken (a stray "[心情] …记着呢" earned
+// a riffed "记就记 哼"). Reframed on the prompt copy only.
+var internalNotePattern = regexp.MustCompile(
+	`^(\[\d{2}-\d{2} \d{2}:\d{2}\]) (\[(?:心情|动作|看到了没回|群事件|私聊事件|纠错|语气|承诺|其他机器人)[^\]]*\].*)$`,
+)
+
+// reframeInternalNotes re-tags her notebook entries in the model-facing
+// history so provenance is unmistakable: "（备注·非对方消息）" between the
+// timestamp and the original tag. Stored history is untouched — recent-
+// Feeling and the compressor still see the raw annotations.
+func reframeInternalNotes(history []domain.ChatMessage) []domain.ChatMessage {
+	for i := range history {
+		if history[i].Role != "user" {
+			continue
+		}
+		history[i].Content = internalNotePattern.ReplaceAllString(
+			history[i].Content, `$1（备注·非对方消息）$2`,
+		)
+	}
+	return history
 }
 
 // unrecognizedMarkerPattern matches [[UPPER]] / [[UPPER:content]] markers

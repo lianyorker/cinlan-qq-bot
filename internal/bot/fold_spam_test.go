@@ -88,3 +88,48 @@ func TestStripUnrecognizedMarkers(t *testing.T) {
 		}
 	}
 }
+
+func TestReframeInternalNotes(t *testing.T) {
+	history := []domain.ChatMessage{
+		userMsg("[10-30 00:29] 给我文字 你是不是搞错了"),
+		botMsg("[10-30 00:30] 知道啦凶什么嘛"),
+		userMsg("[10-30 00:42] [心情] 全记小本本上了，某人随口提过的事我可都记着呢"),
+		userMsg("[10-30 00:44] 休息了"),
+		userMsg("[10-30 00:44] [动作] 发了个表情"),
+		userMsg("[10-30 00:44] [其他机器人 3457] 哈哈哈"),
+	}
+	out := reframeInternalNotes(history)
+
+	if got := out[0].Content; got != "[10-30 00:29] 给我文字 你是不是搞错了" {
+		t.Fatalf("real user text must pass through: %q", got)
+	}
+	if got := out[3].Content; got != "[10-30 00:44] 休息了" {
+		t.Fatalf("real user text must pass through: %q", got)
+	}
+	if got := out[1].Content; !strings.HasPrefix(got, "[10-30 00:30] 知道啦") {
+		t.Fatalf("assistant turn must stay untouched: %q", got)
+	}
+	for _, idx := range []int{2, 4, 5} {
+		if !strings.Contains(out[idx].Content, "（备注·非对方消息）") {
+			t.Fatalf("internal note at %d must be re-tagged: %q", idx, out[idx].Content)
+		}
+	}
+	if !strings.Contains(out[2].Content, "[心情] 全记小本本上了") {
+		t.Fatalf("tag and body must survive reframing: %q", out[2].Content)
+	}
+}
+
+func TestReframeInternalNotesUnstampedLookalike(t *testing.T) {
+	// A user literally typing "[心情] hi" has no storage stamp — it must
+	// not be mistaken for a stored annotation.
+	history := []domain.ChatMessage{
+		userMsg("[心情] 我自己打的"),
+		userMsg("[中间的 4 条连发消息已省略]"),
+	}
+	out := reframeInternalNotes(history)
+	for i, m := range out {
+		if strings.Contains(m.Content, "非对方消息") {
+			t.Fatalf("unstamped lookalike at %d must not be re-tagged: %q", i, m.Content)
+		}
+	}
+}
