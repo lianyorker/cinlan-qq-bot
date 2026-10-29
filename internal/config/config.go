@@ -181,6 +181,13 @@ type Config struct {
 	SingVoice       string
 	SingAPIURL      string
 	SingModel       string
+	// SingStep* fields configure real song generation (StepFun
+	// stepaudio-3-music): SingStepAPIKey enables lyrics-to-song
+	// tasks; SingCaption is the style prompt for generated songs.
+	SingStepAPIKey string
+	SingStepAPIURL string
+	SingStepModel  string
+	SingCaption    string
 	VoiceDir        string
 	VoiceMaxRunes   int
 	VoiceCooldown   time.Duration
@@ -541,6 +548,11 @@ func Load() (Config, error) {
 	cfg.SingVoice = envOrAllowEmpty("SING_VOICE", "")
 	cfg.SingAPIURL = envOrAllowEmpty("SING_API_URL", "")
 	cfg.SingModel = envOrAllowEmpty("SING_MODEL", "breeze-tts-2-multilingual")
+	cfg.SingStepAPIKey = envOrAllowEmpty("SING_STEP_API_KEY", "")
+	cfg.SingStepAPIURL = envOrAllowEmpty("SING_STEP_API_URL", "https://api.stepfun.com")
+	cfg.SingStepModel = envOrAllowEmpty("SING_STEP_MODEL", "stepaudio-3-music-preview")
+	cfg.SingCaption = envOrAllowEmpty("SING_CAPTION",
+		"Chinese pop song, young female vocal, casual and natural, like humming a tune")
 	cfg.VoiceDir = envOr("VOICE_DIR", "data/voice")
 	cfg.VoiceCachePath = envOr("VOICE_CACHE_PATH", "runtime/voice-cache")
 	cfg.VoiceCacheMaxMB = parseInt("VOICE_CACHE_MAX_MB", 500, 0, &errs)

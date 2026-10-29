@@ -150,6 +150,14 @@ type Service struct {
 	// engine is configured (e.g. Breeze Blue); nil keeps singing on
 	// the plain voice provider.
 	singProvider voiceSynth
+	// songProvider generates real songs (melody + arrangement) from
+	// [[SING]] lyrics via an async music API — the actual "singing",
+	// as opposed to the sung-TTS approximation above.
+	songProvider songGenerator
+	// singBusy blocks concurrent song-generation per chat — each task
+	// burns 30s–3min of API work, so a chat gets one at a time.
+	singBusyMu sync.Mutex
+	singBusy   map[string]bool
 	voiceBudget  voiceBudget
 	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
 	// occasional human reaction instead of a hair-trigger.
@@ -599,6 +607,12 @@ func (s *Service) SetModerationStore(store *moderation.Store) {
 // [[SING]] clips on the plain voice provider.
 func (s *Service) SetSingProvider(provider voiceSynth) {
 	s.singProvider = provider
+}
+
+// SetSongProvider wires the real lyrics-to-song generator; non-nil
+// makes [[SING]] clips produce an actual song instead of styled TTS.
+func (s *Service) SetSongProvider(provider songGenerator) {
+	s.songProvider = provider
 }
 
 // SetVoiceProvider wires the TTS backend for [[VOICE]] reply clips; nil

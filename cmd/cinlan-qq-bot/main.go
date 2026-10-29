@@ -37,6 +37,7 @@ import (
 	"github.com/lianyorker/cinlan-qq-bot/internal/security"
 	"github.com/lianyorker/cinlan-qq-bot/internal/session"
 	"github.com/lianyorker/cinlan-qq-bot/internal/skill"
+	"github.com/lianyorker/cinlan-qq-bot/internal/song"
 	statusserver "github.com/lianyorker/cinlan-qq-bot/internal/status"
 	"github.com/lianyorker/cinlan-qq-bot/internal/subagent"
 	"github.com/lianyorker/cinlan-qq-bot/internal/tool"
@@ -378,6 +379,17 @@ func main() {
 			botService.SetSingProvider(singProvider)
 			logger.Info("sing tts enabled", "voice", cfg.SingVoice)
 		}
+	}
+	// SING_STEP_API_KEY turns [[SING]] into real song generation
+	// (melody + backing, minutes per clip) instead of sung TTS —
+	// Breeze stays as the graceful-degradation tier when it fails.
+	if cfg.SingStepAPIKey != "" {
+		botService.SetSongProvider(&song.StepFun{
+			APIURL: cfg.SingStepAPIURL,
+			APIKey: cfg.SingStepAPIKey,
+			Model:  cfg.SingStepModel,
+		})
+		logger.Info("song generation enabled", "model", cfg.SingStepModel)
 	}
 	mediaLimiter := tool.NewMediaLimiter(tool.MediaLimiterConfig{
 		Cooldown:      cfg.MediaToolCooldown,

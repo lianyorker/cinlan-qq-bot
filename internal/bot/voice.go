@@ -41,6 +41,13 @@ type voiceClip struct {
 	Rate    float64
 }
 
+// songGenerator renders real songs (melody + vocals + backing) from
+// lyrics — internal/song providers implement it. Generate may block
+// for minutes; callers run it off the reply hot path.
+type songGenerator interface {
+	Generate(ctx context.Context, lyrics, caption, outPath string) error
+}
+
 // voiceSynth is the text-to-speech seam; internal/tts providers implement it.
 type voiceSynth interface {
 	Synthesize(
@@ -480,6 +487,12 @@ func (s *Service) sendVoiceClips(
 		if len(runes) > maxRunes {
 			text = string(runes[:maxRunes])
 		}
+		// Real song generation runs minutes — ship it async so the
+		// rest of the reply (and this voice batch) isn't held hostage.
+		if clip.Singing && s.songProvider != nil {
+			s.deliverSongClip(plat, selfID, chatType, chatID, text, rate)
+			continue
+		}
 		provider := s.voiceProvider
 		clipVoice := voiceName
 		if clip.Singing && s.singProvider != nil {
@@ -594,6 +607,110 @@ func (s *Service) sendVoiceClips(
 			s.stats.sendErrors.Add(1)
 		}
 	}
+}
+
+// deliverSongClip kicks off real song generation for one [[SING]]
+// clip. Music APIs take 30s–3min, so the work runs in a detached
+// goroutine and the record lands as a late message — the text reply
+// goes out first, like a human saying "wait let me record it".
+// One generation per chat at a time: a second clip while busy is
+// dropped rather than doubling API spend.
+func (s *Service) deliverSongClip(
+	plat, selfID, chatType, chatID, lyrics string,
+	rate float64,
+) {
+	key := chatType + ":" + chatID
+	s.singBusyMu.Lock()
+	if s.singBusy == nil {
+		s.singBusy = map[string]bool{}
+	}
+	if s.singBusy[key] {
+		s.singBusyMu.Unlock()
+		s.logger.Info(
+			"song clip skipped, generation already running",
+			"chat", chatID,
+		)
+		return
+	}
+	s.singBusy[key] = true
+	s.singBusyMu.Unlock()
+	go func() {
+		defer func() {
+			s.singBusyMu.Lock()
+			delete(s.singBusy, key)
+			s.singBusyMu.Unlock()
+		}()
+		ctx, cancel := context.WithTimeout(
+			context.Background(), 6*time.Minute,
+		)
+		defer cancel()
+		path := fmt.Sprintf(
+			"%s/sing-%d-%s.mp3",
+			strings.TrimRight(s.cfg.VoiceDir, "/\\"),
+			time.Now().UnixNano(),
+			opaqueAttentionID(selfID, chatID, lyrics),
+		)
+		err := s.songProvider.Generate(
+			ctx, lyrics, s.cfg.SingCaption, path,
+		)
+		if err != nil {
+			s.logger.Warn(
+				"song generation failed, falling back to tts",
+				"chat", chatID, "error", err.Error(),
+			)
+			err = s.synthesizeSingFallback(
+				ctx, lyrics, path, rate,
+			)
+		}
+		var chain message.Chain
+		if err != nil {
+			// Every synth path failed — send the lyrics as text so
+			// the reply isn't silently lost.
+			chain = message.Chain{message.Text(lyrics)}
+		} else {
+			absPath, absErr := filepath.Abs(path)
+			if absErr != nil {
+				absPath = path
+			}
+			chain = message.Chain{
+				message.Record("file://" + filepath.ToSlash(absPath)),
+			}
+		}
+		if sendErr := s.sender.Send(ctx, platform.Outbound{
+			ChatType: chatType,
+			ChatID:   chatID,
+			SelfID:   selfID,
+			Chain:    chain,
+		}); sendErr != nil {
+			s.logger.Warn(
+				"song record send failed",
+				"chat", chatID, "error", sendErr.Error(),
+			)
+			s.stats.sendErrors.Add(1)
+		}
+	}()
+}
+
+// synthesizeSingFallback degrades a failed song generation to the
+// best available approximation: Breeze's sung-TTS first, then the
+// plain voice provider.
+func (s *Service) synthesizeSingFallback(
+	ctx context.Context, lyrics, path string, rate float64,
+) error {
+	if s.singProvider != nil {
+		if perf, ok := s.singProvider.(voicePerformer); ok {
+			if err := perf.SynthesizeWithPerformance(
+				ctx, "[唱歌] "+lyrics, path, "", rate,
+				singInstruction, singGuidance,
+			); err == nil {
+				return nil
+			}
+		}
+	}
+	if s.voiceProvider != nil {
+		return s.voiceProvider.Synthesize(ctx, lyrics, path, "", rate)
+	}
+	return fmt.Errorf("no voice provider configured")
 }
 
 // voiceCacheKey hashes the clip inputs into a stable filename — the same
