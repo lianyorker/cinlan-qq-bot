@@ -358,9 +358,10 @@ func TestSplitReplyNoBoundaryHardCuts(t *testing.T) {
 }
 
 func TestEnforceShortBubblesChopsLongCasual(t *testing.T) {
-	// 50-rune single bubble stuffing several intentions must chop into
-	// multiple short bubbles at punctuation.
-	long := "学什么，学怎么把你治得服服帖帖吗，哼，脑子要放空，带我玩呢，宝快去搬砖别摸鱼了"
+	// A long bubble stacking several terminated thoughts chops at real
+	// sentence ends — but a comma-run sentence is ONE human thought and
+	// must never be torn mid-clause.
+	long := "你去哪！我问你话呢？你倒是说啊。再不回我真走了。"
 	parts := enforceShortBubbles(long, 15)
 	if len(parts) < 2 {
 		t.Fatalf("expected chop into >=2 bubbles, got %#v", parts)
@@ -369,6 +370,15 @@ func TestEnforceShortBubblesChopsLongCasual(t *testing.T) {
 		if len([]rune(p)) > 20 { // 15 cap + small slack for boundary seek
 			t.Fatalf("bubble too long: %q (%d runes)", p, len([]rune(p)))
 		}
+	}
+}
+
+func TestEnforceShortBubblesCommaRunStaysWhole(t *testing.T) {
+	// A single comma-joined sentence is what a person actually types —
+	// commas are mid-sentence, not break points.
+	whole := "学什么，学怎么把你治得服服帖帖吗，哼，脑子要放空，带我玩呢，宝快去搬砖别摸鱼了"
+	if got := enforceShortBubbles(whole, 15); len(got) != 1 {
+		t.Fatalf("comma-run sentence must stay one bubble: %#v", got)
 	}
 }
 

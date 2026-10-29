@@ -101,10 +101,11 @@ func TestSplitMarkerLinesKeepsActions(t *testing.T) {
 			t.Fatalf("part %d = %q, want %q", i, parts[i], want[i])
 		}
 	}
-	// Unknown [[..]] still drops instead of leaking.
+	// Unknown [[..]] drops in place — the sentence stays one bubble,
+	// never torn into two parts.
 	parts = splitMarkerLines("前面[[FOO:x]]后面")
-	if len(parts) != 2 || parts[0] != "前面" || parts[1] != "后面" {
-		t.Fatalf("unknown marker split = %#v", parts)
+	if len(parts) != 1 || parts[0] != "前面后面" {
+		t.Fatalf("unknown marker must drop without splitting = %#v", parts)
 	}
 }
 

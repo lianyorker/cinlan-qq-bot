@@ -468,23 +468,34 @@ func signatureHit(part string, sigs []string) string {
 // splitMarkerLines splits a reply part into sub-parts so a marker mixed
 // with text ("嗯 抱着了\n[[MEME:害羞]]" or "骂你[[MEME:无语]]") becomes its
 // own bubble — resolvable markers turn into image sends, unresolvable
-// ones get skipped, and neither leaks as literal text.
+// ones get skipped, and neither leaks as literal text. Unknown [[..]]
+// scribbles (the model's [[轻笑]]-style action ticks) are deleted in
+// place instead of tearing the sentence — a person never splits a
+// message mid-word.
 func splitMarkerLines(part string) []string {
 	var result []string
+	var pending strings.Builder
+	flush := func() {
+		if seg := strings.TrimSpace(pending.String()); seg != "" {
+			result = append(result, seg)
+		}
+		pending.Reset()
+	}
 	cursor := 0
 	for _, span := range inlineMarkerPattern.FindAllStringIndex(part, -1) {
-		if segment := strings.TrimSpace(part[cursor:span[0]]); segment != "" {
-			result = append(result, segment)
-		}
 		marker := part[span[0]:span[1]]
-		if isMarkerPart(marker) {
-			result = append(result, marker)
+		pending.WriteString(part[cursor:span[0]])
+		if !isMarkerPart(marker) {
+			// Unknown marker — swallow it silently, keep the text whole.
+			cursor = span[1]
+			continue
 		}
+		flush()
+		result = append(result, marker)
 		cursor = span[1]
 	}
-	if tail := strings.TrimSpace(part[cursor:]); tail != "" {
-		result = append(result, tail)
-	}
+	pending.WriteString(part[cursor:])
+	flush()
 	return result
 }
 
@@ -761,7 +772,10 @@ func enforceShortBubbles(text string, maxRunes int) []string {
 			}
 		}
 		if cutAt < 0 || cutAt > len(runes) {
-			cutAt = maxRunes
+			// No sentence boundary in reach — send the rest whole. A
+			// mid-word guillotine reads robotic; a slightly long bubble
+			// just reads like a person typing one thought.
+			break
 		}
 		if part := strings.TrimSpace(string(runes[:cutAt])); part != "" {
 			parts = append(parts, part)
@@ -778,11 +792,12 @@ func enforceShortBubbles(text string, maxRunes int) []string {
 }
 
 // isSentenceEnd reports whether a rune is a natural bubble-break point —
-// the punctuation a person would end a short message on.
+// the punctuation a person would end a short message on. Mid-sentence
+// pauses (commas, 、, closing brackets, quotes) never count: nobody ends
+// a QQ message with a dangling comma.
 func isSentenceEnd(r rune) bool {
 	switch r {
-	case '，', ',', '。', '！', '!', '？', '?', '；', ';',
-		'~', '～', '…', '、', '）', ')', '」', '”':
+	case '。', '！', '!', '？', '?', '；', ';', '…', '~', '～':
 		return true
 	}
 	return false
