@@ -316,7 +316,7 @@ func planReplyParts(reply string, maxParts int) []string {
 	// unpunctuated boundaries) — a "\n"-joined stack of 5-char lines
 	// reads staged for the same reason a mid-bubble break does.
 	if len(parts) <= maxParts {
-		return parts
+		return foldIntroBubble(parts)
 	}
 	head := append([]string{}, parts[:maxParts-1]...)
 	rest := parts[maxParts-1:]
@@ -334,7 +334,33 @@ func planReplyParts(reply string, maxParts int) []string {
 			merged = foldJoin(rest)
 		}
 	}
-	return append(head, merged)
+	return foldIntroBubble(append(head, merged))
+}
+
+// foldIntroBubble folds a trivially short opener ("呐 给你", "好嘞") into
+// the following bubble. Fired alone ahead of a wall of content it reads
+// like a staged caption; riding the same message it reads like a person
+// pasting something over. Marker parts never merge — [[MEME]]/[[SELFIE]]
+// and friends must ride their own bubble.
+func foldIntroBubble(parts []string) []string {
+	if len(parts) < 2 {
+		return parts
+	}
+	intro := parts[0]
+	if strings.Contains(intro, "[[") || len([]rune(intro)) > 12 {
+		return parts
+	}
+	// A fragment ("呐 给你") reads like a caption taped onto the next
+	// bubble — fold it in. A punctuated sentence ("先看完整报错。")
+	// is a real first beat and stays its own message.
+	if strings.ContainsAny(intro, "。！？!?…") {
+		return parts
+	}
+	if strings.HasPrefix(strings.TrimSpace(parts[1]), "[[") {
+		return parts
+	}
+	parts[1] = intro + "\n\n" + parts[1]
+	return parts[1:]
 }
 
 // joinBubbleLines rejoins the lines inside one [[NEXT]] segment. On QQ,

@@ -42,8 +42,10 @@ func TestPlanReplyPartsFoldAddsCommaAtBareBoundary(t *testing.T) {
 func TestPlanReplyPartsOverflowMergeFoldsShortFragments(t *testing.T) {
 	// Over-budget [[NEXT]] fragments merge into the last bubble; short
 	// casual pieces fold comma-joined instead of stacking \n lines.
-	parts := planReplyParts("晚安啦宝[[NEXT]]终于肯睡了[[NEXT]]快钻被窝[[NEXT]]梦里见mua", 2)
-	want := []string{"晚安啦宝", "终于肯睡了，快钻被窝，梦里见mua"}
+	// (First fragment stays >12 runes — anything shorter folds into
+	// the payload bubble as a caption-style opener.)
+	parts := planReplyParts("晚安啦宝贝今天真的辛苦一整天了哦[[NEXT]]终于肯睡了[[NEXT]]快钻被窝[[NEXT]]梦里见mua", 2)
+	want := []string{"晚安啦宝贝今天真的辛苦一整天了哦", "终于肯睡了，快钻被窝，梦里见mua"}
 	if !reflect.DeepEqual(parts, want) {
 		t.Fatalf("parts = %#v want %#v", parts, want)
 	}
@@ -80,6 +82,39 @@ func TestSplitMarkerLinesKeepsPlainTextIntact(t *testing.T) {
 	want := []string{"第一行\n第二行"}
 	if !reflect.DeepEqual(parts, want) {
 		t.Fatalf("splitMarkerLines() = %#v, want %#v", parts, want)
+	}
+}
+
+func TestPlanReplyPartsFoldsShortIntroIntoPayload(t *testing.T) {
+	// "呐 给你" fired as its own bubble ahead of a content block reads
+	// staged — a person pastes the payload under the intro line.
+	parts := planReplyParts(
+		"呐 给你[[NEXT]]A young woman with wavy blue hair, photorealistic",
+		4,
+	)
+	if len(parts) != 1 ||
+		!strings.HasPrefix(parts[0], "呐 给你") ||
+		!strings.Contains(parts[0], "photorealistic") {
+		t.Fatalf("short intro should fold into payload, got %#v", parts)
+	}
+}
+
+func TestPlanReplyPartsKeepsLongIntroSeparate(t *testing.T) {
+	// A real sentence opener is its own breath — only trivially short
+	// openers fold into the payload bubble.
+	parts := planReplyParts(
+		"诶你等一下我找找那个东西哦[[NEXT]]找到了在这儿", 4)
+	if len(parts) != 2 {
+		t.Fatalf("long intro should stay its own bubble, got %#v", parts)
+	}
+}
+
+func TestPlanReplyPartsIntroNeverMergesIntoMarker(t *testing.T) {
+	// [[MEME]]/[[SELFIE]] must ride their own bubble — folding text in
+	// front of the marker would strand it as literal text.
+	parts := planReplyParts("呐 给你[[NEXT]][[MEME:害羞]]", 4)
+	if len(parts) != 2 || parts[1] != "[[MEME:害羞]]" {
+		t.Fatalf("marker bubble must stay intact, got %#v", parts)
 	}
 }
 
