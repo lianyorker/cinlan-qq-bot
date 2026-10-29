@@ -92,7 +92,7 @@ func (s *Service) describeMeme(path string) bool {
 	resp, err := s.agent.Reply(ctx, domain.AgentRequest{
 		RequestID: "meme-" + filepath.Base(path),
 		Text: "判断这张图是不是可以反复使用的表情包/梗图。" +
-			"如果是聊天截图、屏幕截图、普通照片、文档、界面截图等不适合当表情包的图，" +
+			"如果是聊天截图、屏幕截图、普通照片、真人照片或自拍、露骨/色情内容、文档、界面截图等不适合当表情包的图，" +
 			"只回答「跳过」两个字；如果是表情包，用不超过15个字的中文概括它的含义或情绪" +
 			"（比如：嘲笑、疑问、无语、加油、谢谢、吃瓜、生气），只输出概括本身。",
 		Chain: message.Chain{message.Attachment(
@@ -116,11 +116,13 @@ func (s *Service) describeMeme(path string) bool {
 }
 
 // pickMeme returns a stored meme matching query, or a random one when no
-// query is given or nothing matches. Pools are shared platform-wide:
-// a sticker collected in any chat may resurface in another — the
-// vision gate at collect time is what keeps non-meme junk out.
-// chatType/chatID are kept in the signature for callers but no longer
-// scope the draw.
+// query is given or nothing matches. Group draws mix every group-sourced
+// pool on the platform but never touch private pools — a picture collected
+// in a private chat must not resurface in a group. Private draws see the
+// full platform union: the recipient is the same person the images came
+// from, so nothing leaks outward. The vision gate at collect time keeps
+// non-meme junk out of the pool entirely. chatID is kept in the signature
+// for callers but no longer scopes the draw.
 func (s *Service) pickMeme(platform, chatType, chatID, query string) (string, error) {
 	if s.memeDir == "" {
 		return "", errors.New("meme pool disabled")
@@ -135,8 +137,14 @@ func (s *Service) pickMeme(platform, chatType, chatID, query string) (string, er
 	}
 	files := make([]candidate, 0, 128)
 	prefix := platform + "_"
+	groupPrefix := platform + "_group_"
 	for _, pd := range poolDirs {
 		if !pd.IsDir() || !strings.HasPrefix(pd.Name(), prefix) {
+			continue
+		}
+		// Group targets only mix group-sourced pools; a private pool
+		// (or an unscoped legacy dir) stays out of group chat.
+		if chatType == "group" && !strings.HasPrefix(pd.Name(), groupPrefix) {
 			continue
 		}
 		dir := filepath.Join(s.memeDir, pd.Name())
