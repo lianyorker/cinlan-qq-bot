@@ -431,6 +431,20 @@ func TestEnforceShortBubblesLeavesMarkerWhole(t *testing.T) {
 	}
 }
 
+func TestEnforceShortBubblesNeverChopsBoundaryFreePayload(t *testing.T) {
+	// An English prompt / code dump has no sentence-end punctuation —
+	// it is ONE payload. Chopping at a bare space butchers it mid-word
+	// ("wearing a" | "delicate silk…") which reads far more robotic
+	// than one long bubble.
+	prompt := "A cute 21-year-old girl named Qiqi, loose wavy blue hair falling over shoulders, wearing a delicate silk spaghetti strap camisole and shorts, sitting naturally on bed, hands visible and resting on sides, cozy indoor night lighting, detailed texture, masterpiece, 8k"
+	if len([]rune(prompt)) < 150 {
+		t.Skipf("prompt fixture must exceed the cap, got %d runes", len([]rune(prompt)))
+	}
+	if got := enforceShortBubbles(prompt, 90); len(got) != 1 {
+		t.Fatalf("boundary-free payload must stay one bubble: %#v", got)
+	}
+}
+
 func TestEnforceShortBubblesBusinessCapWider(t *testing.T) {
 	// 60-rune technical answer under an 80 cap stays one bubble.
 	tech := strings.Repeat("部署步骤说明", 10) // 60 runes

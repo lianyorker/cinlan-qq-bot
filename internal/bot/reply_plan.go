@@ -782,19 +782,14 @@ func enforceShortBubbles(text string, maxRunes int) []string {
 	var parts []string
 	for len(runes) > maxRunes {
 		cutAt := -1
-		// Prefer a sentence boundary in the back half of the window.
+		// Only a sentence boundary earns a cut — never a bare space.
+		// Boundary-free text (prompts, code, comma-lists) is ONE payload:
+		// chopping it at a space butchers it mid-word and dumps a
+		// half-sentence that reads far more robotic than a long bubble.
 		for i := maxRunes; i >= maxRunes/2; i-- {
 			if isSentenceEnd(runes[i]) {
 				cutAt = i + 1
 				break
-			}
-		}
-		if cutAt < 0 {
-			for i := maxRunes; i >= maxRunes/2; i-- {
-				if runes[i] == ' ' || runes[i] == '　' {
-					cutAt = i + 1
-					break
-				}
 			}
 		}
 		if cutAt < 0 || cutAt > len(runes) {
