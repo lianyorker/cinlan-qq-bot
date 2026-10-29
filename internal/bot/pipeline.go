@@ -1541,7 +1541,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	case s.cfg.Asleep(s.now()):
 		// Covered by the drowsy note — don't stack hints.
 	case moodScore >= 70 && roll < 0.35:
-		burstHint = "（这会儿你兴致挺高的——想多说就多发几泡，四五条连着发也行）"
+		burstHint = "（这会儿你兴致挺高的——有精神就多聊两句，不用憋着）"
 	case moodScore >= 0 && moodScore < 30 && roll < 0.5:
 		burstHint = "（没什么精神——回一句打发就行，敷衍点也像人）"
 	case roll < 0.10:
