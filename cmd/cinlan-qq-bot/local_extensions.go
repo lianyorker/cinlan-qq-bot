@@ -4,12 +4,10 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"log/slog"
 	"path/filepath"
 	"regexp"
 	"slices"
-	"strings"
 	"time"
 
 	"github.com/lianyorker/cinlan-qq-bot/internal/bot"
@@ -109,19 +107,10 @@ func registerLocalExtensions(
 		regexp.MustCompile(`表情包|来张|偷个|发个表情|偷表情`),
 	)
 
-	fileNotice := "要 zkmall 的 .sql 数据库文件直接加我好友，通过后自动发你文件。"
-	if uin := strings.TrimSpace(cfg.BotPublicUIN); uin != "" {
-		fileNotice = fmt.Sprintf(
-			"要 zkmall 的 .sql 数据库文件直接加我好友（QQ %s），通过后自动发你文件。",
-			uin,
-		)
-	}
-	service.RegisterKeywordFile(
-		regexp.MustCompile(`(?i)sql\s*文件|\.sql|数据库脚本`),
-		cfg.FriendFilePath,
-		fileNotice,
-		cfg.FriendFileGroups,
-	)
+	// File delivery goes through the deliver_file tool + file-catalog
+	// whitelist (registered in main.go when FILE_CATALOG_PATH is set) —
+	// the model decides whether the user actually wants a file, so pasted
+	// logs containing ".sql" never trigger an unsolicited upload.
 
 	isOperator := func(c *command.Context) bool {
 		// Operator = whitelist only: the binding's allowed_users (Privileged)
