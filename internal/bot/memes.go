@@ -64,25 +64,36 @@ func (s *Service) collectMemes(platform, chatType, chatID string, refs []string)
 			)
 			continue
 		}
-		s.describeMeme(path)
+		if !s.describeMeme(path) {
+			// Vision said this is not sticker material (chat screenshot,
+			// photo, document…) — drop it so it can never be resent as
+			// a 表情包. The file lives only for the tagging call.
+			_ = os.Remove(path)
+		}
 	}
 	evictOldMemes(dir, maxMemeFilesPerChat)
 }
 
-// describeMeme writes a short vision-generated tag next to the image file.
-func (s *Service) describeMeme(path string) {
+// describeMeme asks the vision model whether the image is sticker
+// material and writes the emotion tag sidecar when it is. Returns
+// false for screenshots/photos/documents — the caller deletes those.
+// When no agent is attached the image is kept untagged (old pools
+// still work without a vision path).
+func (s *Service) describeMeme(path string) bool {
 	if s.agent == nil {
-		return
+		return true
 	}
 	metaPath := path + ".meta"
 	if _, err := os.Stat(metaPath); err == nil {
-		return
+		return true
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	resp, err := s.agent.Reply(ctx, domain.AgentRequest{
 		RequestID: "meme-" + filepath.Base(path),
-		Text: "这是一张表情包/聊天图。请用不超过15个字的中文概括它的含义或情绪" +
+		Text: "判断这张图是不是可以反复使用的表情包/梗图。" +
+			"如果是聊天截图、屏幕截图、普通照片、文档、界面截图等不适合当表情包的图，" +
+			"只回答「跳过」两个字；如果是表情包，用不超过15个字的中文概括它的含义或情绪" +
 			"（比如：嘲笑、疑问、无语、加油、谢谢、吃瓜、生气），只输出概括本身。",
 		Chain: message.Chain{message.Attachment(
 			message.TypeImage,
@@ -90,13 +101,18 @@ func (s *Service) describeMeme(path string) {
 		)},
 	})
 	if err != nil || strings.TrimSpace(resp.Reply) == "" {
-		return
+		// Tagging unavailable — keep the image rather than starving the pool.
+		return true
 	}
 	tag := strings.TrimSpace(resp.Reply)
+	if strings.Contains(tag, "跳过") || strings.Contains(tag, "截图") {
+		return false
+	}
 	if len([]rune(tag)) > 40 {
 		tag = string([]rune(tag)[:40])
 	}
 	_ = os.WriteFile(metaPath, []byte(tag), 0o600)
+	return true
 }
 
 // pickMeme returns a stored meme matching query, or a random one when no
