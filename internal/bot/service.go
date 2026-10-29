@@ -1346,17 +1346,24 @@ func (s *Service) shouldQuoteReply(chatType string) bool {
 	return rand.Float64() < prob
 }
 
-// replyPartDelay simulates the time a person needs to type the part
-// about to be sent: the base beat plus ~30ms per rune (a longer message
-// visibly takes longer to type). Capped at 80 runes of extra time.
-// Jittered and slowed when she's sleepy so a burst of bubbles doesn't
-// land at a robotic fixed cadence.
+// replyPartDelay simulates the gap before the next bubble lands: a
+// short reaction beat plus the time it takes to actually type that
+// part (~90ms per rune — a 15-rune line costs ~1.7s, which is what
+// thumbs on glass look like). A rare mid-burst hesitation — re-reading
+// the thread, second thoughts — stretches one gap past the typing
+// time, the way a real burst isn't evenly spaced. Jittered and slowed
+// when she's sleepy so a burst of bubbles doesn't land at a robotic
+// fixed cadence.
 func (s *Service) replyPartDelay(part string) time.Duration {
 	if s.cfg.ReplyPartDelay <= 0 {
 		return 0
 	}
 	extraRunes := min(utf8.RuneCountInString(part), 80)
-	delay := s.cfg.ReplyPartDelay + time.Duration(extraRunes)*30*time.Millisecond
+	delay := s.cfg.ReplyPartDelay + time.Duration(extraRunes)*90*time.Millisecond
+	// Mid-burst hesitation — roughly one gap in eight breathes.
+	if rand.Float64() < 0.12 {
+		delay += 1200*time.Millisecond + time.Duration(rand.Int63n(int64(1800*time.Millisecond)))
+	}
 	// ±30% jitter — real typing rhythm wobbles.
 	jitter := time.Duration(rand.Int63n(int64(delay/3) + 1))
 	delay += jitter - delay/6
