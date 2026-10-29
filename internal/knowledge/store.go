@@ -23,6 +23,11 @@ const (
 	PromptContextKey = "agent.prompt_context"
 	maxDocumentBytes = 256 << 10
 	maxSnippetRunes  = 600
+	// remoteArmSkipScore: when the best local (BM25+concept) score already
+	// clears this bar the remote embedding arm is skipped entirely — the
+	// dense vector would only reshuffle an already-confident ranking.
+	remoteArmSkipScore = 2.5
+	remoteArmTimeout   = 1200 * time.Millisecond
 )
 
 type Document struct {
@@ -47,6 +52,11 @@ type indexedDocument struct {
 	terms    map[string]int
 	length   int
 	localVec []float32
+	// embed is the stable text fed to the remote embedder for this doc.
+	// Precomputed at index time — rebuilding it per query meant slicing
+	// a 600-rune string (and re-hashing it inside CachedVector) for every
+	// candidate on every search.
+	embed string
 }
 
 type Store struct {
@@ -118,6 +128,7 @@ func (s *Store) Add(document Document) error {
 		terms:    index,
 		length:   len(terms),
 		localVec: vecstore.LocalVector(fullText),
+		embed:    embedText(document),
 	}
 	vec := s.vec
 	s.mu.Unlock()
@@ -236,63 +247,113 @@ func (s *Store) search(
 		return nil
 	}
 
+	queryTerms = uniqueTerms(queryTerms)
 	averageLength := 0.0
 	for _, document := range docs {
 		averageLength += float64(document.length)
 	}
 	averageLength /= float64(len(docs))
 	queryVec := vecstore.LocalVector(query)
-	var queryRemoteVec []float32
-	if vecEng != nil && vecEng.RemoteEnabled() {
-		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-		queryRemoteVec, _ = vecEng.RemoteVector(ctx, query)
-		cancel()
+
+	// Document frequency per term, computed once over the scoped set.
+	// The old code rescanned every document for every term inside the
+	// per-document scoring loop — O(N²·T) map lookups per message.
+	df := make(map[string]int, len(queryTerms))
+	for _, term := range queryTerms {
+		count := 0
+		for _, document := range docs {
+			if document.terms[term] > 0 {
+				count++
+			}
+		}
+		df[term] = count
 	}
 
 	type scored struct {
-		hit Hit
+		doc   indexedDocument
+		score float64
 	}
 	results := make([]scored, 0, len(docs))
+	best := 0.0
 	for _, document := range docs {
-		score := bm25(document, queryTerms, docs, averageLength)
+		score := bm25(document, queryTerms, df, len(docs), averageLength)
 		if cos := vecstore.Cosine(queryVec, document.localVec); cos >= 0.18 {
 			score += cos * 1.5
 		}
-		if len(queryRemoteVec) > 0 && vecEng != nil {
-			// Cache-only dense arm: documents were warmed at index time on
-			// their stable embedText, so this loop never touches the network.
-			if docRemote, ok := vecEng.CachedVector(embedText(document.Document)); ok && len(docRemote) == len(queryRemoteVec) {
-				if rcos := vecstore.Cosine(queryRemoteVec, docRemote); rcos >= 0.35 {
-					score += rcos * 3.0
+		if score > best {
+			best = score
+		}
+		results = append(results, scored{doc: document, score: score})
+	}
+
+	// Remote dense arm, adaptive: a confident local hit skips the
+	// per-search embedding HTTP call entirely (the query is still warmed
+	// so a later ambiguous phrasing finds the cache hot). Weak local
+	// retrieval is exactly where the dense arm earns its keep, so only
+	// then do we spend up to remoteArmTimeout on the query vector.
+	if vecEng != nil && vecEng.RemoteEnabled() {
+		if best >= remoteArmSkipScore {
+			vecEng.WarmAsync(query)
+		} else {
+			ctx, cancel := context.WithTimeout(context.Background(), remoteArmTimeout)
+			queryRemoteVec, _ := vecEng.RemoteVector(ctx, query)
+			cancel()
+			if len(queryRemoteVec) > 0 {
+				for index := range results {
+					// Cache-only doc arm: docs were warmed at index time on
+					// their stable embedText, so this never hits the network.
+					if docRemote, ok := vecEng.CachedVector(results[index].doc.embed); ok && len(docRemote) == len(queryRemoteVec) {
+						if rcos := vecstore.Cosine(queryRemoteVec, docRemote); rcos >= 0.35 {
+							results[index].score += rcos * 3.0
+						}
+					}
 				}
 			}
 		}
-		if score <= 0 {
-			continue
-		}
-		results = append(results, scored{hit: Hit{
-			DocumentID: document.ID,
-			Collection: document.Collection,
-			Title:      document.Title,
-			Source:     document.Source,
-			Snippet:    snippet(document.Content, queryTerms),
-			Score:      score,
-		}})
 	}
+
 	sort.Slice(results, func(i, j int) bool {
-		if results[i].hit.Score == results[j].hit.Score {
-			return results[i].hit.DocumentID < results[j].hit.DocumentID
+		if results[i].score == results[j].score {
+			return results[i].doc.ID < results[j].doc.ID
 		}
-		return results[i].hit.Score > results[j].hit.Score
+		return results[i].score > results[j].score
 	})
 	if len(results) > limit {
 		results = results[:limit]
 	}
-	hits := make([]Hit, len(results))
-	for index, result := range results {
-		hits[index] = result.hit
+	// Snippets only materialize for the top-K winners — building them
+	// per candidate meant a full rune slice of every document's content
+	// on every search.
+	hits := make([]Hit, 0, len(results))
+	for _, result := range results {
+		if result.score <= 0 {
+			continue
+		}
+		hits = append(hits, Hit{
+			DocumentID: result.doc.ID,
+			Collection: result.doc.Collection,
+			Title:      result.doc.Title,
+			Source:     result.doc.Source,
+			Snippet:    snippet(result.doc.Content, queryTerms),
+			Score:      result.score,
+		})
 	}
 	return hits
+}
+
+// uniqueTerms dedupes query terms once — callers pass a fresh tokenize()
+// slice so the in-place filter is safe.
+func uniqueTerms(terms []string) []string {
+	seen := make(map[string]struct{}, len(terms))
+	out := terms[:0]
+	for _, term := range terms {
+		if _, ok := seen[term]; ok {
+			continue
+		}
+		seen[term] = struct{}{}
+		out = append(out, term)
+	}
+	return out
 }
 
 func (s *Store) LoadDir(root string) (int, error) {
@@ -420,31 +481,21 @@ func documentCollection(relative string) string {
 	return strings.SplitN(relative, "/", 2)[0]
 }
 
-func bm25(document indexedDocument, query []string, all []indexedDocument, averageLength float64) float64 {
+func bm25(document indexedDocument, query []string, df map[string]int, nDocs int, averageLength float64) float64 {
 	const (
 		k1 = 1.2
 		b  = 0.75
 	)
 	score := 0.0
-	seen := make(map[string]struct{}, len(query))
 	for _, term := range query {
-		if _, ok := seen[term]; ok {
-			continue
-		}
-		seen[term] = struct{}{}
 		tf := document.terms[term]
 		if tf == 0 {
 			continue
 		}
-		df := 0
-		for _, candidate := range all {
-			if candidate.terms[term] > 0 {
-				df++
-			}
-		}
+		docFreq := df[term]
 		idf := 1.0
-		if df > 0 {
-			idf = mathLog((float64(len(all))-float64(df)+0.5)/(float64(df)+0.5) + 1)
+		if docFreq > 0 {
+			idf = mathLog((float64(nDocs)-float64(docFreq)+0.5)/(float64(docFreq)+0.5) + 1)
 		}
 		denominator := float64(tf) + k1*(1-b+b*float64(document.length)/averageLength)
 		score += idf * (float64(tf) * (k1 + 1) / denominator)
