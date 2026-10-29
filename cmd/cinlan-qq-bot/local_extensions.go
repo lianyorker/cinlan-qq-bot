@@ -87,6 +87,13 @@ func registerLocalExtensions(
 	); registerErr != nil {
 		logger.Error("failed to register web search tool", "error", registerErr)
 	}
+	// Page reader shares the search proxy — opening links is the same
+	// scoped egress, never a global reroute.
+	if registerErr := service.ToolRegistry().Register(
+		interaction.FetchURLTool(cfg.WebSearchProxy),
+	); registerErr != nil {
+		logger.Error("failed to register fetch url tool", "error", registerErr)
+	}
 	// channel_action bridges the agent to the platform Call surface —
 	// reads open to everyone, writes/moderation admin-gated.
 	if platforms != nil {

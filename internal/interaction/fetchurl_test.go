@@ -1,0 +1,59 @@
+package interaction
+
+import (
+	"net/url"
+	"testing"
+)
+
+func TestRewriteXURLStatusToFxTwitter(t *testing.T) {
+	u, err := url.Parse("https://x.com/thsottiaux/status/1963012903277412618?s=20")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rewriteXURL(u)
+	want := "https://api.fxtwitter.com/thsottiaux/status/1963012903277412618"
+	if got.String() != want {
+		t.Fatalf("status url → %s, want %s", got, want)
+	}
+}
+
+func TestRewriteXURLProfileToSyndication(t *testing.T) {
+	u, err := url.Parse("https://twitter.com/thsottiaux")
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := rewriteXURL(u)
+	if got.Hostname() != "syndication.twitter.com" {
+		t.Fatalf("profile url → %s, want syndication host", got)
+	}
+}
+
+func TestRewriteXURLLeavesOtherHostsAlone(t *testing.T) {
+	raw := "https://example.com/x/status/1"
+	u, _ := url.Parse(raw)
+	if got := rewriteXURL(u); got.String() != raw {
+		t.Fatalf("non-x url rewritten to %s", got)
+	}
+}
+
+func TestPublicFetchURLRejectsInternal(t *testing.T) {
+	for _, raw := range []string{
+		"http://127.0.0.1:3001/send_group_msg", // NapCat lives here
+		"http://localhost:8080/admin",
+		"http://192.168.1.1/",
+		"http://10.0.0.5/",
+		"http://169.254.169.254/latest/meta-data",
+		"file:///etc/passwd",
+	} {
+		if _, err := publicFetchURL(raw); err == nil {
+			t.Fatalf("%s should be refused", raw)
+		}
+	}
+}
+
+func TestPublicFetchURLAllowsHTTPS(t *testing.T) {
+	u, err := publicFetchURL("https://example.com/")
+	if err != nil || u == nil {
+		t.Fatalf("public https refused: %v", err)
+	}
+}
