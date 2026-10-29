@@ -116,13 +116,16 @@ func (s *Service) describeMeme(path string) bool {
 }
 
 // pickMeme returns a stored meme matching query, or a random one when no
-// query is given or nothing matches.
+// query is given or nothing matches. Pools are shared platform-wide:
+// a sticker collected in any chat may resurface in another — the
+// vision gate at collect time is what keeps non-meme junk out.
+// chatType/chatID are kept in the signature for callers but no longer
+// scope the draw.
 func (s *Service) pickMeme(platform, chatType, chatID, query string) (string, error) {
-	dir := s.memeDirFor(platform, chatType, chatID)
-	if dir == "" {
+	if s.memeDir == "" {
 		return "", errors.New("meme pool disabled")
 	}
-	entries, err := os.ReadDir(dir)
+	poolDirs, err := os.ReadDir(s.memeDir)
 	if err != nil {
 		return "", errors.New("还没偷到表情包，多发点图我存一下")
 	}
@@ -130,32 +133,43 @@ func (s *Service) pickMeme(platform, chatType, chatID, query string) (string, er
 		name  string
 		score int
 	}
-	files := make([]candidate, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || strings.HasSuffix(e.Name(), ".meta") {
+	files := make([]candidate, 0, 128)
+	prefix := platform + "_"
+	for _, pd := range poolDirs {
+		if !pd.IsDir() || !strings.HasPrefix(pd.Name(), prefix) {
 			continue
 		}
-		score := 0
-		if query != "" {
-			if meta, err := os.ReadFile(
-				filepath.Join(dir, e.Name()+".meta"),
-			); err == nil {
-				for _, word := range strings.FieldsFunc(
-					query,
-					func(r rune) bool {
-						return unicode.IsSpace(r) || unicode.IsPunct(r)
-					},
-				) {
-					if word != "" && strings.Contains(string(meta), word) {
+		dir := filepath.Join(s.memeDir, pd.Name())
+		entries, err := os.ReadDir(dir)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			if e.IsDir() || strings.HasSuffix(e.Name(), ".meta") {
+				continue
+			}
+			score := 0
+			if query != "" {
+				if meta, err := os.ReadFile(
+					filepath.Join(dir, e.Name()+".meta"),
+				); err == nil {
+					for _, word := range strings.FieldsFunc(
+						query,
+						func(r rune) bool {
+							return unicode.IsSpace(r) || unicode.IsPunct(r)
+						},
+					) {
+						if word != "" && strings.Contains(string(meta), word) {
+							score++
+						}
+					}
+					if strings.Contains(string(meta), query) {
 						score++
 					}
 				}
-				if strings.Contains(string(meta), query) {
-					score++
-				}
 			}
+			files = append(files, candidate{filepath.Join(dir, e.Name()), score})
 		}
-		files = append(files, candidate{e.Name(), score})
 	}
 	if len(files) == 0 {
 		return "", errors.New("还没偷到表情包，多发点图我存一下")
@@ -178,7 +192,7 @@ func (s *Service) pickMeme(platform, chatType, chatID, query string) (string, er
 			best = pool[rand.Intn(len(pool))]
 		}
 	}
-	return filepath.Join(dir, best.name), nil
+	return best.name, nil
 }
 
 // saveMemeImage downloads or copies an image into dir under a content-hash
