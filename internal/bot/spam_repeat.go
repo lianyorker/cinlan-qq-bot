@@ -177,6 +177,9 @@ func (s *Service) noteGameMove(chatKey string) {
 // answers her recent one — chain carries an rps/dice segment and an
 // invite is still warm in this chat.
 func (s *Service) pendingGameMove(state *flowState) bool {
+	if !s.cfg.FollowUp {
+		return false
+	}
 	hasMove := false
 	for _, component := range state.event.Chain {
 		if component.Type == message.TypeRPS || component.Type == message.TypeDice {
@@ -204,6 +207,9 @@ const followUpWindow = 3 * time.Minute
 // the drift-off gate owns that user again, and messages aimed at other
 // members never count as her continuation.
 func (s *Service) pendingFollowUp(state *flowState) bool {
+	if !s.cfg.FollowUp {
+		return false
+	}
 	if state.chatType != platform.ChatGroup {
 		return false
 	}
@@ -434,6 +440,9 @@ func (s *Service) rollEchoChance(selfID, chatType, chatID string) int {
 // annotates the prompt so the persona can riff, echo, or lob a line of
 // her own rather than parroting verbatim.
 func (s *Service) tryEchoJoin(state *flowState) string {
+	if !s.cfg.FollowUp {
+		return ""
+	}
 	if state.chatType != platform.ChatGroup {
 		return ""
 	}

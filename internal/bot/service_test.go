@@ -808,6 +808,7 @@ func testBotConfig(t *testing.T) config.Config {
 		GroupAllowlist:   allowlist,
 		PrivateAllowlist: privateAllowlist,
 		RequireMention:   true,
+		FollowUp:         true,
 		QuoteReply:       true,
 		QuoteGroupProb:   1,
 		GroupAtSender:    true,

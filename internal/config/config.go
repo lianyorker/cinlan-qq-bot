@@ -286,6 +286,11 @@ type Config struct {
 	ReadDelayMax     time.Duration
 	MoodEnabled      bool          // per-chat mood meter + prompt hint
 	ReadNoReply      bool          // private: chance to see a filler msg and not reply
+	// FollowUp is the master switch for unsolicited replies in groups:
+	// the 3-min pendingFollowUp window, bare game-move replies, and
+	// meme-chain echo joins. false = she only speaks when @'d or
+	// commanded (or in private, where every message reaches her).
+	FollowUp         bool
 	SleepStart       int           // hour sleep window begins (-1 disables)
 	SleepEnd         int           // hour sleep window ends
 	Proactive        bool          // ambient opener engine
@@ -644,6 +649,7 @@ func Load() (Config, error) {
 		"QQ_READ_DELAY_MAX", 2*time.Second, true, &errs)
 	cfg.MoodEnabled = parseBool("QQ_MOOD_ENABLED", true, &errs)
 	cfg.ReadNoReply = parseBool("QQ_READ_NO_REPLY", true, &errs)
+	cfg.FollowUp = parseBool("QQ_FOLLOW_UP", true, &errs)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
 	cfg.Proactive = parseBool("QQ_PROACTIVE", false, &errs)
