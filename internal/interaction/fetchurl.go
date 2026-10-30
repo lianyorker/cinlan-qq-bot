@@ -151,12 +151,12 @@ func runFetchURL(ctx context.Context, pool *ProxyPool, raw string) (string, erro
 				Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
 			}
 		}
-		text, transportFail, err := fetchOnce(ctx, client, u)
+		text, rotate, err := fetchOnce(ctx, client, u)
 		if err == nil {
 			return text, nil
 		}
 		lastErr = err
-		if transportFail && entry != nil {
+		if rotate && entry != nil {
 			pool.markDead(entry)
 			continue
 		}
@@ -165,11 +165,28 @@ func runFetchURL(ctx context.Context, pool *ProxyPool, raw string) (string, erro
 	return "", lastErr
 }
 
-// fetchOnce performs the single-request fetch and reports whether a
-// failure was transport-level (proxy's fault) so the caller can rotate.
+// errRetryableStatus wraps HTTP statuses that blame the exit IP, not
+// the request — rate limits and CDN bans come and go per egress, so
+// they deserve the same proxy rotation as transport failures.
+var errRetryableStatus = errors.New("egress IP got a retryable HTTP status")
+
+func retryableStatus(code int) bool {
+	switch code {
+	case http.StatusTooManyRequests,
+		http.StatusForbidden,
+		http.StatusServiceUnavailable:
+		return true
+	}
+	return false
+}
+
+// fetchOnce performs the single-request fetch and reports whether the
+// failure is egress-specific — transport error or a rate-limit/ban
+// status — meaning the caller should rotate to another proxy.
 func fetchOnce(ctx context.Context, client *http.Client, u *url.URL) (string, bool, error) {
 	text, err := fetchWithClient(ctx, client, u)
-	return text, isTransportErr(err), err
+	rotate := isTransportErr(err) || errors.Is(err, errRetryableStatus)
+	return text, rotate, err
 }
 
 // fetchWithClient is the previous runFetchURL body minus proxy setup —
@@ -199,6 +216,9 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		if retryableStatus(resp.StatusCode) {
+			return "", fmt.Errorf("%w: HTTP %d", errRetryableStatus, resp.StatusCode)
+		}
 		return "", fmt.Errorf("HTTP %d", resp.StatusCode)
 	}
 	ctype := strings.ToLower(resp.Header.Get("Content-Type"))
