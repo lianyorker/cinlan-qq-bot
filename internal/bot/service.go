@@ -344,6 +344,14 @@ func NewWithRuntime(
 			logger.Warn("failed to read base prompt file", "path", path, "error", err.Error())
 		}
 	}
+	if service.basePrompt == "" {
+		// No file on disk (or unreadable) — fall back to the copy baked
+		// into the binary so behavior rules survive a bare checkout.
+		service.basePrompt = strings.TrimSpace(embeddedBasePrompt)
+		if service.basePrompt != "" {
+			logger.Info("base prompt loaded from embedded default")
+		}
+	}
 	service.bannedWords = newOutboundBannedWords(strings.TrimSpace(cfg.OutboundBannedWordsFile))
 	service.judgeProvider = strings.TrimSpace(cfg.JudgeProvider)
 	service.feelQueue = make(chan feelJob, 32)

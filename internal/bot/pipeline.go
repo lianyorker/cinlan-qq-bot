@@ -1119,6 +1119,12 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		request.SystemPrompt += s.basePrompt
 	}
+	// Marker contract rides with the binary — a bare checkout must still
+	// know which [[ACTION]] markers the reply parser understands.
+	if request.SystemPrompt != "" {
+		request.SystemPrompt += "\n\n"
+	}
+	request.SystemPrompt += protocolBlock
 	// Binding-scoped rules (storefront pointers, card-shop URLs) go
 	// after the shared base so only the matched domain hears them.
 	if state.extraPrompt != "" {
