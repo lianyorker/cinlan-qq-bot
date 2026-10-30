@@ -37,8 +37,9 @@ func FetchURLTool(pool *ProxyPool) tool.Definition {
 			"看搜索结果里某个页面具体写了什么时用。x.com/twitter 链接直接丢进来就行：" +
 			"单条推文链接能读到正文；个人主页链接（x.com/用户名）能拿到账号档案" +
 			"（简介/粉丝数/注册时间等，没有推文列表）。bsky.app 个人主页链接能拿到最近帖子正文" +
-			"（x 档案里常挂着对方的 bsky 主页，想看最近动态就去抓它）。只知道某人推名" +
-			"就把 https://x.com/<用户名> 拼出来抓。",
+			"（x 档案里常挂着对方的 bsky 主页）。问 tibo/@thsottiaux 最近发了什么" +
+			"就抓 https://codexradar.com/ ，那是他的推文镜像站，有原文+翻译+解读。" +
+			"只知道某人推名就把 https://x.com/<用户名> 拼出来抓。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -278,7 +279,13 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 	default:
 		return "", fmt.Errorf("二进制内容读不了（%s)", ctype)
 	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, fetchURLMaxBody))
+	// codexradar pages embed the tibo tweet archive ~1.4MB into a
+	// ~1.9MB document — the normal 256KB budget never reaches it.
+	bodyLimit := int64(fetchURLMaxBody)
+	if strings.Contains(strings.ToLower(u.Hostname()), "codexradar") {
+		bodyLimit = 4 << 20
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, bodyLimit))
 	if err != nil {
 		return "", err
 	}
@@ -402,6 +409,7 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 			}
 		}
 	case strings.Contains(ctype, "text/html"), strings.Contains(ctype, "xhtml"):
+		text = isolateTiboSection(text)
 		text = htmlToReadableText(text)
 	}
 	text = strings.TrimSpace(text)
@@ -413,6 +421,24 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 		text = string(runes[:fetchURLMaxRunes]) + "\n…（截断）"
 	}
 	return text, nil
+}
+
+// isolateTiboSection cuts codexradar's #tibo-updates block out of the
+// page: tweets live in that collapsed section while the rest is nav,
+// dashboards and ads that would eat the text budget. The section runs
+// ~108KB, so a fixed 160KB window covers the whole archive without
+// depending on where the next dashboard anchor happens to sit. Pages
+// without the anchor pass through untouched.
+func isolateTiboSection(page string) string {
+	i := strings.Index(page, `id="tibo-updates"`)
+	if i < 0 {
+		return page
+	}
+	seg := page[i:]
+	if len(seg) > 160<<10 {
+		seg = seg[:160<<10]
+	}
+	return seg
 }
 
 // formatBskyPost renders one Bluesky feed item as a chat-friendly

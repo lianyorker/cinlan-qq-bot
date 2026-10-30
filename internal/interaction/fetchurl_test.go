@@ -72,6 +72,39 @@ func TestFetchRendersBskyFeed(t *testing.T) {
 	}
 }
 
+func TestIsolateTiboSection(t *testing.T) {
+	page := "<html><body>nav junk " +
+		`<section id="tibo-updates"><p data-tibo-post-id="1">` +
+		"hello tweet</p></section><div>footer</div></body></html>"
+	got := isolateTiboSection(page)
+	if !strings.Contains(got, "hello tweet") ||
+		strings.Contains(got, "nav junk") {
+		t.Fatalf("section isolate failed: %q", got[:80])
+	}
+	if out := isolateTiboSection("<html>plain</html>"); out != "<html>plain</html>" {
+		t.Fatalf("no-anchor page should pass through, got %q", out)
+	}
+}
+
+func TestFetchRendersRadarTiboSection(t *testing.T) {
+	page := "<html><body><div>other stuff</div>" +
+		`<section id="tibo-updates"><article data-tibo-post-id="99">` +
+		"<p>Tibo X · 10月30日</p><p>@ajambrosino No hype, just shipping</p>" +
+		"</article></section></body></html>"
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "text/html; charset=utf-8")
+			_, _ = w.Write([]byte(page))
+		}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	text, err := fetchWithClient(context.Background(), srv.Client(), u)
+	if err != nil || !strings.Contains(text, "No hype") ||
+		strings.Contains(text, "other stuff") {
+		t.Fatalf("radar section render: %q err=%v", text, err)
+	}
+}
+
 func TestRewriteXURLLeavesOtherHostsAlone(t *testing.T) {
 	raw := "https://example.com/x/status/1"
 	u, _ := url.Parse(raw)
