@@ -106,7 +106,7 @@ func moodEmotion(score int) string {
 // voicePromptNote covers ordinary voice plus the privileged "say it for
 // me" case — merged from the old voicePromptNote+voicePrivilegedRequestNote
 // pair so the prompt stays short.
-const voicePromptNote = `你可以发语音：台词写进 [[VOICE]]词[[/VOICE]]（最多两段、每段200字内、口语化可带语气词），微调语速用 [[VOICE:1.1]] 这种；对方明说"用语音说/叫声xx给我听"时必须真的打标记念出来。标记里只放被念的台词——禁（温柔地说）这类舞台指示、禁"这是一段语音"这类说明文字，文字泡别复述/转述语音内容；闲聊少发保持稀罕感，被连着要可以按人设傲娇拒。`
+const voicePromptNote = `你可以发语音：台词写进 [[VOICE]]词[[/VOICE]]（最多两段、每段200字内、口语化可带语气词），微调语速用 [[VOICE:1.1]] 这种；对方明说"用语音说/叫声xx给我听"时必须真的打标记念出来，什么语言都能念（日语韩语等外语也别推说不会）。标记里只放被念的台词——禁（温柔地说）这类舞台指示、禁"这是一段语音"这类说明文字，文字泡别复述/转述语音内容；闲聊少发保持稀罕感，被连着要可以按人设傲娇拒。`
 
 // singPromptNote is appended only when the chat has singing enabled —
 // it teaches the [[SING]] marker the model otherwise must not emit.

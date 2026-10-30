@@ -43,7 +43,7 @@ func TestBasePromptFileOverridesEmbedded(t *testing.T) {
 // still knows which [[ACTION]] markers the reply parser understands.
 func TestProtocolBlockCoversMarkers(t *testing.T) {
 	block := buildProtocolBlock(resolveMarkersSpec("*", nil), true)
-	for _, want := range []string{"[[AT]]", "[[POKE]]", "[[OOPS]]", "[[PASS]]", "表情:"} {
+	for _, want := range []string{"[[AT]]", "[[POKE]]", "[[OOPS]]", "[[PASS]]", "[[NEXT]]", "[[MEME", "表情:"} {
 		if !strings.Contains(block, want) {
 			t.Fatalf("protocol block missing %q", want)
 		}
