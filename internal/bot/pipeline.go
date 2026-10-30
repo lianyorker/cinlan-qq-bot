@@ -81,6 +81,9 @@ type flowState struct {
 	allowedSkills  []string
 	knowledgeBases []string
 	mcpServers     []string
+	// markers is the binding-resolved set of toggleable [[ACTION]]
+	// markers; nil falls back to the service's global ACTIONS spec.
+	markers markerSet
 	// extraPrompt carries the matched binding's prompt_file content —
 	// business rules stay scoped to their domain instead of leaking
 	// via the shared base prompt.
@@ -220,6 +223,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			current.KnowledgeBases...,
 		)
 		state.mcpServers = append([]string(nil), current.MCPServers...)
+		state.markers = resolveMarkersFor(s.markers, current.Actions, current.ActionsOff)
 		state.extraPrompt = current.Prompt
 		event.Values["scope.binding_name"] = current.Name
 		event.Values["scope.allowed_tools"] = append(
@@ -1119,12 +1123,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 		request.SystemPrompt += s.basePrompt
 	}
-	// Marker contract rides with the binary — a bare checkout must still
-	// know which [[ACTION]] markers the reply parser understands.
+	// Marker contract is generated from the enabled set — disabled
+	// gestures never appear in the prompt, so the model can't emit them.
 	if request.SystemPrompt != "" {
 		request.SystemPrompt += "\n\n"
 	}
-	request.SystemPrompt += protocolBlock
+	request.SystemPrompt += buildProtocolBlock(
+		s.markersFor(state),
+		s.userProfiler != nil,
+	)
 	// Binding-scoped rules (storefront pointers, card-shop URLs) go
 	// after the shared base so only the matched domain hears them.
 	if state.extraPrompt != "" {
@@ -1252,8 +1259,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		)
 	}
 	if s.voiceProvider != nil {
-		if s.chatPrefs != nil &&
-			!s.chatPrefs.VoiceEnabled(state.platform, state.selfID, state.chatType, state.chatID) {
+		if !s.markerOn(state, "voice") ||
+			(s.chatPrefs != nil &&
+				!s.chatPrefs.VoiceEnabled(state.platform, state.selfID, state.chatType, state.chatID)) {
 			// Voice off — teaching [[VOICE]] here makes the model fake
 			// sending clips that the delivery layer then silently drops.
 			request.SystemPrompt += "\n\n" + voiceDisabledNote
@@ -1272,16 +1280,16 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// Group chats get the @ marker so replies can ping members for real —
 	// quoting is passive; an @ is how a person calls someone out.
 	if state.chatType == platform.ChatGroup {
-		request.SystemPrompt += "\n" + atPromptNote
+		if s.markerOn(state, "at") {
+			request.SystemPrompt += "\n" + atPromptNote
+		}
+		request.SystemPrompt += "\n" + quotePromptNote
 	}
-	// Micro-actions (emoji reaction / poke / dice / rps / oops-recall)
-	// need the raw platform Call surface; without it the markers would
-	// just die on the floor, so the note stays out entirely.
-	if s.userProfiler != nil {
-		request.SystemPrompt += "\n" + actionPromptNote
-	}
-	if note := s.stickerPromptNote(state.personaName); note != "" {
-		request.SystemPrompt += "\n" + note
+	// [[SELFIE]] sticker pool note only when the marker is on.
+	if s.markerOn(state, "selfie") {
+		if note := s.stickerPromptNote(state.personaName); note != "" {
+			request.SystemPrompt += "\n" + note
+		}
 	}
 	if s.chatPrefs != nil {
 		if notes := s.chatPrefs.NotesText(state.platform, state.selfID, state.chatType, state.chatID); notes != "" {
@@ -1856,7 +1864,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		state.outbound = message.Chain{message.Text(state.reply)}
 	}
 	var voiceClips []voiceClip
-	state.reply, voiceClips = extractVoiceMarkers(state.reply)
+	if s.markerOn(state, "voice") {
+		state.reply, voiceClips = extractVoiceMarkers(state.reply)
+	}
 	if s.affinity != nil {
 		state.reply = s.extractAffinityDelta(state)
 	}
@@ -2142,7 +2152,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		skippedMarkers := 0
 		quotePending := false
 		for _, part := range parts {
-			if key, ok := parseStoredImageMarker(part); ok {
+			if key, ok := parseStoredImageMarker(part); ok && s.markerOn(state, "img") {
 				path := ""
 				if s.chatPrefs != nil {
 					path = s.chatPrefs.ImageForPrompt(state.platform, state.selfID, state.chatType, state.chatID, key)
@@ -2166,7 +2176,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				)
 				continue
 			}
-			if query, ok := parseMemeMarker(part); ok {
+			if query, ok := parseMemeMarker(part); ok && s.markerOn(state, "meme") {
 				path, memeErr := s.pickMeme(
 					state.platform, state.chatType, state.chatID, query,
 				)
@@ -2190,7 +2200,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				)
 				continue
 			}
-			if tag, ok := parseSelfieMarker(part); ok {
+			if tag, ok := parseSelfieMarker(part); ok && s.markerOn(state, "selfie") {
 				path := s.pickSticker(state.personaName, tag)
 				if path == "" {
 					skippedMarkers++
@@ -2214,15 +2224,15 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			// Micro-actions resolve to real QQ gestures, not bubbles:
 			// an emoji reaction on the inbound message, a poke, a dice
 			// or rps roll, an oops-send-then-recall.
-			if key, ok := parseReactMarker(part); ok {
+			if key, ok := parseReactMarker(part); ok && s.markerOn(state, "react") {
 				s.reactToMessage(ctx, state, key)
 				continue
 			}
-			if target, ok := parsePokeMarker(part); ok {
+			if target, ok := parsePokeMarker(part); ok && s.markerOn(state, "poke") {
 				s.sendPoke(ctx, state, target)
 				continue
 			}
-			if isDiceMarker(part) {
+			if isDiceMarker(part) && s.markerOn(state, "dice") {
 				chains = append(chains, message.Chain{
 					message.Segment(message.TypeDice, nil),
 				})
@@ -2235,7 +2245,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				)
 				continue
 			}
-			if isRPSMarker(part) {
+			if isRPSMarker(part) && s.markerOn(state, "rps") {
 				chains = append(chains, message.Chain{
 					message.Segment(message.TypeRPS, nil),
 				})
@@ -2249,6 +2259,13 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				continue
 			}
 			if inner, ok := parseOopsMarker(part); ok {
+				// Disabled: drop the whole part — sending the inner text
+				// without the recall would publish what was meant to be
+				// a fat-fingered message, not a normal bubble.
+				if !s.markerOn(state, "oops") {
+					skippedMarkers++
+					continue
+				}
 				if inner != "" {
 					s.sendThenRecall(ctx, state, inner)
 					cleaned = append(cleaned, "[撤回:"+truncateRunes(inner, 20)+"]")
@@ -2266,12 +2283,20 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			// Anything still bracketed after every known parser ran is a
 			// hallucinated marker ([[SECRET:x]] etc.) — strip it before
 			// the internal marker namespace leaks into the chat.
-			part = stripUnrecognizedMarkers(part)
+			// [[AT]] stays out of the strip when enabled: expandAtMarkers
+			// below turns it into a real @ segment, so eating it here
+			// would make the uppercase marker dead on arrival.
+			atEnabled := s.markerOn(state, "at")
+			if atEnabled {
+				part = stripUnrecognizedMarkersKeepAT(part)
+			} else {
+				part = stripUnrecognizedMarkers(part)
+			}
 			if part == "" {
 				continue
 			}
 			chain, plain, _ := parseFaceMarkers(part)
-			if state.chatType == platform.ChatGroup {
+			if atEnabled && state.chatType == platform.ChatGroup {
 				// [[AT]] pings the sender, [[AT:qq]] pings a specific
 				// member — real @ notifications, not literal text.
 				chain, plain = expandAtMarkers(chain, state.userID)
@@ -3731,11 +3756,24 @@ func reframeInternalNotes(history []domain.ChatMessage) []domain.ChatMessage {
 // that survived every known parser — hallucinated internal markers that
 // must not reach the user. Lowercase and single brackets pass through.
 var unrecognizedMarkerPattern = regexp.MustCompile(
-	`\[\[[A-Z_]+(?::[^\]]{0,100})?\]\]`,
+	`\[\[/?[A-Z_]+(?::[^\]]{0,100})?\]\]`,
 )
 
 func stripUnrecognizedMarkers(text string) string {
 	return strings.TrimSpace(unrecognizedMarkerPattern.ReplaceAllString(text, ""))
+}
+
+// stripUnrecognizedMarkersKeepAT spares [[AT]]/[[AT:qq]] so
+// expandAtMarkers can still turn them into real @ segments — the
+// generic strip otherwise killed the marker before expansion. RE2 has
+// no lookahead, so AT markers hide behind a sentinel for the strip.
+func stripUnrecognizedMarkersKeepAT(text string) string {
+	const sentinel = "\x01"
+	protected := atMarkerPattern.ReplaceAllStringFunc(text, func(m string) string {
+		return sentinel + m[2:]
+	})
+	stripped := unrecognizedMarkerPattern.ReplaceAllString(protected, "")
+	return strings.TrimSpace(strings.ReplaceAll(stripped, sentinel, "[["))
 }
 
 // recallAnaphoraPattern marks messages that point back at something

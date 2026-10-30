@@ -165,19 +165,23 @@ type Rule struct {
 	// MemberGroups lists group IDs; a rule carrying it only matches when
 	// the memberOf probe confirms the sender belongs to one of them.
 	// Intended for private-chat routing by community membership.
-	MemberGroups    []string          `json:"member_groups,omitempty"`
-	Persona         string            `json:"persona,omitempty"`
-	Provider        string            `json:"provider,omitempty"`
-	Moderation      *ModerationPolicy `json:"moderation,omitempty"`
-	Tools           []string          `json:"tools,omitempty"`
-	Skills          []string          `json:"skills,omitempty"`
-	KnowledgeBases  []string          `json:"knowledge_bases,omitempty"`
-	MCPServers      []string          `json:"mcp_servers,omitempty"`
-	RequireMention  *bool             `json:"require_mention,omitempty"`
-	SmartAttention  *bool             `json:"smart_attention,omitempty"`
-	ReplyPolicy     *ReplyPolicy      `json:"reply_policy,omitempty"`
-	LearningEnabled *bool             `json:"learning_enabled,omitempty"`
-	AllowLinks      *bool             `json:"allow_links,omitempty"`
+	MemberGroups   []string          `json:"member_groups,omitempty"`
+	Persona        string            `json:"persona,omitempty"`
+	Provider       string            `json:"provider,omitempty"`
+	Moderation     *ModerationPolicy `json:"moderation,omitempty"`
+	Tools          []string          `json:"tools,omitempty"`
+	Skills         []string          `json:"skills,omitempty"`
+	KnowledgeBases []string          `json:"knowledge_bases,omitempty"`
+	MCPServers     []string          `json:"mcp_servers,omitempty"`
+	// Actions overrides the global ACTIONS set for this chat when
+	// non-empty; ActionsOff always subtracts marker ids.
+	Actions         []string     `json:"actions,omitempty"`
+	ActionsOff      []string     `json:"actions_off,omitempty"`
+	RequireMention  *bool        `json:"require_mention,omitempty"`
+	SmartAttention  *bool        `json:"smart_attention,omitempty"`
+	ReplyPolicy     *ReplyPolicy `json:"reply_policy,omitempty"`
+	LearningEnabled *bool        `json:"learning_enabled,omitempty"`
+	AllowLinks      *bool        `json:"allow_links,omitempty"`
 	// PromptFile names a binding-scoped prompt fragment loaded at
 	// startup (cinlan storefront rules stay inside cinlan chats, etc.);
 	// PromptFiles lists every resolved fragment in order and Prompt

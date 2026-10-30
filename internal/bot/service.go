@@ -156,9 +156,9 @@ type Service struct {
 	songProvider songGenerator
 	// singBusy blocks concurrent song-generation per chat — each task
 	// burns 30s–3min of API work, so a chat gets one at a time.
-	singBusyMu sync.Mutex
-	singBusy   map[string]bool
-	voiceBudget  voiceBudget
+	singBusyMu  sync.Mutex
+	singBusy    map[string]bool
+	voiceBudget voiceBudget
 	// pokeBudget cooldowns inbound 戳一戳 so a poked reply stays an
 	// occasional human reaction instead of a hair-trigger.
 	pokeBudget voiceBudget
@@ -193,6 +193,10 @@ type Service struct {
 	// basePrompt is the shared human-like behavior block loaded from
 	// cfg.BasePromptFile and appended to every persona prompt.
 	basePrompt string
+	// markers is the global enabled-set of toggleable [[ACTION]] markers
+	// resolved from cfg.Actions/cfg.ActionsOff; bindings may override
+	// per chat via state.markers.
+	markers markerSet
 	// bannedWords is the platform-level outbound hard block — base list
 	// plus optional hot-reloading file (data/outbound-banned-words.txt).
 	bannedWords *outboundBannedWords
@@ -352,6 +356,7 @@ func NewWithRuntime(
 			logger.Info("base prompt loaded from embedded default")
 		}
 	}
+	service.markers = resolveMarkersSpec(cfg.Actions, cfg.ActionsOff)
 	service.bannedWords = newOutboundBannedWords(strings.TrimSpace(cfg.OutboundBannedWordsFile))
 	service.judgeProvider = strings.TrimSpace(cfg.JudgeProvider)
 	service.feelQueue = make(chan feelJob, 32)
@@ -360,6 +365,12 @@ func NewWithRuntime(
 	go service.reminderLoop()
 	service.flow = service.newPipeline()
 	return service
+}
+
+// MarkerEnabled reports whether a toggleable [[ACTION]] marker id is on
+// globally — exported for engines without a binding context (proactive).
+func (s *Service) MarkerEnabled(id string) bool {
+	return s.markerOn(nil, id)
 }
 
 // SetPeerSelfIDs registers our own other bot accounts so their group

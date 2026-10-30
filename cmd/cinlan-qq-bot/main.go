@@ -537,19 +537,19 @@ func main() {
 	}
 	go proactive.New(
 		proactive.Config{
-			Enabled:      cfg.Proactive,
-			Tick:         cfg.ProactiveTick,
-			MinIdle:      cfg.ProactiveIdle,
-			Cooldown:     cfg.ProactiveWait,
-			Chance:       cfg.ProactiveProb,
-			DailyLimit:   cfg.ProactiveDaily,
-			SleepStart:   cfg.SleepStart,
-			SleepEnd:     cfg.SleepEnd,
-			Allow:        proactiveAllow,
+			Enabled:            cfg.Proactive,
+			Tick:               cfg.ProactiveTick,
+			MinIdle:            cfg.ProactiveIdle,
+			Cooldown:           cfg.ProactiveWait,
+			Chance:             cfg.ProactiveProb,
+			DailyLimit:         cfg.ProactiveDaily,
+			SleepStart:         cfg.SleepStart,
+			SleepEnd:           cfg.SleepEnd,
+			Allow:              proactiveAllow,
 			PrivateAllow:       proactivePrivateAllow,
 			PrivateIdle:        cfg.ProactivePrivateIdle,
 			PrivateMinAffinity: cfg.ProactivePrivateMinAffinity,
-			StaleMax:     cfg.ProactiveStaleMax,
+			StaleMax:           cfg.ProactiveStaleMax,
 		},
 		proactive.Deps{
 			Providers: providerRegistry,
@@ -564,6 +564,7 @@ func main() {
 			Touch:       botService.TouchActivity,
 			Stickers:    botService.StickerPool,
 			ResolveMeme: botService.MemeFile,
+			MarkerOn:    botService.MarkerEnabled,
 			Platform:    platformName,
 			Logger:      logger,
 			AffinityScore: func(plat, selfID, userID string) int {

@@ -359,10 +359,6 @@ func (s *Service) sendThenRecall(
 	}
 }
 
-// actionPromptNote teaches the micro-action markers. Requires the raw
-// platform Call surface (userProfiler); gated on that at injection.
-const actionPromptNote = `- 小动作单独一行写不占气泡：[[REACT:表情名/数字id]] 给这条消息贴表情（爱心/笑/哭/疑问/白眼/鼓掌…）、[[POKE]]戳对方[[POKE:QQ号]]戳指定、[[DICE]]骰子、[[RPS]]猜拳、[[OOPS]]内容[[/OOPS]]手滑再秒撤；每样用一两次就够别刷屏。`
-
 // selfPokeNotice reports whether this event is someone poking the bot
 // itself (NapCat: notice/notify + sub_type=poke + target_id=self).
 func (s *Service) selfPokeNotice(state *flowState) bool {

@@ -115,8 +115,15 @@ type Config struct {
 	// PeerBotIDs are bot accounts run by other deployments in the same
 	// groups. Their messages are observed but never answered, so two
 	// personas never argue with each other in public.
-	PeerBotIDs      []string
-	AdminUserIDs    []string
+	PeerBotIDs   []string
+	AdminUserIDs []string
+	// Actions is the global [[ACTION]] marker spec: "*" (default) enables
+	// every gesture marker, "none" disables all, or a comma allowlist
+	// like "at,react,poke" keeps only those. ActionsOff (ACTIONS_OFF)
+	// subtracts marker ids — e.g. ACTIONS=* + ACTIONS_OFF=poke,oops.
+	// Bindings may override per chat via actions / actions_off.
+	Actions    string
+	ActionsOff []string
 	// OwnerUserIDs is the global creator/owner whitelist (BOT_OWNER_USER_IDS).
 	// Unlike per-binding allowed_users it applies everywhere: every binding,
 	// every group, every private chat — owner messages bypass the attention
@@ -177,17 +184,17 @@ type Config struct {
 	// Sing* fields configure the dedicated [[SING]] engine (Breeze
 	// Blue). SingAPIKey enables the split; SingVoice holds the cloned
 	// voc_ id so singing matches the plain voice's timbre.
-	SingAPIKey      string
-	SingVoice       string
-	SingAPIURL      string
-	SingModel       string
+	SingAPIKey string
+	SingVoice  string
+	SingAPIURL string
+	SingModel  string
 	// SingStep* fields configure real song generation (StepFun
 	// stepaudio-3-music): SingStepAPIKey enables lyrics-to-song
 	// tasks; SingCaption is the style prompt for generated songs.
-	SingStepAPIKey string
-	SingStepAPIURL string
-	SingStepModel  string
-	SingCaption    string
+	SingStepAPIKey  string
+	SingStepAPIURL  string
+	SingStepModel   string
+	SingCaption     string
 	VoiceDir        string
 	VoiceMaxRunes   int
 	VoiceCooldown   time.Duration
@@ -291,21 +298,21 @@ type Config struct {
 	// gated by TypingSim too; 0 disables.
 	ReadDelayPerRune time.Duration
 	ReadDelayMax     time.Duration
-	MoodEnabled      bool          // per-chat mood meter + prompt hint
-	ReadNoReply      bool          // private: chance to see a filler msg and not reply
+	MoodEnabled      bool // per-chat mood meter + prompt hint
+	ReadNoReply      bool // private: chance to see a filler msg and not reply
 	// FollowUp is the master switch for unsolicited replies in groups:
 	// the 3-min pendingFollowUp window, bare game-move replies, and
 	// meme-chain echo joins. false = she only speaks when @'d or
 	// commanded (or in private, where every message reaches her).
-	FollowUp         bool
-	SleepStart       int           // hour sleep window begins (-1 disables)
-	SleepEnd         int           // hour sleep window ends
-	Proactive        bool          // ambient opener engine
-	ProactiveTick    time.Duration // sweep interval
-	ProactiveIdle    time.Duration // required chat silence before eligible
-	ProactiveWait    time.Duration // cooldown between proactive sends
-	ProactiveProb    float64       // per-tick fire probability
-	ProactiveDaily   int           // per-chat daily cap
+	FollowUp       bool
+	SleepStart     int           // hour sleep window begins (-1 disables)
+	SleepEnd       int           // hour sleep window ends
+	Proactive      bool          // ambient opener engine
+	ProactiveTick  time.Duration // sweep interval
+	ProactiveIdle  time.Duration // required chat silence before eligible
+	ProactiveWait  time.Duration // cooldown between proactive sends
+	ProactiveProb  float64       // per-tick fire probability
+	ProactiveDaily int           // per-chat daily cap
 	// ProactiveGroups optionally limits which bound groups may receive
 	// proactive openers; empty means every bound group is eligible.
 	ProactiveGroups Allowlist
@@ -424,6 +431,8 @@ func Load() (Config, error) {
 		BasePromptFile:          envOrAllowEmpty("BASE_PROMPT_FILE", "data/rules/base-human.md"),
 		OutboundBannedWordsFile: envOrAllowEmpty("OUTBOUND_BANNED_WORDS_FILE", "data/outbound-banned-words.txt"),
 		PeerBotIDs:              parseList(envOrAllowEmpty("PEER_BOT_IDS", "")),
+		Actions:                 envOrAllowEmpty("ACTIONS", "*"),
+		ActionsOff:              parseList(envOrAllowEmpty("ACTIONS_OFF", "")),
 		ChatPrefsFile:           envOr("CHAT_PREFS_FILE", "data/chat-prefs.json"),
 		AffinityFile:            envOr("AFFINITY_FILE", "data/affinity.json"),
 		IQChartAPIBase: envOr(

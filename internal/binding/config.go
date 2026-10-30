@@ -34,6 +34,8 @@ type rawRule struct {
 	Skills          []string     `json:"skills"`
 	KnowledgeBases  []string     `json:"knowledge_bases"`
 	MCPServers      []string     `json:"mcp_servers"`
+	Actions         []string     `json:"actions"`
+	ActionsOff      []string     `json:"actions_off"`
 	RequireMention  *bool        `json:"require_mention"`
 	SmartAttention  *bool        `json:"smart_attention"`
 	ReplyPolicy     *ReplyPolicy `json:"reply_policy"`
@@ -128,6 +130,8 @@ func LoadFile(path string) (*Registry, error) {
 			Skills:          raw.Skills,
 			KnowledgeBases:  raw.KnowledgeBases,
 			MCPServers:      raw.MCPServers,
+			Actions:         raw.Actions,
+			ActionsOff:      raw.ActionsOff,
 			RequireMention:  raw.RequireMention,
 			SmartAttention:  raw.SmartAttention,
 			ReplyPolicy:     raw.ReplyPolicy,

@@ -42,9 +42,10 @@ func TestBasePromptFileOverridesEmbedded(t *testing.T) {
 // The marker contract ships with the binary so a stripped-down deployment
 // still knows which [[ACTION]] markers the reply parser understands.
 func TestProtocolBlockCoversMarkers(t *testing.T) {
+	block := buildProtocolBlock(resolveMarkersSpec("*", nil), true)
 	for _, want := range []string{"[[AT]]", "[[POKE]]", "[[OOPS]]", "[[PASS]]", "表情:"} {
-		if !strings.Contains(protocolBlock, want) {
-			t.Fatalf("protocolBlock missing %q", want)
+		if !strings.Contains(block, want) {
+			t.Fatalf("protocol block missing %q", want)
 		}
 	}
 }

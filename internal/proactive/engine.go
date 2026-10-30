@@ -81,6 +81,10 @@ type Deps struct {
 	// ResolveMeme maps a [[MEME:query]] to a stored chat image path;
 	// "" means nothing matched.
 	ResolveMeme func(platform, chatType, chatID, query string) string
+	// MarkerOn reports whether a toggleable [[ACTION]] marker id
+	// (selfie/meme/img/voice/at/react/poke/dice/rps/oops) is enabled.
+	// Proactive has no per-user binding, so it follows the global set.
+	MarkerOn func(id string) bool
 	// DefaultSelfID fills rules that carry no explicit self_id.
 	DefaultSelfID string
 	// AffinityScore reports a user's intimacy score with this account;
@@ -499,16 +503,21 @@ func (e *Engine) fire(
 			"实在没话说就只回 [[SKIP]] 一个字）"
 	}
 	var stickerTags []string
-	if e.deps.Stickers != nil {
+	if e.deps.Stickers != nil && e.markerOn("selfie") {
 		for tag := range e.deps.Stickers(rule.Persona) {
 			stickerTags = append(stickerTags, tag)
 		}
 	}
 	if len(stickerTags) > 0 {
 		sort.Strings(stickerTags)
-		opener += "\n也可以不发字：单独一行写 [[SELFIE:情绪]] 发一张你自己的表情包（可用：" +
-			strings.Join(stickerTags, "、") +
-			"），或者 [[MEME:情绪]] 发一张以前偷存的群图。"
+		doc := "也可以不发字：单独一行写 [[SELFIE:情绪]] 发一张你自己的表情包（可用：" +
+			strings.Join(stickerTags, "、") + "）"
+		if e.markerOn("meme") {
+			doc += "，或者 [[MEME:情绪]] 发一张以前偷存的群图"
+		}
+		opener += "\n" + doc + "。"
+	} else if e.markerOn("meme") {
+		opener += "\n也可以不发字：单独一行写 [[MEME:情绪]] 发一张以前偷存的群图。"
 	}
 	system := profile.SystemPrompt + opener
 	if occasion != "" {
@@ -653,6 +662,12 @@ func (e *Engine) fire(
 		"chat_id", chatID, "text", logged)
 }
 
+// markerOn reports whether a toggleable marker id is enabled for
+// proactive sends — follows the global set, all-on when unset.
+func (e *Engine) markerOn(id string) bool {
+	return e.deps.MarkerOn == nil || e.deps.MarkerOn(id)
+}
+
 // proactiveImageMarker matches a whole-line [[SELFIE:tag]] / [[MEME:q]] /
 // [[IMG:key]] marker in a proactive reply.
 var proactiveImageMarker = regexp.MustCompile(
@@ -696,7 +711,7 @@ func (e *Engine) sendProactive(
 			file := ""
 			switch kind {
 			case "SELFIE":
-				if e.deps.Stickers != nil {
+				if e.deps.Stickers != nil && e.markerOn("selfie") {
 					pool := e.deps.Stickers(personaName)
 					if p, ok := pool[key]; ok {
 						file = p
@@ -716,11 +731,11 @@ func (e *Engine) sendProactive(
 					}
 				}
 			case "MEME":
-				if e.deps.ResolveMeme != nil {
+				if e.deps.ResolveMeme != nil && e.markerOn("meme") {
 					file = e.deps.ResolveMeme(plat, chatType, chatID, key)
 				}
 			default: // IMG/IMAGE/PHOTO remembered images
-				if e.deps.ChatPrefs != nil {
+				if e.deps.ChatPrefs != nil && e.markerOn("img") {
 					file = e.deps.ChatPrefs.ImageForPrompt(plat, selfID, chatType, chatID, key)
 				}
 			}
