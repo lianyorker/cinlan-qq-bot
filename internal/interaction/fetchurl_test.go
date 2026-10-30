@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 )
 
@@ -29,6 +30,45 @@ func TestRewriteXURLProfileToFxTwitter(t *testing.T) {
 	got := rewriteXURL(u)
 	if got.String() != "https://api.fxtwitter.com/thsottiaux" {
 		t.Fatalf("profile url → %s, want fxtwitter user endpoint", got)
+	}
+}
+
+func TestRewriteBskyProfileToAuthorFeed(t *testing.T) {
+	u, _ := url.Parse("https://bsky.app/profile/thibaut0.bsky.social")
+	got := rewriteURL(u)
+	if got == nil ||
+		got.Hostname() != "public.api.bsky.app" ||
+		!strings.Contains(got.Path, "getAuthorFeed") ||
+		!strings.Contains(got.RawQuery, "actor=thibaut0.bsky.social") {
+		t.Fatalf("bsky profile → %v", got)
+	}
+}
+
+func TestRewriteBskyPostToThread(t *testing.T) {
+	u, _ := url.Parse("https://bsky.app/profile/a.bsky.social/post/3abc")
+	got := rewriteURL(u)
+	if got == nil ||
+		!strings.Contains(got.Path, "getPostThread") ||
+		!strings.Contains(got.RawQuery, "at%3A%2F%2Fa.bsky.social") {
+		t.Fatalf("bsky post → %v", got)
+	}
+}
+
+func TestFetchRendersBskyFeed(t *testing.T) {
+	body := `{"feed":[{"post":{"author":{"handle":"x.bsky.social","displayName":"X"},` +
+		`"record":{"text":"hello world","createdAt":"2026-10-30T01:02:03Z"},` +
+		`"likeCount":7,"repostCount":2}}]}`
+	srv := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, _ *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(body))
+		}))
+	defer srv.Close()
+	u, _ := url.Parse(srv.URL)
+	text, err := fetchWithClient(context.Background(), srv.Client(), u)
+	if err != nil || !strings.Contains(text, "hello world") ||
+		!strings.Contains(text, "@x.bsky.social") {
+		t.Fatalf("feed render: %q err=%v", text, err)
 	}
 }
 

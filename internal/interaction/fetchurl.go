@@ -36,8 +36,9 @@ func FetchURLTool(pool *ProxyPool) tool.Definition {
 		Description: "打开一个网页链接，读取正文内容（像人点开链接看一眼）。看资讯、读文章、" +
 			"看搜索结果里某个页面具体写了什么时用。x.com/twitter 链接直接丢进来就行：" +
 			"单条推文链接能读到正文；个人主页链接（x.com/用户名）能拿到账号档案" +
-			"（简介/粉丝数/注册时间等，没有推文列表）。想知道某条推文内容就让对方发那条的链接。" +
-			"只知道某人推名就把 https://x.com/<用户名> 拼出来抓。",
+			"（简介/粉丝数/注册时间等，没有推文列表）。bsky.app 个人主页链接能拿到最近帖子正文" +
+			"（x 档案里常挂着对方的 bsky 主页，想看最近动态就去抓它）。只知道某人推名" +
+			"就把 https://x.com/<用户名> 拼出来抓。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -96,6 +97,51 @@ func publicFetchURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
+// rewriteURL maps social links onto public JSON endpoints that return
+// real text: x.com goes through api.fxtwitter.com, Bluesky goes through
+// the anonymous public.api.bsky.app xrpc endpoints.
+func rewriteURL(u *url.URL) *url.URL {
+	if r := rewriteBskyURL(u); r != nil {
+		return r
+	}
+	return rewriteXURL(u)
+}
+
+// rewriteBskyURL maps bsky.app links onto public.api.bsky.app. The
+// public XRPC API needs no auth for public feeds — profiles become
+// getAuthorFeed (real post text, the timeline X lost), posts become
+// getPostThread (at:// accepts a handle as authority, no DID lookup).
+func rewriteBskyURL(u *url.URL) *url.URL {
+	host := strings.ToLower(u.Hostname())
+	if host != "bsky.app" && !strings.HasSuffix(host, ".bsky.app") {
+		return nil
+	}
+	parts := strings.FieldsFunc(strings.Trim(u.EscapedPath(), "/"),
+		func(r rune) bool { return r == '/' })
+	if len(parts) >= 4 &&
+		strings.EqualFold(parts[0], "profile") &&
+		strings.EqualFold(parts[2], "post") {
+		at := "at://" + parts[1] + "/app.bsky.feed.post/" + parts[3]
+		r, err := url.Parse("https://public.api.bsky.app/xrpc/" +
+			"app.bsky.feed.getPostThread?depth=0&uri=" +
+			url.QueryEscape(at))
+		if err == nil {
+			return r
+		}
+		return nil
+	}
+	if len(parts) >= 2 && strings.EqualFold(parts[0], "profile") &&
+		parts[1] != "" {
+		r, err := url.Parse("https://public.api.bsky.app/xrpc/" +
+			"app.bsky.feed.getAuthorFeed?limit=8&actor=" +
+			url.QueryEscape(parts[1]))
+		if err == nil {
+			return r
+		}
+	}
+	return nil
+}
+
 // rewriteXURL maps x.com/twitter.com links onto api.fxtwitter.com — the
 // site itself serves a bare JS shell to scrapers, while fxtwitter
 // returns clean JSON for both tweets and profiles. The old syndication
@@ -131,7 +177,7 @@ func runFetchURL(ctx context.Context, pool *ProxyPool, raw string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	u = rewriteXURL(u)
+	u = rewriteURL(u)
 	if _, err := publicFetchURL(u.String()); err != nil {
 		return "", err
 	}
@@ -264,6 +310,36 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 				} `json:"website"`
 			} `json:"user"`
 		}
+		var bsky struct {
+			Feed []struct {
+				Post struct {
+					Author struct {
+						Handle      string `json:"handle"`
+						DisplayName string `json:"displayName"`
+					} `json:"author"`
+					Record struct {
+						Text      string `json:"text"`
+						CreatedAt string `json:"createdAt"`
+					} `json:"record"`
+					LikeCount   int `json:"likeCount"`
+					RepostCount int `json:"repostCount"`
+				} `json:"post"`
+			} `json:"feed"`
+			Thread *struct {
+				Post struct {
+					Author struct {
+						Handle      string `json:"handle"`
+						DisplayName string `json:"displayName"`
+					} `json:"author"`
+					Record struct {
+						Text      string `json:"text"`
+						CreatedAt string `json:"createdAt"`
+					} `json:"record"`
+					LikeCount   int `json:"likeCount"`
+					RepostCount int `json:"repostCount"`
+				} `json:"post"`
+			} `json:"thread"`
+		}
 		var oembed struct {
 			HTML       string `json:"html"`
 			AuthorName string `json:"author_name"`
@@ -297,8 +373,28 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 			if u.Website.DisplayURL != "" {
 				fmt.Fprintf(&b, "网站：%s\n", u.Website.DisplayURL)
 			}
-			b.WriteString("（档案接口只给用户信息，推文列表接口已失效；具体推文请发单条链接）")
+			b.WriteString("（X 的推文列表接口已失效；具体推文请发单条链接。" +
+				"若简介/网站挂了 bsky.app 主页，抓那个链接能看到最近帖子）")
 			text = b.String()
+		case json.Unmarshal(body, &bsky) == nil && len(bsky.Feed) > 0:
+			var b strings.Builder
+			b.WriteString("Bluesky 最近帖子：\n")
+			for _, item := range bsky.Feed {
+				b.WriteString(formatBskyPost(
+					item.Post.Author.Handle,
+					item.Post.Author.DisplayName,
+					item.Post.Record.Text,
+					item.Post.Record.CreatedAt,
+					item.Post.LikeCount,
+					item.Post.RepostCount))
+			}
+			text = b.String()
+		case json.Unmarshal(body, &bsky) == nil && bsky.Thread != nil &&
+			bsky.Thread.Post.Record.Text != "":
+			p := bsky.Thread.Post
+			text = formatBskyPost(p.Author.Handle, p.Author.DisplayName,
+				p.Record.Text, p.Record.CreatedAt,
+				p.LikeCount, p.RepostCount)
 		case json.Unmarshal(body, &oembed) == nil && oembed.HTML != "":
 			text = htmlToReadableText(oembed.HTML)
 			if oembed.AuthorName != "" {
@@ -317,6 +413,22 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 		text = string(runes[:fetchURLMaxRunes]) + "\n…（截断）"
 	}
 	return text, nil
+}
+
+// formatBskyPost renders one Bluesky feed item as a chat-friendly
+// line: date @handle（昵称）: text  ♥x ↻x
+func formatBskyPost(handle, displayName, text, createdAt string, likes, reposts int) string {
+	date := createdAt
+	if len(date) >= 16 {
+		date = date[:16] // keep "2006-01-02T15:04"
+	}
+	who := "@" + handle
+	if displayName != "" {
+		who += "（" + displayName + "）"
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	return fmt.Sprintf("· %s %s：%s  ♥%d ↻%d\n",
+		date, who, text, likes, reposts)
 }
 
 var (
