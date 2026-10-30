@@ -182,7 +182,7 @@ func searchBackendsOnce(
 	allRotateWorthy := true
 	sawErr := false
 	for _, backend := range []func(context.Context, *http.Client, string) ([]webSearchResult, error){
-		searchBing,
+		searchBingAuto,
 		searchDuckDuckGoLite,
 		searchDuckDuckGoInstant,
 	} {
@@ -209,20 +209,96 @@ func searchBackendsOnce(
 	return nil, allRotateWorthy, firstErr
 }
 
-// searchBing scrapes bing.com — reachable from mainland-CN servers,
-// where the DuckDuckGo domains are blocked outright.
-func searchBing(
+// searchBingAuto wraps the zh bing call with a relevance gate: zh-CN
+// bing mangles latin-script queries (names, handles) into unrelated zh
+// matches. When nothing in the results echoes a query token, retry on
+// the en-US market and prefer those.
+func searchBingAuto(
 	ctx context.Context,
 	client *http.Client,
 	query string,
 ) ([]webSearchResult, error) {
-	endpoint := "https://www.bing.com/search?q=" + url.QueryEscape(query) + "&mkt=zh-CN"
+	results, err := searchBingMarket(ctx, client, query, "zh-CN", false)
+	if err != nil {
+		return nil, err
+	}
+	if len(results) > 0 && resultsLookRelevant(results, query) {
+		return results, nil
+	}
+	usResults, usErr := searchBingMarket(ctx, client, query, "en-US", true)
+	if usErr == nil && len(usResults) > 0 {
+		return usResults, nil
+	}
+	return results, err
+}
+
+// resultsLookRelevant does a cheap echo check: at least one meaningful
+// query token should show up in some title or snippet. zh bing zero-
+// overlap results are silently swapped queries, not "found results".
+func resultsLookRelevant(results []webSearchResult, query string) bool {
+	tokens := queryTokens(query)
+	if len(tokens) == 0 {
+		return true
+	}
+	var hay strings.Builder
+	for _, r := range results {
+		hay.WriteString(strings.ToLower(r.Title))
+		hay.WriteString(strings.ToLower(r.Snippet))
+	}
+	text := hay.String()
+	for _, tok := range tokens {
+		if strings.Contains(text, tok) {
+			return true
+		}
+	}
+	return false
+}
+
+// queryTokens splits the query into matchable tokens: whitespace
+// groups plus latin/digit runs of len>=3 (a token like "tibo最新资讯"
+// contributes both itself and "tibo").
+var latinTokenRe = regexp.MustCompile(`[a-zA-Z0-9]{3,}`)
+
+func queryTokens(query string) []string {
+	seen := map[string]bool{}
+	var tokens []string
+	for _, field := range strings.Fields(strings.ToLower(query)) {
+		if len(field) >= 2 && !seen[field] {
+			seen[field] = true
+			tokens = append(tokens, field)
+		}
+		for _, latin := range latinTokenRe.FindAllString(field, -1) {
+			if !seen[latin] {
+				seen[latin] = true
+				tokens = append(tokens, latin)
+			}
+		}
+	}
+	return tokens
+}
+
+// searchBingMarket scrapes bing.com for the given market. ensearch=1
+// keeps CN-geo IPs on .com instead of getting bounced to cn.bing.com.
+func searchBingMarket(
+	ctx context.Context,
+	client *http.Client,
+	query, mkt string,
+	ensearch bool,
+) ([]webSearchResult, error) {
+	endpoint := "https://www.bing.com/search?q=" + url.QueryEscape(query) + "&mkt=" + mkt
+	if ensearch {
+		endpoint += "&ensearch=1"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
 	}
 	req.Header.Set("User-Agent", webSearchUserAgent)
-	req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+	acceptLang := "zh-CN,zh;q=0.9"
+	if mkt == "en-US" {
+		acceptLang = "en-US,en;q=0.9"
+	}
+	req.Header.Set("Accept-Language", acceptLang)
 	resp, err := client.Do(req)
 	if err != nil {
 		return nil, err
@@ -240,6 +316,14 @@ func searchBing(
 		return nil, errBotChallenge
 	}
 	return parseBingResults(page), nil
+}
+
+func searchBing(
+	ctx context.Context,
+	client *http.Client,
+	query string,
+) ([]webSearchResult, error) {
+	return searchBingAuto(ctx, client, query)
 }
 
 func parseBingResults(page string) []webSearchResult {
