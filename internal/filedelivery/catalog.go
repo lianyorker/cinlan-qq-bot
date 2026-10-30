@@ -273,6 +273,30 @@ func (c *Catalog) deliver(
 			Message:     messageText,
 		}, Response: textResponse(messageText)}, nil
 	}
+	// Friendship state matters twice below: a stranger's temp session
+	// cannot receive files (QQ just hangs the file card), and a failed
+	// private send to an unknown user is overwhelmingly "not a friend".
+	friendKnown, isFriend := false, false
+	if call.Actor.ChatType == platform.ChatPrivate {
+		friendUserID := strings.TrimSpace(call.Actor.UserID)
+		if friendUserID == "" {
+			friendUserID = strings.TrimSpace(call.Actor.ChatID)
+		}
+		if caller, ok := sender.(actionCaller); ok {
+			friendKnown, isFriend = checkFriendship(ctx, caller, friendUserID)
+		}
+		if friendKnown && !isFriend {
+			// Don't even attempt the send — guide first so nobody waits
+			// on a file card that can never land.
+			messageText := privateGuide(call.Actor.SelfID, entry)
+			return tool.Result{Content: DeliveryResult{
+				Status:      "private_chat_required",
+				FileID:      entry.ID,
+				DisplayName: entry.DisplayName,
+				Message:     messageText,
+			}, Response: textResponse(messageText)}, nil
+		}
+	}
 	if call.Actor.ChatType == platform.ChatGroup && entry.PrivateOnly {
 		if strings.TrimSpace(call.Actor.UserID) != "" {
 			if err := sender.Send(ctx, platform.Outbound{
@@ -309,6 +333,18 @@ func (c *Catalog) deliver(
 	}); err != nil {
 		if dedupeKey != "" {
 			c.forgetDelivery(dedupeKey)
+		}
+		if call.Actor.ChatType == platform.ChatPrivate && (!friendKnown || !isFriend) {
+			// Private send blew up and we can't prove friendship — the
+			// overwhelmingly likely cause is a stranger temp session, so
+			// answer with the add-friend guide instead of a bare error.
+			messageText := privateGuide(call.Actor.SelfID, entry)
+			return tool.Result{Content: DeliveryResult{
+				Status:      "private_chat_required",
+				FileID:      entry.ID,
+				DisplayName: entry.DisplayName,
+				Message:     messageText,
+			}, Response: textResponse(messageText)}, nil
 		}
 		return tool.Result{}, fmt.Errorf("send file %q: %w", entry.ID, err)
 	}
@@ -520,6 +556,73 @@ func jsonID(value any) string {
 	default:
 		return strings.TrimSpace(fmt.Sprint(current))
 	}
+}
+
+// checkFriendship asks the OneBot implementation whether userID is on
+// the bot's friend list. The first bool distinguishes "we asked and
+// know" from "the action failed / isn't supported" — callers must not
+// treat an unknown result as proof either way.
+func checkFriendship(
+	ctx context.Context,
+	caller actionCaller,
+	userID string,
+) (known bool, isFriend bool) {
+	if !numericIDPattern.MatchString(strings.TrimSpace(userID)) {
+		return false, false
+	}
+	result, err := caller.Call(ctx, "get_friend_list", map[string]any{})
+	if err != nil {
+		return false, false
+	}
+	for _, id := range friendUserIDs(result) {
+		if id == strings.TrimSpace(userID) {
+			return true, true
+		}
+	}
+	return true, false
+}
+
+// friendUserIDs flattens whatever shape get_friend_list came back in —
+// a bare array of member objects, or a {friends:[...]}/{data:[...]}
+// wrapper — into the contained user_id values.
+func friendUserIDs(result any) []string {
+	var encoded []byte
+	switch current := result.(type) {
+	case json.RawMessage:
+		encoded = current
+	case []byte:
+		encoded = current
+	default:
+		var err error
+		encoded, err = json.Marshal(result)
+		if err != nil {
+			return nil
+		}
+	}
+	var items []map[string]any
+	decoder := json.NewDecoder(bytes.NewReader(encoded))
+	decoder.UseNumber()
+	if err := decoder.Decode(&items); err != nil {
+		var wrapped map[string]any
+		if err2 := json.Unmarshal(encoded, &wrapped); err2 != nil {
+			return nil
+		}
+		for _, key := range []string{"friends", "data", "list"} {
+			raw, _ := json.Marshal(wrapped[key])
+			sub := json.NewDecoder(bytes.NewReader(raw))
+			sub.UseNumber()
+			if err := sub.Decode(&items); err == nil {
+				break
+			}
+		}
+	}
+	ids := make([]string, 0, len(items))
+	for _, item := range items {
+		if id := jsonID(item["user_id"]); numericIDPattern.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 func containsString(values []string, target string) bool {

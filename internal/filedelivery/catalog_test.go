@@ -155,6 +155,96 @@ func TestDeliverFileGuidesGroupWhenPrivateSendFails(t *testing.T) {
 	}
 }
 
+func TestDeliverFileGuidesPrivateWhenNotFriend(t *testing.T) {
+	catalog := loadTestCatalog(t, []byte("select 1;"))
+	sender := &recordingSender{
+		call: func(_ context.Context, name string, _ map[string]any) (any, error) {
+			if name != "get_friend_list" {
+				return nil, errors.New("unexpected action " + name)
+			}
+			return json.RawMessage(`[{"user_id":99999999}]`), nil
+		},
+	}
+	definition := catalog.Tool(sender, time.Second)
+
+	result, err := definition.Handler(context.Background(), tool.Call{
+		Arguments: json.RawMessage(`{"file_id":"sql"}`),
+		Actor: tool.Actor{
+			Platform:  platform.PlatformQQOneBot,
+			ChatType:  platform.ChatPrivate,
+			ChatID:    "10000002",
+			SelfID:    "10000001",
+			UserID:    "10000002",
+			MessageID: "temp-message",
+		},
+	})
+	if err != nil {
+		t.Fatalf("private deliver_file error = %v", err)
+	}
+	content := result.Content.(DeliveryResult)
+	if content.Status != "private_chat_required" ||
+		!strings.Contains(content.Message, "添加 QQ 10000001 为好友") ||
+		result.Response == nil ||
+		len(sender.outbound) != 0 {
+		t.Fatalf("result = %#v, outbound = %#v", result, sender.outbound)
+	}
+}
+
+func TestDeliverFilePrivateSendFailureGuidesWhenFriendshipUnknown(t *testing.T) {
+	catalog := loadTestCatalog(t, []byte("select 1;"))
+	sender := &recordingSender{err: errors.New("temp session cannot receive files")}
+	definition := catalog.Tool(sender, time.Second)
+
+	result, err := definition.Handler(context.Background(), tool.Call{
+		Arguments: json.RawMessage(`{"file_id":"sql"}`),
+		Actor: tool.Actor{
+			Platform:  platform.PlatformQQOneBot,
+			ChatType:  platform.ChatPrivate,
+			ChatID:    "10000002",
+			SelfID:    "10000001",
+			UserID:    "10000002",
+			MessageID: "temp-message",
+		},
+	})
+	if err != nil {
+		t.Fatalf("private deliver_file error = %v", err)
+	}
+	content := result.Content.(DeliveryResult)
+	if content.Status != "private_chat_required" ||
+		!strings.Contains(content.Message, "添加 QQ 10000001 为好友") {
+		t.Fatalf("result = %#v", result)
+	}
+}
+
+func TestDeliverFileKnownFriendSendFailureStaysError(t *testing.T) {
+	catalog := loadTestCatalog(t, []byte("select 1;"))
+	sender := &recordingSender{
+		err: errors.New("onebot timeout"),
+		call: func(_ context.Context, name string, _ map[string]any) (any, error) {
+			if name != "get_friend_list" {
+				return nil, errors.New("unexpected action " + name)
+			}
+			return json.RawMessage(`[{"user_id":10000002}]`), nil
+		},
+	}
+	definition := catalog.Tool(sender, time.Second)
+
+	_, err := definition.Handler(context.Background(), tool.Call{
+		Arguments: json.RawMessage(`{"file_id":"sql"}`),
+		Actor: tool.Actor{
+			Platform:  platform.PlatformQQOneBot,
+			ChatType:  platform.ChatPrivate,
+			ChatID:    "10000002",
+			SelfID:    "10000001",
+			UserID:    "10000002",
+			MessageID: "friend-message",
+		},
+	})
+	if err == nil || !strings.Contains(err.Error(), "onebot timeout") {
+		t.Fatalf("expected send error, got %v", err)
+	}
+}
+
 func TestDeliverFileGroupGuideWithoutUserIDCanRetry(t *testing.T) {
 	catalog := loadTestCatalog(t, []byte("select 1;"))
 	definition := catalog.Tool(&recordingSender{}, time.Second)
@@ -264,6 +354,11 @@ func TestDeliverFileChecksPrivateUserGroupMembership(t *testing.T) {
 					name string,
 					params map[string]any,
 				) (any, error) {
+					if name == "get_friend_list" {
+						// Friendship unknown — falls back to attempting
+						// the send like before.
+						return nil, errors.New("unsupported")
+					}
 					if name != "get_group_member_info" ||
 						params["group_id"] != "20000001" ||
 						params["user_id"] != "10000002" {
@@ -289,7 +384,12 @@ func TestDeliverFileChecksPrivateUserGroupMembership(t *testing.T) {
 			if !current.wantErr && err != nil {
 				t.Fatalf("private delivery error = %v", err)
 			}
-			if len(sender.calls) != 1 || len(sender.outbound) != current.wantSends {
+			wantCalls := 1
+			if !current.wantErr {
+				// Membership check + friendship probe before the send.
+				wantCalls = 2
+			}
+			if len(sender.calls) != wantCalls || len(sender.outbound) != current.wantSends {
 				t.Fatalf("calls = %#v, outbound = %#v", sender.calls, sender.outbound)
 			}
 		})

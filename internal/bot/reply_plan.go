@@ -52,13 +52,23 @@ var faceMarkerPattern = regexp.MustCompile(
 	`\[(?:face|表情)[:：]([^\[\]]{1,8})\]`,
 )
 
+// bannedFaceIDs blocks specific QQ face ids even when written
+// numerically — face 14 (微笑) reads as passive-aggressive, so it must
+// never render regardless of how the marker spelled it.
+var bannedFaceIDs = map[int]bool{14: true}
+
+func bannedFaceID(id int) bool {
+	return bannedFaceIDs[id]
+}
+
 // faceNameToID maps common QQ face names to their numeric ids (classic
 // 0-21 table). Unknown names are dropped from the text.
 var faceNameToID = map[string]int{
 	"惊讶": 0, "撇嘴": 1, "色": 2, "发呆": 3, "得意": 4,
 	"流泪": 5, "害羞": 6, "闭嘴": 7, "睡": 8, "大哭": 9,
 	"尴尬": 10, "发怒": 11, "调皮": 12, "龇牙": 13, "呲牙": 13,
-	"微笑": 14, "难过": 15, "酷": 16, "抓狂": 18, "吐": 20,
+	// 微笑 deliberately unmapped — face 14 reads as passive-aggressive.
+	"难过": 15, "酷": 16, "抓狂": 18, "吐": 20,
 	"偷笑": 21, "可爱": 21, "白眼": 22, "傲慢": 23, "饥饿": 24,
 	"困": 25, "惊恐": 26, "流汗": 27, "憨笑": 28, "奋斗": 30,
 	"咒骂": 31, "疑问": 32, "嘘": 33, "晕": 34, "折磨": 35,
@@ -194,7 +204,7 @@ func parseFaceMarkers(text string) (message.Chain, string, bool) {
 			}
 			id = mapped
 		}
-		if id < 0 || id > 349 {
+		if id < 0 || id > 349 || bannedFaceID(id) {
 			flush(m[0])
 			cursor = m[1]
 			found = true
