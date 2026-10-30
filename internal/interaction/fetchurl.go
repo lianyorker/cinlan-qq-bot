@@ -25,12 +25,12 @@ const (
 )
 
 // FetchURLTool lets the persona open a web page and read its text. It rides
-// the same scoped proxy as web_search (WEB_SEARCH_PROXY) — the only egress
-// that should leave the mainland network — so sites like x.com become
-// readable without rerouting any other traffic. Internal addresses are
-// refused outright: the box hosts NapCat and the admin API on loopback, and
-// a fetch tool that can hit 127.0.0.1 is an SSRF hole, not a feature.
-func FetchURLTool(proxy string) tool.Definition {
+// the same scoped ProxyPool as web_search — the only egress that should
+// leave the mainland network — so sites like x.com become readable without
+// rerouting any other traffic. Internal addresses are refused outright:
+// the box hosts NapCat and the admin API on loopback, and a fetch tool
+// that can hit 127.0.0.1 is an SSRF hole, not a feature. pool may be nil.
+func FetchURLTool(pool *ProxyPool) tool.Definition {
 	return tool.Definition{
 		Name: "fetch_url",
 		Description: "打开一个网页链接，读取正文内容（像人点开链接看一眼）。看资讯、读文章、" +
@@ -58,7 +58,7 @@ func FetchURLTool(proxy string) tool.Definition {
 			if raw == "" {
 				return tool.Result{Error: "url 是空的"}, nil
 			}
-			text, err := runFetchURL(ctx, proxy, raw)
+			text, err := runFetchURL(ctx, pool, raw)
 			if err != nil {
 				return tool.Result{Error: "打不开：" + err.Error()}, nil
 			}
@@ -126,7 +126,7 @@ func rewriteXURL(u *url.URL) *url.URL {
 	return u
 }
 
-func runFetchURL(ctx context.Context, proxy, raw string) (string, error) {
+func runFetchURL(ctx context.Context, pool *ProxyPool, raw string) (string, error) {
 	u, err := publicFetchURL(raw)
 	if err != nil {
 		return "", err
@@ -135,12 +135,46 @@ func runFetchURL(ctx context.Context, proxy, raw string) (string, error) {
 	if _, err := publicFetchURL(u.String()); err != nil {
 		return "", err
 	}
-	client, err := webSearchClient(proxy)
-	if err != nil {
+	attempts := 1
+	if pool != nil {
+		attempts += pool.size()
+	}
+	var lastErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		var client *http.Client
+		var entry *proxyEntry
+		if pool != nil {
+			client, entry = pool.client(fetchURLTimeout)
+		} else {
+			client = &http.Client{
+				Timeout:   fetchURLTimeout,
+				Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+			}
+		}
+		text, transportFail, err := fetchOnce(ctx, client, u)
+		if err == nil {
+			return text, nil
+		}
+		lastErr = err
+		if transportFail && entry != nil {
+			pool.markDead(entry)
+			continue
+		}
 		return "", err
 	}
-	// Same scoped-proxy transport, slightly longer budget for full pages.
-	client.Timeout = fetchURLTimeout
+	return "", lastErr
+}
+
+// fetchOnce performs the single-request fetch and reports whether a
+// failure was transport-level (proxy's fault) so the caller can rotate.
+func fetchOnce(ctx context.Context, client *http.Client, u *url.URL) (string, bool, error) {
+	text, err := fetchWithClient(ctx, client, u)
+	return text, isTransportErr(err), err
+}
+
+// fetchWithClient is the previous runFetchURL body minus proxy setup —
+// it does the redirect-validated GET and text extraction.
+func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (string, error) {
 	// Every redirect target gets re-validated — a public URL bouncing to
 	// 127.0.0.1 is still an SSRF attempt.
 	client.CheckRedirect = func(req *http.Request, via []*http.Request) error {

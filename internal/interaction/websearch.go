@@ -3,6 +3,7 @@ package interaction
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -22,8 +23,8 @@ import (
 //     speaks the same shape. WEB_SEARCH_API_KEY adds a Bearer header.
 //   - unset → Bing web search scrape (reachable from CN servers),
 //     then DuckDuckGo lite HTML scrape, then DDG instant-answer JSON.
-//   - WEB_SEARCH_PROXY optionally routes all search traffic through a
-//     http/https/socks5 proxy; unset → HTTP(S)_PROXY env is honoured.
+//   - WEB_SEARCH_PROXY / WEB_SEARCH_PROXIES feed a ProxyPool: dead
+//     proxies are skipped and revived by probes; all dead → direct.
 const (
 	webSearchMaxResults  = 5
 	webSearchMaxRunes    = 1600
@@ -49,8 +50,8 @@ var (
 // WebSearchTool gives the persona live web lookup for questions its
 // training data misses — release names, group jargon, fresh prices.
 // Group jargon note for the model: never quote raw URLs back to the
-// chat when allow_links strips them anyway.
-func WebSearchTool(apiURL, apiKey, proxy string) tool.Definition {
+// chat when allow_links strips them anyway. pool may be nil → direct.
+func WebSearchTool(apiURL, apiKey string, pool *ProxyPool) tool.Definition {
 	return tool.Definition{
 		Name: "web_search",
 		Description: "联网搜索一下（像人打开搜索引擎查一下）。问的是你没听过的新东西、黑话、" +
@@ -77,7 +78,7 @@ func WebSearchTool(apiURL, apiKey, proxy string) tool.Definition {
 			if query == "" {
 				return tool.Result{Error: "query 是空的"}, nil
 			}
-			results, err := runWebSearch(ctx, apiURL, apiKey, proxy, query)
+			results, err := runWebSearch(ctx, apiURL, apiKey, pool, query)
 			if err != nil {
 				return tool.Result{Error: "没搜到：" + err.Error()}, nil
 			}
@@ -89,32 +90,72 @@ func WebSearchTool(apiURL, apiKey, proxy string) tool.Definition {
 	}
 }
 
-// webSearchClient honours WEB_SEARCH_PROXY when set, else the standard
-// HTTP_PROXY/HTTPS_PROXY environment variables.
-func webSearchClient(proxy string) (*http.Client, error) {
-	transport := &http.Transport{Proxy: http.ProxyFromEnvironment}
-	if p := strings.TrimSpace(proxy); p != "" {
-		proxyURL, err := url.Parse(p)
-		if err != nil {
-			return nil, fmt.Errorf("WEB_SEARCH_PROXY: %w", err)
-		}
-		transport.Proxy = http.ProxyURL(proxyURL)
-	}
-	return &http.Client{Timeout: webSearchHTTPTimeout, Transport: transport}, nil
-}
-
+// runWebSearch walks the backend chain once per proxy pick. A backend
+// chain that fails on every transport-level attempt means the picked
+// proxy is dead — mark it, rotate, retry. Status/parse failures are the
+// endpoint's fault, not the proxy's, and stop the rotation.
 func runWebSearch(
 	ctx context.Context,
-	apiURL, apiKey, proxy, query string,
+	apiURL, apiKey string,
+	pool *ProxyPool,
+	query string,
 ) ([]webSearchResult, error) {
-	client, err := webSearchClient(proxy)
-	if err != nil {
-		return nil, err
-	}
-	if strings.TrimSpace(apiURL) != "" {
-		return searchJSONEndpoint(ctx, client, apiURL, apiKey, query)
+	attempts := 1
+	if pool != nil {
+		attempts += pool.size()
 	}
 	var firstErr error
+	for attempt := 0; attempt < attempts; attempt++ {
+		var client *http.Client
+		var entry *proxyEntry
+		if pool != nil {
+			client, entry = pool.client(webSearchHTTPTimeout)
+		} else {
+			client = &http.Client{
+				Timeout:   webSearchHTTPTimeout,
+				Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
+			}
+		}
+		results, transportFail, err := searchBackendsOnce(ctx, client, apiURL, apiKey, query)
+		if err == nil && len(results) > 0 {
+			return results, nil
+		}
+		if transportFail && entry != nil {
+			pool.markDead(entry)
+			continue
+		}
+		if err != nil && firstErr == nil {
+			firstErr = err
+		}
+		if err == nil {
+			// Empty results, no error — not a proxy problem.
+			return nil, nil
+		}
+		if !transportFail || entry == nil {
+			// Endpoint-level error, or already on the direct path.
+			return nil, firstErr
+		}
+	}
+	if firstErr != nil {
+		return nil, firstErr
+	}
+	return nil, errors.New("搜索全挂了（代理不通）")
+}
+
+// searchBackendsOnce runs one full backend pass with one client and
+// reports whether the failures were transport-level (proxy's fault).
+func searchBackendsOnce(
+	ctx context.Context,
+	client *http.Client,
+	apiURL, apiKey, query string,
+) ([]webSearchResult, bool, error) {
+	if strings.TrimSpace(apiURL) != "" {
+		results, err := searchJSONEndpoint(ctx, client, apiURL, apiKey, query)
+		return results, isTransportErr(err), err
+	}
+	var firstErr error
+	allTransport := true
+	sawErr := false
 	for _, backend := range []func(context.Context, *http.Client, string) ([]webSearchResult, error){
 		searchBing,
 		searchDuckDuckGoLite,
@@ -122,19 +163,25 @@ func runWebSearch(
 	} {
 		results, err := backend(ctx, client, query)
 		if err == nil && len(results) > 0 {
-			return results, nil
+			return results, false, nil
 		}
-		if firstErr == nil && err != nil {
-			firstErr = err
+		if err != nil {
+			sawErr = true
+			if !isTransportErr(err) {
+				allTransport = false
+			}
+			if firstErr == nil {
+				firstErr = err
+			}
 		}
 		if ctx.Err() != nil {
-			break
+			return nil, false, ctx.Err()
 		}
 	}
-	if firstErr != nil {
-		return nil, firstErr
+	if !sawErr {
+		return nil, false, nil
 	}
-	return nil, nil
+	return nil, allTransport, firstErr
 }
 
 // searchBing scrapes bing.com — reachable from mainland-CN servers,

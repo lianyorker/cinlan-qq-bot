@@ -82,15 +82,23 @@ func registerLocalExtensions(
 	}
 	// Live web lookup for things her training data misses — fresh model
 	// names, group jargon, prices. Keyless DDG fallback keeps it free.
+	// The proxy pool health-checks each candidate and rotates; a dead
+	// proxy (or all of them) degrades to direct egress, never an error.
+	proxySpecs := make([]string, 0, len(cfg.WebSearchProxies)+1)
+	if p := cfg.WebSearchProxy; p != "" {
+		proxySpecs = append(proxySpecs, p)
+	}
+	proxySpecs = append(proxySpecs, cfg.WebSearchProxies...)
+	egressPool := interaction.NewProxyPool(proxySpecs, logger)
 	if registerErr := service.ToolRegistry().Register(
-		interaction.WebSearchTool(cfg.WebSearchAPIURL, cfg.WebSearchAPIKey, cfg.WebSearchProxy),
+		interaction.WebSearchTool(cfg.WebSearchAPIURL, cfg.WebSearchAPIKey, egressPool),
 	); registerErr != nil {
 		logger.Error("failed to register web search tool", "error", registerErr)
 	}
 	// Page reader shares the search proxy — opening links is the same
 	// scoped egress, never a global reroute.
 	if registerErr := service.ToolRegistry().Register(
-		interaction.FetchURLTool(cfg.WebSearchProxy),
+		interaction.FetchURLTool(egressPool),
 	); registerErr != nil {
 		logger.Error("failed to register fetch url tool", "error", registerErr)
 	}
