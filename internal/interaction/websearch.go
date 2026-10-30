@@ -38,6 +38,26 @@ type webSearchResult struct {
 	URL     string
 }
 
+// errBotChallenge marks a 200-OK page that is actually an anti-bot
+// gate (DDG anomaly modal, bing verify). Datacenter IPs collect these
+// randomly per exit IP, so the right response is rotating the proxy,
+// not reporting empty results.
+var errBotChallenge = errors.New("search backend served a bot challenge")
+
+// looksLikeBotChallenge sniffs the body for anti-bot page signatures.
+// Conservative on purpose: only unambiguous markers count, because a
+// false positive rotates away a healthy proxy for nothing.
+func looksLikeBotChallenge(page string) bool {
+	switch {
+	case strings.Contains(page, "anomaly-modal"), // duckduckgo
+		strings.Contains(page, "unusual traffic"),
+		strings.Contains(page, "百度安全验证"),
+		strings.Contains(page, "请输入验证码"):
+		return true
+	}
+	return false
+}
+
 var (
 	ddgLinkRe     = regexp.MustCompile(`<a[^>]+class="result-link"[^>]+href="([^"]+)"[^>]*>(.*?)</a>`)
 	ddgSnippetRe  = regexp.MustCompile(`<td[^>]+class="result-snippet"[^>]*>(.*?)</td>`)
@@ -116,11 +136,13 @@ func runWebSearch(
 				Transport: &http.Transport{Proxy: http.ProxyFromEnvironment},
 			}
 		}
-		results, transportFail, err := searchBackendsOnce(ctx, client, apiURL, apiKey, query)
+		results, rotate, err := searchBackendsOnce(ctx, client, apiURL, apiKey, query)
 		if err == nil && len(results) > 0 {
 			return results, nil
 		}
-		if transportFail && entry != nil {
+		if rotate && entry != nil {
+			// Dead proxy or captcha-flagged exit IP — either way this
+			// egress is useless for search until the probe clears it.
 			pool.markDead(entry)
 			continue
 		}
@@ -131,7 +153,7 @@ func runWebSearch(
 			// Empty results, no error — not a proxy problem.
 			return nil, nil
 		}
-		if !transportFail || entry == nil {
+		if !rotate || entry == nil {
 			// Endpoint-level error, or already on the direct path.
 			return nil, firstErr
 		}
@@ -142,8 +164,11 @@ func runWebSearch(
 	return nil, errors.New("搜索全挂了（代理不通）")
 }
 
-// searchBackendsOnce runs one full backend pass with one client and
-// reports whether the failures were transport-level (proxy's fault).
+// searchBackendsOnce runs one full backend pass with one client. The
+// second return says the whole pass failed rotation-worthy — every
+// failure was a transport error or a bot challenge — meaning this
+// egress IP is useless for search right now and the caller should
+// pick another proxy.
 func searchBackendsOnce(
 	ctx context.Context,
 	client *http.Client,
@@ -151,10 +176,10 @@ func searchBackendsOnce(
 ) ([]webSearchResult, bool, error) {
 	if strings.TrimSpace(apiURL) != "" {
 		results, err := searchJSONEndpoint(ctx, client, apiURL, apiKey, query)
-		return results, isTransportErr(err), err
+		return results, isTransportErr(err) || errors.Is(err, errBotChallenge), err
 	}
 	var firstErr error
-	allTransport := true
+	allRotateWorthy := true
 	sawErr := false
 	for _, backend := range []func(context.Context, *http.Client, string) ([]webSearchResult, error){
 		searchBing,
@@ -167,8 +192,8 @@ func searchBackendsOnce(
 		}
 		if err != nil {
 			sawErr = true
-			if !isTransportErr(err) {
-				allTransport = false
+			if !isTransportErr(err) && !errors.Is(err, errBotChallenge) {
+				allRotateWorthy = false
 			}
 			if firstErr == nil {
 				firstErr = err
@@ -181,7 +206,7 @@ func searchBackendsOnce(
 	if !sawErr {
 		return nil, false, nil
 	}
-	return nil, allTransport, firstErr
+	return nil, allRotateWorthy, firstErr
 }
 
 // searchBing scrapes bing.com — reachable from mainland-CN servers,
@@ -210,7 +235,11 @@ func searchBing(
 	if err != nil {
 		return nil, err
 	}
-	return parseBingResults(string(body)), nil
+	page := string(body)
+	if looksLikeBotChallenge(page) {
+		return nil, errBotChallenge
+	}
+	return parseBingResults(page), nil
 }
 
 func parseBingResults(page string) []webSearchResult {
@@ -321,6 +350,9 @@ func searchDuckDuckGoLite(
 		return nil, err
 	}
 	page := string(body)
+	if looksLikeBotChallenge(page) {
+		return nil, errBotChallenge
+	}
 	links := ddgLinkRe.FindAllStringSubmatch(page, webSearchMaxResults*2)
 	snippets := ddgSnippetRe.FindAllStringSubmatch(page, webSearchMaxResults*2)
 	results := make([]webSearchResult, 0, webSearchMaxResults)
