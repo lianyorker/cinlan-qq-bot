@@ -21,14 +21,14 @@ func TestRewriteXURLStatusToFxTwitter(t *testing.T) {
 	}
 }
 
-func TestRewriteXURLProfileToSyndication(t *testing.T) {
+func TestRewriteXURLProfileToFxTwitter(t *testing.T) {
 	u, err := url.Parse("https://twitter.com/thsottiaux")
 	if err != nil {
 		t.Fatal(err)
 	}
 	got := rewriteXURL(u)
-	if got.Hostname() != "syndication.twitter.com" {
-		t.Fatalf("profile url → %s, want syndication host", got)
+	if got.String() != "https://api.fxtwitter.com/thsottiaux" {
+		t.Fatalf("profile url → %s, want fxtwitter user endpoint", got)
 	}
 }
 

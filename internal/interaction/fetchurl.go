@@ -34,8 +34,9 @@ func FetchURLTool(pool *ProxyPool) tool.Definition {
 	return tool.Definition{
 		Name: "fetch_url",
 		Description: "打开一个网页链接，读取正文内容（像人点开链接看一眼）。看资讯、读文章、" +
-			"看搜索结果里某个页面具体写了什么时用。x.com/twitter 链接直接丢进来就行，" +
-			"能读到推文正文；个人主页链接能看到最近的推文列表。" +
+			"看搜索结果里某个页面具体写了什么时用。x.com/twitter 链接直接丢进来就行：" +
+			"单条推文链接能读到正文；个人主页链接（x.com/用户名）能拿到账号档案" +
+			"（简介/粉丝数/注册时间等，没有推文列表）。想知道某条推文内容就让对方发那条的链接。" +
 			"只知道某人推名就把 https://x.com/<用户名> 拼出来抓。",
 		Parameters: map[string]any{
 			"type": "object",
@@ -95,10 +96,10 @@ func publicFetchURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-// rewriteXURL maps x.com/twitter.com links onto endpoints that return
-// real text — the site itself serves a bare JS shell to scrapers. Status
-// pages go through api.fxtwitter.com (JSON carrying the tweet text);
-// profiles go through the syndication timeline widget.
+// rewriteXURL maps x.com/twitter.com links onto api.fxtwitter.com — the
+// site itself serves a bare JS shell to scrapers, while fxtwitter
+// returns clean JSON for both tweets and profiles. The old syndication
+// profile widget only serves a JS loader page now, so it is gone.
 func rewriteXURL(u *url.URL) *url.URL {
 	host := strings.ToLower(u.Hostname())
 	if host != "x.com" && !strings.HasSuffix(host, ".x.com") &&
@@ -117,8 +118,7 @@ func rewriteXURL(u *url.URL) *url.URL {
 	}
 	if len(parts) >= 1 && parts[0] != "" &&
 		!strings.EqualFold(parts[0], "i") && !strings.EqualFold(parts[0], "hashtag") {
-		r, err := url.Parse("https://syndication.twitter.com/srv/timeline-profile/screen-name/" +
-			parts[0] + "?dnt=true&limit=10")
+		r, err := url.Parse("https://api.fxtwitter.com/" + parts[0])
 		if err == nil {
 			return r
 		}
@@ -249,6 +249,20 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 					ScreenName string `json:"screen_name"`
 				} `json:"author"`
 			} `json:"tweet"`
+			User *struct {
+				ScreenName  string `json:"screen_name"`
+				Name        string `json:"name"`
+				Description string `json:"description"`
+				Followers   int    `json:"followers"`
+				Following   int    `json:"following"`
+				Tweets      int    `json:"tweets"`
+				Likes       int    `json:"likes"`
+				Joined      string `json:"joined"`
+				Location    string `json:"location"`
+				Website     struct {
+					DisplayURL string `json:"display_url"`
+				} `json:"website"`
+			} `json:"user"`
 		}
 		var oembed struct {
 			HTML       string `json:"html"`
@@ -265,6 +279,26 @@ func fetchWithClient(ctx context.Context, client *http.Client, u *url.URL) (stri
 			} else {
 				text = fx.Tweet.Text
 			}
+		case json.Unmarshal(body, &fx) == nil && fx.User != nil && fx.User.ScreenName != "":
+			u := fx.User
+			var b strings.Builder
+			fmt.Fprintf(&b, "@%s（%s）\n", u.ScreenName, u.Name)
+			if u.Description != "" {
+				fmt.Fprintf(&b, "简介：%s\n", u.Description)
+			}
+			fmt.Fprintf(&b, "粉丝 %d · 关注 %d · 推文 %d · 喜欢 %d\n",
+				u.Followers, u.Following, u.Tweets, u.Likes)
+			if u.Joined != "" {
+				fmt.Fprintf(&b, "注册：%s\n", u.Joined)
+			}
+			if u.Location != "" {
+				fmt.Fprintf(&b, "位置：%s\n", u.Location)
+			}
+			if u.Website.DisplayURL != "" {
+				fmt.Fprintf(&b, "网站：%s\n", u.Website.DisplayURL)
+			}
+			b.WriteString("（档案接口只给用户信息，推文列表接口已失效；具体推文请发单条链接）")
+			text = b.String()
 		case json.Unmarshal(body, &oembed) == nil && oembed.HTML != "":
 			text = htmlToReadableText(oembed.HTML)
 			if oembed.AuthorName != "" {
