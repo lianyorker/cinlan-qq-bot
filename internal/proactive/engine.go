@@ -242,10 +242,11 @@ func (e *Engine) sweep(ctx context.Context) {
 				continue
 			}
 			// Mood gates the urge to talk: sulking chats stay silent,
-			// cheerful chats get chatty.
+			// cheerful chats get chatty. EffectiveMood blends in what
+			// she's carrying from other rooms — 群情绪带回家.
 			moodScore := 0
 			if e.deps.ChatPrefs != nil {
-				moodScore = e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())
+				moodScore = e.deps.ChatPrefs.EffectiveMood(plat, selfID, chatType, chatID, e.deps.Now())
 				if moodScore <= -30 {
 					continue
 				}
@@ -287,32 +288,49 @@ var birthdayPattern = regexp.MustCompile(
 	`(?:生日[^0-9]{0,4}(\d{1,2})[-.月](\d{1,2})日?)|(?:(\d{1,2})[-.月](\d{1,2})日?[^0-9]{0,4}生日)`,
 )
 
+// anniversaryPattern catches remembered anniversaries: 纪念日10.28 /
+// 周年5-20 / 在一起6月1日 / 认识3.15 两周年 and friends — the date
+// sits within a few chars of the marker word, either side.
+var anniversaryPattern = regexp.MustCompile(
+	`(?:纪念|周年|在一起|认识)[^0-9]{0,6}(\d{1,2})[-.月](\d{1,2})日?|` +
+		`(?:(\d{1,2})[-.月](\d{1,2})日?[^0-9]{0,6}(?:纪念|周年))`,
+)
+
+// occasionDay extracts a matched MM-DD date from a fact text using the
+// given two-alternative pattern; "" when the text has no usable date.
+func occasionDay(pattern *regexp.Regexp, text string) string {
+	m := pattern.FindStringSubmatch(text)
+	if m == nil {
+		return ""
+	}
+	mm, dd := m[1], m[2]
+	if mm == "" {
+		mm, dd = m[3], m[4]
+	}
+	return fmtBirthday(mm, dd)
+}
+
 // occasionFor returns today's greeting hook for a chat — a remembered
-// birthday or a fixed festival — or "" when today is an ordinary day.
+// birthday, an anniversary, or a fixed festival — or "" when today is
+// an ordinary day.
 func (e *Engine) occasionFor(plat, selfID, chatType, chatID string) string {
 	now := e.deps.Now()
 	today := now.Format("01-02")
 	if e.deps.ChatPrefs != nil {
 		for _, f := range e.deps.ChatPrefs.FactsSnapshot(plat, selfID, chatType, chatID) {
-			if m := birthdayPattern.FindStringSubmatch(f.Text); m != nil {
-				mm, dd := m[1], m[2]
-				if mm == "" {
-					mm, dd = m[3], m[4]
-				}
-				if fmtBirthday(mm, dd) == today {
-					return "今天你记得他们中有人过生日（" + f.Text + "）"
-				}
+			if occasionDay(birthdayPattern, f.Text) == today {
+				return "今天你记得他们中有人过生日（" + f.Text + "）"
+			}
+			if occasionDay(anniversaryPattern, f.Text) == today {
+				return "今天你记得一个纪念日（" + f.Text + "）"
 			}
 		}
 		for _, imp := range e.deps.ChatPrefs.ImpressionSnapshot(plat, selfID, chatType, chatID) {
-			if m := birthdayPattern.FindStringSubmatch(imp.Text); m != nil {
-				mm, dd := m[1], m[2]
-				if mm == "" {
-					mm, dd = m[3], m[4]
-				}
-				if fmtBirthday(mm, dd) == today {
-					return "今天你记得他们中有人过生日（" + imp.Text + "）"
-				}
+			if occasionDay(birthdayPattern, imp.Text) == today {
+				return "今天你记得他们中有人过生日（" + imp.Text + "）"
+			}
+			if occasionDay(anniversaryPattern, imp.Text) == today {
+				return "今天你记得一个纪念日（" + imp.Text + "）"
 			}
 		}
 	}
@@ -559,9 +577,17 @@ func (e *Engine) fire(
 			system += "\n你之前答应过的事（这次开口可以先兑现它）：\n" +
 				strings.Join(lines, "\n")
 		}
-		moodScore := e.deps.ChatPrefs.MoodScore(plat, selfID, chatType, chatID, e.deps.Now())
+		moodScore := e.deps.ChatPrefs.EffectiveMood(plat, selfID, chatType, chatID, e.deps.Now())
 		if hint := mood.Hint(moodScore); hint != "" {
 			system += "\n" + hint
+		}
+		// 念头连载: a line she half-formed earlier and never sent is
+		// her best opener — she doesn't forget what she meant to say
+		// just because the room woke up first.
+		if pt := e.deps.ChatPrefs.PendingThought(plat, selfID, chatType, chatID, e.deps.Now()); pt != "" &&
+			security.TextSafeForPrompt(pt) {
+			system += "\n你之前酝酿过一句没发出去的话：「" + pt +
+				"」——想接着说就自然续上（别原样复读），不想提就当没想过"
 		}
 		// Time-of-day vibe + chat-banned phrases apply to cold openers
 		// too — proactive text bypasses the pipeline tone guard.
@@ -638,6 +664,9 @@ func (e *Engine) fire(
 			e.deps.Now().Sub(last) < 8*time.Second {
 			e.deps.Logger.Info("proactive dropped — group woke up",
 				"chat_id", chatID)
+			// The thought survives — she puts the sentence away for a
+			// quieter moment instead of forgetting it.
+			e.shelveThought(plat, selfID, chatType, chatID, replyText)
 			return
 		}
 	}
@@ -648,7 +677,12 @@ func (e *Engine) fire(
 		ctx, plat, chatType, chatID, selfID, rule.Persona, replyText,
 	)
 	if !sent {
+		e.shelveThought(plat, selfID, chatType, chatID, replyText)
 		return
+	}
+	// Said and done — any shelved thought is stale now.
+	if e.deps.ChatPrefs != nil {
+		e.deps.ChatPrefs.ClearPendingThought(plat, selfID, chatType, chatID)
 	}
 	if e.deps.Touch != nil {
 		e.deps.Touch(chatType, chatID)
@@ -666,6 +700,27 @@ func (e *Engine) fire(
 // proactive sends — follows the global set, all-on when unset.
 func (e *Engine) markerOn(id string) bool {
 	return e.deps.MarkerOn == nil || e.deps.MarkerOn(id)
+}
+
+// shelveThought stores an unsent proactive line as the chat's
+// pending thought — markers stripped, text-only, bounded by the
+// store's own 80-rune cap. Empty leftovers shelve nothing.
+func (e *Engine) shelveThought(plat, selfID, chatType, chatID, replyText string) {
+	if e.deps.ChatPrefs == nil {
+		return
+	}
+	text := proactiveLeftoverMarker.ReplaceAllString(replyText, "")
+	var b strings.Builder
+	for _, line := range strings.Split(text, "\n") {
+		if t := strings.TrimSpace(line); t != "" {
+			b.WriteString(t)
+			b.WriteByte(' ')
+		}
+	}
+	e.deps.ChatPrefs.SetPendingThought(
+		plat, selfID, chatType, chatID,
+		strings.TrimSpace(b.String()), e.deps.Now(),
+	)
 }
 
 // proactiveImageMarker matches a whole-line [[SELFIE:tag]] / [[MEME:q]] /

@@ -476,7 +476,7 @@ func (s *Service) sendVoiceClips(
 	// the operator opted in — rate already bends, this colors the tone.
 	clipEmotion := ""
 	if s.cfg.VoiceMoodEmotion && s.cfg.MoodEnabled && s.chatPrefs != nil {
-		clipEmotion = moodEmotion(s.chatPrefs.MoodScore(
+		clipEmotion = moodEmotion(s.chatPrefs.EffectiveMood(
 			plat, selfID, chatType, chatID, s.now(),
 		))
 	}

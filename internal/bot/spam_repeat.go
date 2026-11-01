@@ -419,7 +419,7 @@ func (s *Service) rollEchoChance(selfID, chatType, chatID string) int {
 	if !s.cfg.MoodEnabled || s.chatPrefs == nil {
 		return 30
 	}
-	switch mood := s.chatPrefs.MoodScore(
+	switch mood := s.chatPrefs.EffectiveMood(
 		platform.PlatformQQOneBot, selfID, chatType, chatID, s.now(),
 	); {
 	case mood >= 40:

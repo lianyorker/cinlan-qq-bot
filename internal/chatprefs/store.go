@@ -66,6 +66,10 @@ type fact struct {
 	// TriggerAt is only set on Reminders entries — the moment this
 	// prospective memory should surface on its own.
 	TriggerAt time.Time `json:"trigger_at,omitempty"`
+	// Prev records the earlier memory this line seems to contradict —
+	// "上次说怕猫" later "他家猫很可爱" keeps both, with the new line
+	// carrying what it may have replaced so recall can show the tension.
+	Prev string `json:"prev,omitempty"`
 }
 
 // factWeight normalizes the heat multiplier; stored zero / corrupt
@@ -158,6 +162,15 @@ type chatEntry struct {
 	// Facts so a pending reminder never leaks into ordinary recall
 	// before its time.
 	Reminders []fact `json:"reminders,omitempty"`
+	// PendingThought is a half-formed proactive line she never sent —
+	// the room woke up, or the send failed. Kept so the next quiet
+	// window can pick the thought back up instead of starting cold.
+	PendingThought   string    `json:"pending_thought,omitempty"`
+	PendingThoughtAt time.Time `json:"pending_thought_at,omitempty"`
+	// LastGreetDay (YYYY-MM-DD) marks the last day an inbound message
+	// reached this chat — the 时段问候 anchor. Persisted so a restart
+	// doesn't make her greet twice.
+	LastGreetDay string `json:"last_greet_day,omitempty"`
 }
 
 // persistedStore wraps the chat map with persona-scoped user profiles.
@@ -167,6 +180,28 @@ type persistedStore struct {
 	Chats    map[string]*chatEntry `json:"chats"`
 	Profiles map[string]fact       `json:"profiles,omitempty"` // key = persona+"|"+userID
 	Cards    map[string]UserCard   `json:"cards,omitempty"`    // key = userID
+	// SelfMoods is the per-account emotional undertow — the mood she
+	// carries between chats. A group fight shouldn't sour one room's
+	// meter only to reset the moment she opens a DM; people don't work
+	// that way. Keyed "platform:selfID", decays like chat mood.
+	SelfMoods map[string]selfMood `json:"self_moods,omitempty"`
+}
+
+// selfMood is the account-level mood component: same -100..100 scale
+// and hourly decay as chat mood, written by negative bumps only —
+// 群情绪带回家 means a bad room follows her, not every happy ping.
+type selfMood struct {
+	Score int       `json:"score,omitempty"`
+	At    time.Time `json:"at,omitempty"`
+}
+
+// UserStyle is a lightweight learned voice profile: average message
+// length (EMA) and favorite particles, observed from inbound text.
+// Enough samples let replies mirror how this person actually talks.
+type UserStyle struct {
+	Samples int            `json:"samples,omitempty"`
+	AvgLen  float64        `json:"avg_len,omitempty"`
+	Top     map[string]int `json:"top,omitempty"`
 }
 
 // GroupBadge is what a member is inside one group — public group data,
@@ -187,23 +222,27 @@ type UserCard struct {
 	Sign string `json:"sign,omitempty"`
 	// Region is the QQ profile's self-declared location (地区), e.g.
 	// "浙江 杭州" — she knows where he lives without ever asking.
-	Region    string                `json:"region,omitempty"`
-	Friend    bool                  `json:"friend,omitempty"`
-	Badges    map[string]GroupBadge `json:"badges,omitempty"`
-	FetchedAt time.Time             `json:"fetched_at"`
+	Region string                `json:"region,omitempty"`
+	Friend bool                  `json:"friend,omitempty"`
+	Badges map[string]GroupBadge `json:"badges,omitempty"`
+	// Style is learned from what they send — preserved across profile
+	// refreshes the same way Badges are.
+	Style     UserStyle `json:"style,omitempty"`
+	FetchedAt time.Time `json:"fetched_at"`
 }
 
 // Store is a small JSON-file-backed per-chat preference store keyed by
 // "<platform>:<chat_type>:<chat_id>" so the same chat id on two
 // platforms never shares memory.
 type Store struct {
-	path     string
-	mu       sync.RWMutex
-	data     map[string]*chatEntry
-	profiles map[string]fact
-	cards    map[string]UserCard
-	now      func() time.Time
-	vec      *vecstore.Engine
+	path      string
+	mu        sync.RWMutex
+	data      map[string]*chatEntry
+	profiles  map[string]fact
+	cards     map[string]UserCard
+	selfMoods map[string]selfMood
+	now       func() time.Time
+	vec       *vecstore.Engine
 
 	// Debounced persistence: saveLocked only marks the store dirty and
 	// nudges saveCh; a background loop coalesces bursts and flushLocked
@@ -232,13 +271,14 @@ func (s *Store) VecEngine() *vecstore.Engine {
 
 func Load(path, legacyPlatform string) (*Store, error) {
 	store := &Store{
-		path:     path,
-		data:     map[string]*chatEntry{},
-		profiles: map[string]fact{},
-		cards:    map[string]UserCard{},
-		now:      time.Now,
-		saveCh:   make(chan struct{}, 1),
-		closeCh:  make(chan struct{}),
+		path:      path,
+		data:      map[string]*chatEntry{},
+		profiles:  map[string]fact{},
+		cards:     map[string]UserCard{},
+		selfMoods: map[string]selfMood{},
+		now:       time.Now,
+		saveCh:    make(chan struct{}, 1),
+		closeCh:   make(chan struct{}),
 	}
 	raw, err := os.ReadFile(path)
 	if err != nil {
@@ -260,6 +300,7 @@ func Load(path, legacyPlatform string) (*Store, error) {
 		store.data = p.Chats
 		store.profiles = p.Profiles
 		store.cards = p.Cards
+		store.selfMoods = p.SelfMoods
 	} else if err := json.Unmarshal(raw, &store.data); err != nil {
 		return nil, err
 	}
@@ -271,6 +312,9 @@ func Load(path, legacyPlatform string) (*Store, error) {
 	}
 	if store.cards == nil {
 		store.cards = map[string]UserCard{}
+	}
+	if store.selfMoods == nil {
+		store.selfMoods = map[string]selfMood{}
 	}
 	if store.migrateLegacy(legacyPlatform) {
 		// Rewrite the file in the new layout right away — otherwise the
@@ -641,7 +685,7 @@ const (
 	// recall: anchors in [minAge, sweetSpot] are memories on the edge of
 	// fading — the ones a person actually "suddenly remembers". Older
 	// traces only surface when nothing sits in the band.
-	coldFactSweetSpot = 14 * 24 * time.Hour
+	coldFactSweetSpot    = 14 * 24 * time.Hour
 	recallFactsPerPrompt = 5
 	// recallMinScore is the CJK-bigram overlap a fact needs before the
 	// bot "remembers" it mid-turn. 2 keeps real cues ("阿茶"+"咖啡")
@@ -942,6 +986,19 @@ func (s *Store) addFactLocked(e *chatEntry, text string, o factOpts, now time.Ti
 			return s.saveLocked()
 		}
 	}
+	// Conflict marker: same-topic, different wording — the new memory
+	// carries the old text so recall can admit "你之前记的好像不一样".
+	// Prefixed ledger lines (承诺·/他答应·/日记·/状态·) are exempt:
+	// they're tracked obligations, not opinions that can contradict.
+	var prev string
+	if !specialFactText(text) {
+		if idx := bestFactMatch(e.Facts, text); idx >= 0 {
+			prev = e.Facts[idx].Text
+			if r := []rune(prev); len(r) > 40 {
+				prev = string(r[:40]) + "…"
+			}
+		}
+	}
 	if len(e.Facts) >= maxFactsPerChat {
 		oldest := 0
 		for i := range e.Facts {
@@ -963,9 +1020,21 @@ func (s *Store) addFactLocked(e *chatEntry, text string, o factOpts, now time.Ti
 		Text: text, CreatedAt: now, LastSeenAt: now, Mood: currentMood,
 		Weight: initWeight,
 		UserID: o.UserID, UserName: o.UserName,
-		Context: o.Context, Self: o.Self,
+		Context: o.Context, Self: o.Self, Prev: prev,
 	})
 	return s.saveLocked()
+}
+
+// specialFactText reports whether the line is a ledger/record fact
+// (promise, owed, journal, state) rather than an opinion that can
+// contradict an earlier memory.
+func specialFactText(text string) bool {
+	for _, p := range []string{promisePrefix, owedPromisePrefix, "日记·", "状态·", "很久以前:"} {
+		if strings.HasPrefix(text, p) {
+			return true
+		}
+	}
+	return false
 }
 
 // AddToneBan records a phrase this chat told her to stop saying.
@@ -1121,6 +1190,12 @@ func (s *Store) HasThoughtMaterial(platform, selfID, chatType, chatID string, no
 	if e == nil {
 		return false
 	}
+	// A shelved pending thought is itself material — there's literally
+	// something she meant to say and never got to.
+	if e.PendingThought != "" &&
+		(e.PendingThoughtAt.IsZero() || now.Sub(e.PendingThoughtAt) <= pendingThoughtMaxAge) {
+		return true
+	}
 	recent := now.Add(-14 * 24 * time.Hour)
 	for _, f := range e.Facts {
 		if strings.HasPrefix(f.Text, promisePrefix) ||
@@ -1157,6 +1232,47 @@ func (s *Store) ReplaceFact(platform, selfID, chatType, chatID, target, text str
 		return s.saveLocked()
 	}
 	return s.addFactLocked(e, text, factOpts{}, now)
+}
+
+// CorrectFactFragment rewrites a fragment inside the closest fact
+// — "不是周五，是周六" patches 周五→周六 in place instead of
+// replacing the whole line, keeping the memory's context and its
+// speaker tag. A corrected conflict also drops its Prev note: the
+// tension is resolved, no more hedging needed. Returns false when
+// no fact actually contains the fragment (a fuzzy bigram match is
+// not good enough to edit someone's memory on a guess).
+func (s *Store) CorrectFactFragment(platform, selfID, chatType, chatID, oldFrag, newFrag string) bool {
+	oldFrag = strings.TrimSpace(oldFrag)
+	newFrag = strings.TrimSpace(newFrag)
+	if oldFrag == "" || newFrag == "" || oldFrag == newFrag {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil {
+		return false
+	}
+	now := s.now()
+	for i, f := range e.Facts {
+		if strings.Contains(f.Text, oldFrag) {
+			e.Facts[i].Text = strings.Replace(f.Text, oldFrag, newFrag, 1)
+			e.Facts[i].LastSeenAt = now
+			e.Facts[i].Prev = ""
+			_ = s.saveLocked()
+			return true
+		}
+	}
+	// Long-term pool too — a stale line in the Archive is just as wrong.
+	for i, f := range e.Archive {
+		if strings.Contains(f.Text, oldFrag) {
+			e.Archive[i].Text = strings.Replace(f.Text, oldFrag, newFrag, 1)
+			e.Archive[i].Prev = ""
+			_ = s.saveLocked()
+			return true
+		}
+	}
+	return false
 }
 
 // ForgetFact drops the closest matching fact — deliberate forgetting.
@@ -1510,8 +1626,116 @@ func (s *Store) SetUserCard(platform, userID string, card UserCard) error {
 	uk := userKey(platform, userID)
 	old := s.cards[uk]
 	card.Badges = old.Badges // badges are group-scoped, kept across refreshes
+	card.Style = old.Style   // learned voice survives profile refetches too
 	s.cards[uk] = card
 	return s.saveLocked()
+}
+
+// styleParticles is the fixed vocabulary the voice profile tracks —
+// filler tails and tic words people lean on. Anything outside this
+// list still shapes AvgLen but isn't counted as a signature word.
+var styleParticles = []string{
+	"笑死", "草", "hh", "233", "啊", "捏", "嘛", "呢", "呀", "哦",
+	"哈", "嗯", "好家伙", "确实", "属于是", "绷", "乐", "行吧", "ok",
+}
+
+// styleTopKeep bounds the stored particle histogram so a talkative
+// user can't grow the card without limit.
+const styleTopKeep = 8
+
+// ObserveUserStyle folds one inbound message into the user's voice
+// profile — message length via EMA, particle hits counted once each.
+// Runs on every real text message; commands and empty lines skip.
+func (s *Store) ObserveUserStyle(platform, userID, text string) {
+	userID = strings.TrimSpace(userID)
+	text = strings.TrimSpace(text)
+	if userID == "" || text == "" || strings.HasPrefix(text, "/") {
+		return
+	}
+	runes := []rune(text)
+	if len(runes) < 2 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	uk := userKey(platform, userID)
+	c := s.cards[uk]
+	st := c.Style
+	st.Samples++
+	if st.AvgLen <= 0 {
+		st.AvgLen = float64(len(runes))
+	} else {
+		st.AvgLen += 0.15 * (float64(len(runes)) - st.AvgLen)
+	}
+	lower := strings.ToLower(text)
+	for _, p := range styleParticles {
+		if strings.Contains(lower, p) {
+			if st.Top == nil {
+				st.Top = map[string]int{}
+			}
+			st.Top[p]++
+		}
+	}
+	// Keep only the strongest particle entries — the tail is noise.
+	if len(st.Top) > styleTopKeep {
+		type kv struct {
+			k string
+			v int
+		}
+		pairs := make([]kv, 0, len(st.Top))
+		for k, v := range st.Top {
+			pairs = append(pairs, kv{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
+		for _, p := range pairs[styleTopKeep:] {
+			delete(st.Top, p.k)
+		}
+	}
+	c.Style = st
+	s.cards[uk] = c
+	_ = s.saveLocked()
+}
+
+// UserStyleLine renders the learned voice as one compact prompt clause
+// ("说话偏短，爱说「笑死」「捏」"), "" until there's enough signal —
+// fewer than 15 messages is too early to imitate anyone.
+func UserStyleLine(st UserStyle) string {
+	if st.Samples < 15 {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	switch {
+	case st.AvgLen > 0 && st.AvgLen < 10:
+		parts = append(parts, "说话偏短")
+	case st.AvgLen > 25:
+		parts = append(parts, "说话挺长")
+	}
+	if len(st.Top) > 0 {
+		type kv struct {
+			k string
+			v int
+		}
+		pairs := make([]kv, 0, len(st.Top))
+		for k, v := range st.Top {
+			pairs = append(pairs, kv{k, v})
+		}
+		sort.Slice(pairs, func(i, j int) bool { return pairs[i].v > pairs[j].v })
+		favs := make([]string, 0, 3)
+		for _, p := range pairs {
+			// Below ~1/4 of messages it's a coincidence, not a tic.
+			if p.v < 3 || p.v*4 < st.Samples {
+				continue
+			}
+			favs = append(favs, "「"+p.k+"」")
+			if len(favs) == 3 {
+				break
+			}
+		}
+		if len(favs) > 0 {
+			parts = append(parts, "爱说"+strings.Join(favs, ""))
+		}
+	}
+	return strings.Join(parts, "，")
 }
 
 // SetUserBadge records role/title a user holds in one group.
@@ -1583,7 +1807,9 @@ func decayedMood(e *chatEntry, now time.Time) int {
 }
 
 // BumpMood adjusts the chat mood score by delta (clamped -100..100) and
-// persists. Returns the resulting decayed-adjusted score.
+// persists. Returns the resulting decayed-adjusted score. Negative bumps
+// also bleed into the account-level self mood at half strength — 群情绪
+// 带回家, a fight in one room follows her into the next one for a while.
 func (s *Store) BumpMood(platform, selfID, chatType, chatID string, delta int, now time.Time) (int, error) {
 	if delta == 0 {
 		return s.MoodScore(platform, selfID, chatType, chatID, now), nil
@@ -1599,6 +1825,9 @@ func (s *Store) BumpMood(platform, selfID, chatType, chatID string, delta int, n
 	}
 	e.Mood = mood
 	e.MoodAt = now
+	if delta < 0 {
+		s.bumpSelfMoodLocked(platform, selfID, delta/2, now)
+	}
 	return mood, s.saveLocked()
 }
 
@@ -1607,6 +1836,141 @@ func (s *Store) MoodScore(platform, selfID, chatType, chatID string, now time.Ti
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return decayedMood(s.lookup(platform, selfID, chatType, chatID), now)
+}
+
+// selfMoodKey scopes the account mood to its platform+account pair.
+func selfMoodKey(platform, selfID string) string {
+	return strings.TrimSpace(platform) + ":" + strings.TrimSpace(selfID)
+}
+
+// decayedSelfMood pulls the account mood toward zero at the same rate
+// as chat mood — a bad morning doesn't sour the whole week either.
+func decayedSelfMood(m selfMood, now time.Time) int {
+	if m.Score == 0 {
+		return 0
+	}
+	if m.At.IsZero() {
+		return m.Score
+	}
+	steps := int(now.Sub(m.At).Hours() * moodDecayPerHour)
+	if steps <= 0 {
+		return m.Score
+	}
+	if m.Score > 0 {
+		if v := m.Score - steps; v > 0 {
+			return v
+		}
+		return 0
+	}
+	if v := m.Score + steps; v < 0 {
+		return v
+	}
+	return 0
+}
+
+// bumpSelfMoodLocked nudges the account mood under the held lock.
+// Callers pass a fractional delta (negative only in practice).
+func (s *Store) bumpSelfMoodLocked(platform, selfID string, delta int, now time.Time) {
+	if delta == 0 {
+		return
+	}
+	k := selfMoodKey(platform, selfID)
+	m := s.selfMoods[k]
+	score := decayedSelfMood(m, now) + delta
+	if score > 100 {
+		score = 100
+	} else if score < -100 {
+		score = -100
+	}
+	s.selfMoods[k] = selfMood{Score: score, At: now}
+}
+
+// EffectiveMood is the mood she actually speaks from in this chat —
+// the room's own score plus whatever the account is still carrying
+// from elsewhere (群里受的委屈,私聊里也笑不出来). Clamped -100..100.
+func (s *Store) EffectiveMood(platform, selfID, chatType, chatID string, now time.Time) int {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	v := decayedMood(s.lookup(platform, selfID, chatType, chatID), now) +
+		decayedSelfMood(s.selfMoods[selfMoodKey(platform, selfID)], now)
+	if v > 100 {
+		v = 100
+	} else if v < -100 {
+		v = -100
+	}
+	return v
+}
+
+// SetPendingThought keeps a half-formed proactive line for later —
+// 早上想的下午接着想. Overwrites whatever was pending; the thought is
+// cheap, one line is enough.
+func (s *Store) SetPendingThought(platform, selfID, chatType, chatID, text string, now time.Time) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return
+	}
+	if r := []rune(text); len(r) > 80 {
+		text = string(r[:80]) + "…"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.entry(platform, selfID, chatType, chatID)
+	e.PendingThought = text
+	e.PendingThoughtAt = now
+	_ = s.saveLocked()
+}
+
+// pendingThoughtMaxAge is how long a shelved thought stays fresh —
+// yesterday's idea is still continuable, last week's reads forced.
+const pendingThoughtMaxAge = 36 * time.Hour
+
+// PendingThought returns the shelved proactive line when it's still
+// warm, "" otherwise. Stale thoughts are cleared on read.
+func (s *Store) PendingThought(platform, selfID, chatType, chatID string, now time.Time) string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil || e.PendingThought == "" {
+		return ""
+	}
+	if !e.PendingThoughtAt.IsZero() && now.Sub(e.PendingThoughtAt) > pendingThoughtMaxAge {
+		e.PendingThought = ""
+		e.PendingThoughtAt = time.Time{}
+		_ = s.saveLocked()
+		return ""
+	}
+	return e.PendingThought
+}
+
+// ClearPendingThought drops the shelved line — call after it was sent
+// or consciously abandoned so it can't leak back in forever.
+func (s *Store) ClearPendingThought(platform, selfID, chatType, chatID string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil || e.PendingThought == "" {
+		return
+	}
+	e.PendingThought = ""
+	e.PendingThoughtAt = time.Time{}
+	_ = s.saveLocked()
+}
+
+// FirstContactOfDay reports whether this inbound message is the chat's
+// first of the calendar day, stamping LastGreetDay when it is. The
+// greeting hint only fires once a day — a person says good morning
+// once, not every message.
+func (s *Store) FirstContactOfDay(platform, selfID, chatType, chatID string, now time.Time) bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	today := now.Format("2006-01-02")
+	e := s.entry(platform, selfID, chatType, chatID)
+	if e.LastGreetDay == today {
+		return false
+	}
+	e.LastGreetDay = today
+	_ = s.saveLocked()
+	return true
 }
 
 // SetMuteUntil makes the bot ignore the chat until the given time —
@@ -1810,9 +2174,10 @@ func (s *Store) flushLocked() error {
 		return nil
 	}
 	raw, err := json.MarshalIndent(persistedStore{
-		Chats:    s.data,
-		Profiles: s.profiles,
-		Cards:    s.cards,
+		Chats:     s.data,
+		Profiles:  s.profiles,
+		Cards:     s.cards,
+		SelfMoods: s.selfMoods,
 	}, "", "  ")
 	if err != nil {
 		return err

@@ -326,6 +326,11 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		event.Stop("peer_account")
 		return nil
 	}
+	// Voice sampling: fold this message into the sender's learned
+	// style profile. Read-only on behavior — it never gates anything.
+	if s.chatPrefs != nil && !state.pokeEvent {
+		s.chatPrefs.ObserveUserStyle(state.platform, state.userID, state.text)
+	}
 	if handled := s.checkRepeatSpam(ctx, event, state); handled {
 		return nil
 	}
@@ -953,7 +958,7 @@ func (s *Service) shouldSkipReply(state *flowState) bool {
 		return false
 	}
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
-		moodScore := s.chatPrefs.MoodScore(
+		moodScore := s.chatPrefs.EffectiveMood(
 			state.platform, state.selfID, state.chatType, state.chatID, s.now())
 		if moodScore <= -30 {
 			baseChance += 0.15
@@ -1301,6 +1306,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if line := s.describeUserCard(state); line != "" {
 			request.SystemPrompt += "\n\n" + line
 		}
+		// 时段问候锚点: a private "first message of the day" is when a
+		// person would naturally open with 早/晚上好 — she gets one
+		// quiet nudge, then the stamp makes her stop pushing it.
+		if state.chatType == platform.ChatPrivate && !state.pokeEvent &&
+			s.chatPrefs.FirstContactOfDay(state.platform, state.selfID, state.chatType, state.chatID, s.now()) {
+			request.SystemPrompt += "\n\n（他今天" +
+				firstContactTimeWord(s.now().Hour()) +
+				"第一次找你说话——打招呼很自然，不想刻意就跳过）"
+		}
 		// Self-learned layer, human-shaped: a steady core of fresh facts,
 		// plus memories this message just pulled back to mind. Lower trust
 		// than operator notes — the remember tool keeps them editable.
@@ -1400,6 +1414,13 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			if f.Context != "" {
 				scene = "（当时在聊" + f.Context + "）"
 			}
+			// Conflict note: the new memory carries what it may have
+			// replaced — she can hedge ("我记得之前好像不一样") instead
+			// of silently trusting the freshest line.
+			conflict := ""
+			if f.Prev != "" {
+				conflict = "（跟你之前记的「" + f.Prev + "」不太一样，以哪条为准自己掂量）"
+			}
 			if f.Self {
 				// Autobiographical memory — she lived this, not
 				// observed it. First-person lead, no speaker tag.
@@ -1409,15 +1430,15 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 					selfLead = "你隐约记得自己当时"
 				}
 				recalled = append(recalled, fmt.Sprintf(
-					"%s（%s%s）：%s%s%s",
+					"%s（%s%s）：%s%s%s%s",
 					selfLead, factAge(now, f.CreatedAt), hedge,
-					f.Text, scene, factMoodHint(f.Mood),
+					f.Text, scene, conflict, factMoodHint(f.Mood),
 				))
 				continue
 			}
 			recalled = append(recalled, fmt.Sprintf(
-				"%s（%s记的%s）：%s%s%s%s",
-				lead, factAge(now, f.CreatedAt), hedge, f.Text, scene, speaker, factMoodHint(f.Mood),
+				"%s（%s记的%s）：%s%s%s%s%s",
+				lead, factAge(now, f.CreatedAt), hedge, f.Text, scene, speaker, conflict, factMoodHint(f.Mood),
 			))
 		}
 		if len(recalled) > 0 {
@@ -1499,7 +1520,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// "no mood signal" so the low-mood branch can't fire on missing data.
 	moodScore := -1
 	if s.cfg.MoodEnabled && s.chatPrefs != nil {
-		moodScore = s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now())
+		// EffectiveMood blends in what she's carrying from other rooms —
+		// 群情绪带回家, not just this room's meter.
+		moodScore = s.chatPrefs.EffectiveMood(state.platform, state.selfID, state.chatType, state.chatID, s.now())
 		if hint := mood.Hint(moodScore); hint != "" {
 			request.SystemPrompt += "\n\n" + hint
 		}
@@ -1542,7 +1565,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// closing beat.
 	if len(state.history) >= 12 &&
 		(s.chatPrefs == nil ||
-			s.chatPrefs.MoodScore(state.platform, state.selfID, state.chatType, state.chatID, s.now()) < 40) {
+			s.chatPrefs.EffectiveMood(state.platform, state.selfID, state.chatType, state.chatID, s.now()) < 40) {
 		request.SystemPrompt += "\n\n（你们已经聊了好一会儿了——如果话题到段落了，你可以像真人一样主动收尾，比如「先这样我去忙了」，不用硬聊）"
 	}
 	// Burst steering rides her state the way real bursts do — chatty
@@ -1926,7 +1949,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				// fixed schedule anyone could clock.
 				moodAdj := 0.0
 				if s.cfg.MoodEnabled && s.chatPrefs != nil {
-					moodAdj = float64(s.chatPrefs.MoodScore(
+					moodAdj = float64(s.chatPrefs.EffectiveMood(
 						state.platform, state.selfID,
 						state.chatType, state.chatID, s.now(),
 					)) / 300.0
@@ -2846,6 +2869,23 @@ func (s *Service) notePromise(state *flowState) {
 	}
 }
 
+// firstContactTimeWord names the time-of-day for the daily greeting
+// nudge — the word lands inside 「他今天X第一次找你」.
+func firstContactTimeWord(hour int) string {
+	switch {
+	case hour < 5:
+		return "大半夜"
+	case hour < 11:
+		return "早上"
+	case hour < 14:
+		return "中午"
+	case hour < 18:
+		return "下午"
+	default:
+		return "晚上"
+	}
+}
+
 // correctionPattern catches the user revising an earlier claim:
 // "说错了" / "我记错了" / "不是周五是周六".
 var correctionPattern = regexp.MustCompile(
@@ -2865,8 +2905,18 @@ func (s *Service) noteCorrection(state *flowState) {
 	}
 	note := "对方纠正了自己之前的说法"
 	if m[2] != "" && m[3] != "" {
-		note = fmt.Sprintf("对方纠正：不是%s，是%s",
-			strings.TrimSpace(m[2]), strings.TrimSpace(m[3]))
+		oldFrag := strings.TrimSpace(m[2])
+		newFrag := strings.TrimSpace(m[3])
+		note = fmt.Sprintf("对方纠正：不是%s，是%s", oldFrag, newFrag)
+		// The observation tells the session; the correction also fixes
+		// the fact itself so recall stops serving the stale version.
+		if s.chatPrefs != nil &&
+			s.chatPrefs.CorrectFactFragment(
+				state.platform, state.selfID, state.chatType, state.chatID,
+				oldFrag, newFrag,
+			) {
+			note += "（记忆已同步更正）"
+		}
 	}
 	s.sessions.AddObservation(state.sessionID, "[纠错] "+note)
 }
@@ -3168,8 +3218,21 @@ func (s *Service) friendListed(ctx context.Context, state *flowState, userID str
 // — bounded to ~90 chars so it costs tens of tokens, not hundreds.
 func (s *Service) describeUserCard(state *flowState) string {
 	card, ok := s.chatPrefs.UserCard(state.platform, state.userID)
-	if !ok || card.Nick == "" {
+	if !ok {
 		return ""
+	}
+	styleLine := chatprefs.UserStyleLine(card.Style)
+	if card.Nick == "" {
+		// No fetched profile yet — the learned voice alone is still
+		// worth one short line when it exists.
+		if styleLine == "" {
+			return ""
+		}
+		label := "对方"
+		if state.chatType == platform.ChatGroup {
+			label = "发言者"
+		}
+		return label + "资料：" + styleLine
 	}
 	parts := make([]string, 0, 6)
 	parts = append(parts, card.Nick)
@@ -3200,6 +3263,9 @@ func (s *Service) describeUserCard(state *flowState) string {
 		label = "发言者"
 	}
 	line := label + "资料：" + strings.Join(parts, "，")
+	if styleLine != "" {
+		line += "，" + styleLine
+	}
 	if state.chatType == platform.ChatGroup {
 		if badge, ok := card.Badges[state.chatID]; ok {
 			if badge.Role == "owner" {
