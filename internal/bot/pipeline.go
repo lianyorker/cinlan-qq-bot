@@ -2199,7 +2199,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			"chat_id", state.chatID,
 			"parts", len(parts),
 		)
-		chains := make([]message.Chain, 0, len(parts))
+		steps := make([]replyStep, 0, len(parts))
 		cleaned := make([]string, 0, len(parts))
 		skippedMarkers := 0
 		quotePending := false
@@ -2219,9 +2219,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					)
 					continue
 				}
-				chains = append(
-					chains, message.Chain{message.Image(path)},
-				)
+				steps = append(steps, replyStep{
+					chain: message.Chain{message.Image(path)},
+				})
 				cleaned = append(cleaned, "[照片:"+key+"]")
 				s.feelAmbient(
 					ctx, state, "photo", 1, "发了张照片", 10*time.Minute,
@@ -2243,9 +2243,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					)
 					continue
 				}
-				chains = append(
-					chains, message.Chain{message.Image(path)},
-				)
+				steps = append(steps, replyStep{
+					chain: message.Chain{message.Image(path)},
+				})
 				cleaned = append(cleaned, "[表情包]")
 				s.feelAmbient(
 					ctx, state, "meme", 1, "发了张表情包", 10*time.Minute,
@@ -2264,9 +2264,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					)
 					continue
 				}
-				chains = append(
-					chains, message.Chain{message.Image(path)},
-				)
+				steps = append(steps, replyStep{
+					chain: message.Chain{message.Image(path)},
+				})
 				cleaned = append(cleaned, "[贴纸:"+tag+"]")
 				s.feelAmbient(
 					ctx, state, "selfie", 1, "发了张自己的贴纸", 10*time.Minute,
@@ -2277,17 +2277,21 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			// an emoji reaction on the inbound message, a poke, a dice
 			// or rps roll, an oops-send-then-recall.
 			if key, ok := parseReactMarker(part); ok && s.markerOn(state, "react") {
-				s.reactToMessage(ctx, state, key)
+				steps = append(steps, replyStep{action: func() {
+					s.reactToMessage(ctx, state, key)
+				}})
 				continue
 			}
 			if target, ok := parsePokeMarker(part); ok && s.markerOn(state, "poke") {
-				s.sendPoke(ctx, state, target)
+				steps = append(steps, replyStep{action: func() {
+					s.sendPoke(ctx, state, target)
+				}})
 				continue
 			}
 			if isDiceMarker(part) && s.markerOn(state, "dice") {
-				chains = append(chains, message.Chain{
+				steps = append(steps, replyStep{chain: message.Chain{
 					message.Segment(message.TypeDice, nil),
-				})
+				}})
 				cleaned = append(cleaned, "[骰子]")
 				s.feelAmbient(
 					ctx, state, "dice", 1, "掷了个骰子", 10*time.Minute,
@@ -2298,9 +2302,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				continue
 			}
 			if isRPSMarker(part) && s.markerOn(state, "rps") {
-				chains = append(chains, message.Chain{
+				steps = append(steps, replyStep{chain: message.Chain{
 					message.Segment(message.TypeRPS, nil),
-				})
+				}})
 				cleaned = append(cleaned, "[猜拳]")
 				s.feelAmbient(
 					ctx, state, "rps", 1, "跟人猜了把拳", 10*time.Minute,
@@ -2319,7 +2323,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 					continue
 				}
 				if inner != "" {
-					s.sendThenRecall(ctx, state, inner)
+					steps = append(steps, replyStep{action: func() {
+						s.sendThenRecall(ctx, state, inner)
+					}})
 					cleaned = append(cleaned, "[撤回:"+truncateRunes(inner, 20)+"]")
 				}
 				continue
@@ -2360,19 +2366,21 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				)
 				quotePending = false
 			}
-			chains = append(chains, chain)
+			steps = append(steps, replyStep{chain: chain})
 			cleaned = append(cleaned, strings.TrimSpace(plain))
 		}
-		if len(chains) == 0 && skippedMarkers > 0 {
+		if len(steps) == 0 && skippedMarkers > 0 {
 			fallback := "没图了 等我攒攒"
-			chains = append(chains, message.Chain{message.Text(fallback)})
+			steps = append(steps, replyStep{
+				chain: message.Chain{message.Text(fallback)},
+			})
 			cleaned = append(cleaned, fallback)
 		}
 		state.reply = strings.Join(cleaned, "\n")
 		// Voice first, text after — hearing her voice before reading
 		// the follow-up text is the intended order.
 		s.deliverVoiceClips(ctx, state, voiceClips)
-		if !s.sendChains(
+		if !s.sendReplySteps(
 			ctx,
 			state.selfID,
 			state.chatType,
@@ -2380,7 +2388,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			state.userID,
 			state.event.SenderName,
 			state.messageID,
-			chains,
+			steps,
 		) {
 			return nil
 		}

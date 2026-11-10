@@ -1174,13 +1174,23 @@ func withSenderAt(chain message.Chain, userID, senderName string) message.Chain 
 	return out
 }
 
-// sendChains sends pre-built chains one message at a time with the same
-// delay/at/quote behaviour as sendTextParts. Used when replies contain
-// non-text segments such as QQ faces.
-func (s *Service) sendChains(
+// replyStep is one outbound beat: a message chain to send, or an action
+// to fire (poke, emoji reaction, send-then-recall). Actions carry
+// position — a poke the model placed between two lines must land
+// between those two bubbles, not before all of them.
+type replyStep struct {
+	chain  message.Chain
+	action func()
+}
+
+// sendReplySteps walks the ordered beats: text/image chains send as
+// bubbles with the usual delay/at/quote behaviour, action steps fire
+// in place between them. Only chain steps count toward the delay and
+// first-bubble quote/@ logic — a poke is instant, not typed.
+func (s *Service) sendReplySteps(
 	ctx context.Context,
 	selfID, chatType, chatID, userID, senderName, messageID string,
-	chains []message.Chain,
+	steps []replyStep,
 ) bool {
 	if s.sender == nil {
 		s.stats.sendErrors.Add(1)
@@ -1190,24 +1200,29 @@ func (s *Service) sendChains(
 	// Sulky or drowsy replies sit for a while before landing — a person
 	// who isn't feeling it reads the @ and gets back to it when she gets
 	// back to it. Zero for happy/neutral states so eagerness stays snappy.
-	if len(chains) > 0 {
+	if len(steps) > 0 {
 		if d := s.sulkDelay(selfID, chatType, chatID); d > 0 &&
 			!waitForReplyPart(ctx, d) {
 			return false
 		}
 	}
-	for index, chain := range chains {
-		if len(chain) == 0 {
+	index := 0
+	for _, step := range steps {
+		if step.action != nil {
+			step.action()
+			continue
+		}
+		if len(step.chain) == 0 {
 			continue
 		}
 		if index > 0 {
-			current, _ := chain.PlainText("")
+			current, _ := step.chain.PlainText("")
 			if !waitForReplyPart(ctx, s.replyPartDelay(current)) {
 				return false
 			}
 		}
 		quote := s.cfg.QuoteReply && index == 0 && s.shouldQuoteReply(chatType)
-		outbound := normalizeChainHTMLBreaks(chain.Clone())
+		outbound := normalizeChainHTMLBreaks(step.chain.Clone())
 		if s.cfg.GroupAtSender && chatType == platform.ChatGroup &&
 			index == 0 && !quote {
 			outbound = withSenderAt(outbound, userID, senderName)
@@ -1236,6 +1251,7 @@ func (s *Service) sendChains(
 		if index == 0 {
 			s.noteSpoke(chatType, chatID)
 		}
+		index++
 	}
 	return true
 }
