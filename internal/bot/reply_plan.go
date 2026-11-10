@@ -369,7 +369,14 @@ func foldIntroBubble(parts []string) []string {
 	if strings.HasPrefix(strings.TrimSpace(parts[1]), "[[") {
 		return parts
 	}
-	parts[1] = intro + "\n\n" + parts[1]
+	// Casual pairs merge inline — a "\n\n" inside one bubble reads
+	// staged to anyone who grew up on QQ. Walls keep the blank line:
+	// a caption pasted over a long body still wants its own line.
+	if len([]rune(parts[1])) <= 60 {
+		parts[1] = foldJoin([]string{intro, parts[1]})
+	} else {
+		parts[1] = intro + "\n\n" + parts[1]
+	}
 	return parts[1:]
 }
 

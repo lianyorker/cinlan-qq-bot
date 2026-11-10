@@ -314,15 +314,20 @@ type Config struct {
 	// judge-model pass pulls long-term-worthy facts out of the turn and
 	// feeds the fact store (dedup/refine gates apply). Off = only the
 	// persona's own in-chat remember tool writes memories.
-	MemoryExtract  bool
-	SleepStart     int           // hour sleep window begins (-1 disables)
-	SleepEnd       int           // hour sleep window ends
-	Proactive      bool          // ambient opener engine
-	ProactiveTick  time.Duration // sweep interval
-	ProactiveIdle  time.Duration // required chat silence before eligible
-	ProactiveWait  time.Duration // cooldown between proactive sends
-	ProactiveProb  float64       // per-tick fire probability
-	ProactiveDaily int           // per-chat daily cap
+	MemoryExtract bool
+	// LLMReplySegment lets a judge-model pass re-segment each reply at
+	// human "send key" positions instead of trusting the model's own
+	// [[NEXT]] placements (fidelity-checked, falls back on failure).
+	// Off = [[NEXT]] markers and mechanical folding decide all splits.
+	LLMReplySegment bool
+	SleepStart      int           // hour sleep window begins (-1 disables)
+	SleepEnd        int           // hour sleep window ends
+	Proactive       bool          // ambient opener engine
+	ProactiveTick   time.Duration // sweep interval
+	ProactiveIdle   time.Duration // required chat silence before eligible
+	ProactiveWait   time.Duration // cooldown between proactive sends
+	ProactiveProb   float64       // per-tick fire probability
+	ProactiveDaily  int           // per-chat daily cap
 	// ProactiveGroups optionally limits which bound groups may receive
 	// proactive openers; empty means every bound group is eligible.
 	ProactiveGroups Allowlist
@@ -686,6 +691,7 @@ func Load() (Config, error) {
 	cfg.FollowUp = parseBool("QQ_FOLLOW_UP", true, &errs)
 	cfg.FollowUpAnyUser = parseBool("QQ_FOLLOW_UP_ANY_USER", false, &errs)
 	cfg.MemoryExtract = parseBool("QQ_MEMORY_EXTRACT", true, &errs)
+	cfg.LLMReplySegment = parseBool("QQ_LLM_SEGMENT", true, &errs)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
 	cfg.Proactive = parseBool("QQ_PROACTIVE", false, &errs)
