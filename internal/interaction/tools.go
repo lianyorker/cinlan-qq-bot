@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -93,6 +94,60 @@ func PokeTool(caller ActionCaller) tool.Definition {
 	}
 }
 
+// emojiLikeIDs mirrors bot.emojiLikeIDs: reaction names → QQ face ids
+// for NapCat set_msg_emoji_like. Kept here because interaction can't
+// import bot; keep the two maps in sync.
+var emojiLikeIDs = map[string]string{
+	"爱心": "59", "爱": "59", "心": "59", "么么哒": "109", "亲亲": "109",
+	"笑": "28", "憨笑": "28", "开心": "28", "偷笑": "21", "坏笑": "101",
+	"哭": "9", "大哭": "9", "哭哭": "9", "流泪": "5", "委屈": "106", "可怜": "111", "快哭了": "107",
+	"疑问": "32", "疑惑": "32", "晕": "34", "发呆": "3",
+	"生气": "11", "发怒": "11", "怒": "11", "怄火": "79", "咒骂": "31",
+	"鼓掌": "99", "棒棒": "99", "厉害": "99",
+	"再见": "39", "挥手": "84", "拜拜": "39",
+	"惊讶": "0", "震惊": "0", "吓": "110", "惊恐": "26",
+	"得意": "4", "调皮": "12", "龇牙": "13", "呲牙": "13",
+	"尴尬": "10", "流汗": "27", "擦汗": "97", "冷汗": "96",
+	"白眼": "22", "鄙视": "105", "傲慢": "23", "阴险": "108",
+	"困": "25", "哈欠": "104", "睡": "8",
+	"玫瑰": "56", "示爱": "58", "爱你": "72", "飞吻": "76", "献吻": "87",
+	"心碎": "60", "凋谢": "57", "衰": "36", "糗大了": "100",
+	"拥抱": "45", "握手": "66", "胜利": "67", "抱拳": "68", "拳头": "70", "勾引": "69",
+	"蛋糕": "46", "礼物": "62", "咖啡": "53", "啤酒": "114", "西瓜": "113", "便便": "52",
+	"敲打": "38", "炸弹": "48", "刀": "49", "菜刀": "112", "骷髅": "37",
+	"猪头": "44", "跳跳": "43", "闪电": "47", "太阳": "63", "月亮": "64",
+	"吐": "20", "抠鼻": "98", "差劲": "71",
+	"赞": "339", "点赞": "339", "强": "339", "棒": "339",
+	"捂脸": "187", "doge": "302", "狗头": "302",
+}
+
+// resolveEmojiID normalizes a model-supplied emoji argument into the id
+// NapCat expects: a known reaction name → its table id; digits pass
+// through as a raw QQ id; a real emoji char uses its first base
+// codepoint (NapCat also accepts unicode emoji ids). Plain text that
+// matches nothing reports false so we never send a garbage id.
+func resolveEmojiID(arg string) (string, bool) {
+	arg = strings.TrimSpace(arg)
+	if arg == "" {
+		return "", false
+	}
+	if mapped, ok := emojiLikeIDs[arg]; ok {
+		return mapped, true
+	}
+	if _, err := strconv.Atoi(arg); err == nil {
+		return arg, true
+	}
+	runes := []rune(arg)
+	base := runes[0]
+	// Only accept it as a unicode emoji when the leading rune sits in
+	// emoji ranges — a Chinese word or latin letter would otherwise
+	// turn into a meaningless five-digit id.
+	if base < 0x1F000 && !(base >= 0x2600 && base <= 0x27BF) {
+		return "", false
+	}
+	return fmt.Sprintf("%d", base), true
+}
+
 // EmojiLikeTool lets the persona slap an emoji reaction on the inbound
 // message — the lowest-effort response real users give constantly: a
 // 👍 on a joke, a ❤️ on a photo, no words needed.
@@ -100,13 +155,13 @@ func EmojiLikeTool(caller ActionCaller) tool.Definition {
 	return tool.Definition{
 		Name: "react_emoji",
 		Description: "给对方刚发的消息贴一个表情回应（消息角上的表情），不用打字也算回了。" +
-			"想表示看到/被逗笑/赞同但懒得回话时用。参数 emoji 填表情符号，如 👍😂❤️🤔",
+			"想表示看到/被逗笑/赞同但懒得回话时用。参数 emoji 填表情名（爱心/憨笑/赞/捂脸…）、emoji 符号（👍😂❤️🤔）或数字id",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
 				"emoji": map[string]any{
 					"type":        "string",
-					"description": "要贴的表情符号，填一个 emoji",
+					"description": "要贴的表情：表情名（爱心/憨笑/赞/捂脸…）、emoji 符号或数字id",
 				},
 			},
 			"required": []string{"emoji"},
@@ -121,13 +176,13 @@ func EmojiLikeTool(caller ActionCaller) tool.Definition {
 				Emoji string `json:"emoji"`
 			}
 			_ = json.Unmarshal(call.Arguments, &args)
-			runes := []rune(strings.TrimSpace(args.Emoji))
-			if len(runes) == 0 {
+			if strings.TrimSpace(args.Emoji) == "" {
 				return tool.Result{Error: "没给表情"}, nil
 			}
-			// NapCat set_msg_emoji_like takes the emoji's unicode
-			// codepoint as a decimal string.
-			emojiID := fmt.Sprintf("%d", runes[0])
+			emojiID, ok := resolveEmojiID(args.Emoji)
+			if !ok {
+				return tool.Result{Error: "认不出这个表情——给表情名（爱心/憨笑/赞/捂脸）、emoji 符号或数字id"}, nil
+			}
 			messageID := strings.TrimSpace(call.Actor.MessageID)
 			if messageID == "" {
 				return tool.Result{Error: "没有可回应的消息"}, nil
@@ -141,7 +196,7 @@ func EmojiLikeTool(caller ActionCaller) tool.Definition {
 			if err != nil {
 				return tool.Result{Error: "没贴上：" + err.Error()}, nil
 			}
-			return tool.Result{Content: "贴了 " + string(runes[0])}, nil
+			return tool.Result{Content: "贴了 " + strings.TrimSpace(args.Emoji)}, nil
 		},
 	}
 }
