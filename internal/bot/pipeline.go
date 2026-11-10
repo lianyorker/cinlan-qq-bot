@@ -2364,6 +2364,12 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		}
 		return nil
 	}
+	// Single-reply path sends state.reply raw — run the same scrub the
+	// per-part loop applies so turn stamps/markdown never leak either.
+	state.reply = scrubMarkdown(state.reply)
+	if strings.TrimSpace(state.reply) == "" {
+		return nil
+	}
 	if cleaned, refused := dropProviderRefusals(state.reply); refused {
 		s.logger.Info(
 			"outbound refusal silenced",

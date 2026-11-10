@@ -626,6 +626,15 @@ func containsProviderError(text string) bool {
 // prompt (tag included) back into the reply. It is never chat content.
 var selfTagPattern = regexp.MustCompile(`(?i)\[\s*self\s*\]\s*`)
 
+// turnStampPattern matches the [MM-DD HH:mm] / [HH:mm] turn stamps that
+// decorate stored history. The model copies the format back when it
+// quotes earlier lines — the stamp is prompt scaffolding, never chat
+// content, so it dies here. 【】 variants come from CJK IME echo.
+var turnStampPattern = regexp.MustCompile(
+	`[\[【]\d{1,2}-\d{1,2}\s+\d{1,2}:\d{2}[\]】]\s*|` +
+		`[\[【]\d{1,2}:\d{2}[\]】]\s*`,
+)
+
 // These patterns catch the markdown syntax models keep emitting even
 // after being told not to — QQ shows raw text, so **bold**, > quotes and
 // ``` fences arrive as literal garbage. Soft prompt rules stay; this is
@@ -653,6 +662,7 @@ var (
 // message reads like typed chat, not a rendered document. Inner content
 // is preserved — only the decoration dies.
 func scrubMarkdown(text string) string {
+	text = turnStampPattern.ReplaceAllString(text, "")
 	text = selfTagPattern.ReplaceAllString(text, "")
 	text = markdownFencePattern.ReplaceAllString(text, "")
 	for _, p := range markdownLinePatterns {
