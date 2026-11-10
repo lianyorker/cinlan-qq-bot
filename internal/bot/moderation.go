@@ -22,15 +22,17 @@ import (
 var moderationSuspectPattern = regexp.MustCompile(
 	`(?i)代充|代练|代挂|代购|代写|代做|代理|低价|联系我|私聊|微信|加[我vV][xX]?|vx[:：]|v信|` +
 		`扫码|二维码|倍率|中转|手机号|色情|裸|陪玩|陪聊|资源|福利|进群|群号|` +
-		`推广|引流|接单|赚钱|兼职|优惠|特价|免费领|出售|转让|回收|卖号|刷单|日结`,
+		`推广|引流|接单|赚钱|兼职|优惠|特价|免费领|出售|转让|回收|卖号|刷单|日结|` +
+		`傻逼|煞笔|沙币|脑残|智障|你妈|草泥马|滚蛋|废物|垃圾人|` +
+		`\bnmsl\b|\bsb\b`,
 )
 
-const spamJudgeSystemPrompt = `你是群消息反垃圾审核员。判断下面这条群聊消息是否为垃圾广告、引流、诈骗、色情、刷屏或转发垃圾内容。
+const spamJudgeSystemPrompt = `你是群消息反垃圾审核员。判断下面这条群聊消息是否为垃圾广告、引流、诈骗、色情、刷屏、辱骂或转发垃圾内容。
 
 只输出JSON：{"spam":true|false,"confidence":0.0~1.0,"reason":"一句话"}
 
-判定垃圾的常见特征：代充/代练/卖号、低价出售、留联系方式引流、不明链接、兼职刷单、色情资源、转发广告卡片、纯图片广告、连续营销话术。
-正常聊天、提问、技术讨论、分享资源给群友、表情包互动不算垃圾。
+判定违规的常见特征：代充/代练/卖号、低价出售、留联系方式引流、不明链接、兼职刷单、色情资源、转发广告卡片、纯图片广告、连续营销话术、对群友的人身攻击或辱骂（如"傻逼/脑残/废物/你妈"类脏词指向具体人）。
+正常聊天、提问、技术讨论、分享资源给群友、表情包互动、自嘲或吐槽代码/产品（如"这代码垃圾"）不算违规。
 宁可漏判不可误判：拿不准就 spam:false 且 confidence 低于0.5。`
 
 type spamVerdict struct {
@@ -150,7 +152,7 @@ func (s *Service) stageModeration(
 				"error", actErr.Error(),
 			)
 			notice = fmt.Sprintf(
-				"检测到疑似广告内容已撤回（第 %d/%d 次警告，自动处理失败请管理员介入）",
+				"广告撤了 但处理没成功 管理来看下（警告 %d/%d）",
 				count, limit,
 			)
 		} else {
@@ -160,13 +162,13 @@ func (s *Service) stageModeration(
 				"把 "+state.event.SenderName+" "+label+"了",
 			)
 			notice = fmt.Sprintf(
-				"多次发布广告内容，已%s，警告记录已清零。",
+				"广告发太多次了 %s 账清了",
 				label,
 			)
 		}
 	} else {
 		notice = fmt.Sprintf(
-			"检测到疑似广告内容已撤回（第 %d/%d 次警告，达到 %d 次将被处理）",
+			"广告我撤了 别再发了（警告 %d/%d 到 %d 次要动手了）",
 			count, limit, limit,
 		)
 	}
@@ -316,7 +318,8 @@ func sanitizeModerationVoice(reply string) string {
 	if line == "" || strings.Contains(line, "[[") {
 		return ""
 	}
-	line = strings.Trim(line, "\"'「」“”")
+	line = turnStampPattern.ReplaceAllString(line, "")
+	line = strings.Trim(line, "\"'「」“” ")
 	runes := []rune(line)
 	if len(runes) > 80 {
 		line = string(runes[:80])
