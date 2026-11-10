@@ -221,7 +221,7 @@ func (s *Service) pendingFollowUp(state *flowState) bool {
 	s.fatigueMu.Lock()
 	entry, ok := s.chatFatigue[key]
 	s.fatigueMu.Unlock()
-	if !ok || entry.userID != state.userID {
+	if !ok || (!s.cfg.FollowUpAnyUser && entry.userID != state.userID) {
 		return false
 	}
 	if s.now().Sub(entry.at) >= followUpWindow {

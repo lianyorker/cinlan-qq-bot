@@ -304,7 +304,12 @@ type Config struct {
 	// the 3-min pendingFollowUp window, bare game-move replies, and
 	// meme-chain echo joins. false = she only speaks when @'d or
 	// commanded (or in private, where every message reaches her).
-	FollowUp       bool
+	FollowUp bool
+	// FollowUpAnyUser widens the 3-min warm window to the whole thread:
+	// once she has replied in a group, ANY member's follow-up counts as
+	// continuation, not just the person she answered. Off = per-user
+	// heat only (a third party jumping in still needs an @).
+	FollowUpAnyUser bool
 	SleepStart     int           // hour sleep window begins (-1 disables)
 	SleepEnd       int           // hour sleep window ends
 	Proactive      bool          // ambient opener engine
@@ -674,6 +679,7 @@ func Load() (Config, error) {
 	cfg.MoodEnabled = parseBool("QQ_MOOD_ENABLED", true, &errs)
 	cfg.ReadNoReply = parseBool("QQ_READ_NO_REPLY", true, &errs)
 	cfg.FollowUp = parseBool("QQ_FOLLOW_UP", true, &errs)
+	cfg.FollowUpAnyUser = parseBool("QQ_FOLLOW_UP_ANY_USER", false, &errs)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
 	cfg.Proactive = parseBool("QQ_PROACTIVE", false, &errs)
