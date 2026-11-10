@@ -422,6 +422,33 @@ func foldJoin(lines []string) string {
 	return b.String()
 }
 
+// looseMarkerPattern catches single-bracket spellings of known action
+// markers — the model writes [POKE] for [[POKE]] often enough that
+// upgrading beats leaking literal "[POKE]" text into the chat. Face
+// tags like [face:14] are deliberately absent: they ARE single-bracket.
+var looseMarkerPattern = regexp.MustCompile(
+	`\[/?(NEXT|PASS|POKE|MEME|SELFIE|REACT|EMOJI|LIKE|IMG|OOPS|DICE|RPS|AT|VOICE|SING)(:[^\[\]\n]{0,20})?\]`,
+)
+
+// upgradeLooseMarkers promotes single-bracket known-marker spellings
+// to real [[..]] markers so they execute instead of leaking as text.
+// Existing [[..]] markers are parked out of sight first — otherwise
+// the inner [NAME] of [[NAME]] would get wrapped a second time.
+func upgradeLooseMarkers(reply string) string {
+	if !strings.Contains(reply, "[") {
+		return reply
+	}
+	const open, close = "\x00", "\x01"
+	parked := strings.ReplaceAll(reply, "[[", open)
+	parked = strings.ReplaceAll(parked, "]]", close)
+	parked = looseMarkerPattern.ReplaceAllStringFunc(
+		parked, func(m string) string { return "[" + m + "]" },
+	)
+	parked = strings.ReplaceAll(parked, open, "[[")
+	parked = strings.ReplaceAll(parked, close, "]]")
+	return parked
+}
+
 func needsFoldComma(prev, next string) bool {
 	pr := []rune(strings.TrimRight(prev, " \t"))
 	nr := []rune(strings.TrimLeft(next, " \t"))

@@ -1904,6 +1904,10 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		state.reply = providerErrorFallback
 		state.outbound = message.Chain{message.Text(state.reply)}
 	}
+	// The model writes [POKE] for [[POKE]] single-bracket often enough
+	// that upgrading beats leaking literal marker text — run this before
+	// voice/PASS/segmentation so every downstream parser sees real [[..]].
+	state.reply = upgradeLooseMarkers(state.reply)
 	var voiceClips []voiceClip
 	if s.markerOn(state, "voice") {
 		state.reply, voiceClips = extractVoiceMarkers(state.reply)

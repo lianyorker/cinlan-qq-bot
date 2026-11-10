@@ -109,6 +109,44 @@ func TestPlanReplyPartsKeepsLongIntroSeparate(t *testing.T) {
 	}
 }
 
+func TestUpgradeLooseMarkersUpgradesSingles(t *testing.T) {
+	got := upgradeLooseMarkers("戳我干嘛[[NEXT]][POKE][[NEXT]]别乱戳")
+	want := "戳我干嘛[[NEXT]][[POKE]][[NEXT]]别乱戳"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUpgradeLooseMarkersKeepsDoubleBrackets(t *testing.T) {
+	in := "呐[[OOPS]]发错了[[/OOPS]]"
+	if got := upgradeLooseMarkers(in); got != in {
+		t.Fatalf("existing markers must stay verbatim, got %q", got)
+	}
+}
+
+func TestUpgradeLooseMarkersLeavesFaceTags(t *testing.T) {
+	in := "贴个表情[face:59]"
+	if got := upgradeLooseMarkers(in); got != in {
+		t.Fatalf("face tags must not upgrade, got %q", got)
+	}
+}
+
+func TestUpgradeLooseMarkersUpgradesClosers(t *testing.T) {
+	got := upgradeLooseMarkers("[OOPS]手滑[/OOPS]")
+	want := "[[OOPS]]手滑[[/OOPS]]"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestUpgradeLooseMarkersUpgradesArgForm(t *testing.T) {
+	got := upgradeLooseMarkers("[REACT:爱心]贴一下")
+	want := "[[REACT:爱心]]贴一下"
+	if got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
 func TestPlanReplyPartsIntroNeverMergesIntoMarker(t *testing.T) {
 	// [[MEME]]/[[SELFIE]] must ride their own bubble — folding text in
 	// front of the marker would strand it as literal text.
