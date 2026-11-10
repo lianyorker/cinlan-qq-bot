@@ -310,6 +310,11 @@ type Config struct {
 	// continuation, not just the person she answered. Off = per-user
 	// heat only (a third party jumping in still needs an @).
 	FollowUpAnyUser bool
+	// MemoryExtract is the retain arm: after each exchange a background
+	// judge-model pass pulls long-term-worthy facts out of the turn and
+	// feeds the fact store (dedup/refine gates apply). Off = only the
+	// persona's own in-chat remember tool writes memories.
+	MemoryExtract  bool
 	SleepStart     int           // hour sleep window begins (-1 disables)
 	SleepEnd       int           // hour sleep window ends
 	Proactive      bool          // ambient opener engine
@@ -680,6 +685,7 @@ func Load() (Config, error) {
 	cfg.ReadNoReply = parseBool("QQ_READ_NO_REPLY", true, &errs)
 	cfg.FollowUp = parseBool("QQ_FOLLOW_UP", true, &errs)
 	cfg.FollowUpAnyUser = parseBool("QQ_FOLLOW_UP_ANY_USER", false, &errs)
+	cfg.MemoryExtract = parseBool("QQ_MEMORY_EXTRACT", true, &errs)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
 	cfg.Proactive = parseBool("QQ_PROACTIVE", false, &errs)

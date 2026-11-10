@@ -177,16 +177,22 @@ type Service struct {
 	// classifier/judge calls — attention, spam, voice safety, note review —
 	// route through it instead of burning the conversation model.
 	judgeProvider string
-	plugins       *plugin.Registry
-	messageGuard  plugin.BeforeHook
-	commands      *command.Registry
-	tools         *tool.Registry
-	personas      *persona.Registry
-	bindings      *binding.Registry
-	chatPrefs     *chatprefs.Store
-	affinity      *affinity.Store
-	memeDir       string
-	stickerDir    string
+	// extractLast throttles the background retain pass per session —
+	// one extraction burst per chat per window, not one per message.
+	extractLast sync.Map // sessionID -> time.Time
+	// reflectLast throttles the on-demand synthesis pass — "他最近咋样"
+	// re-synthesizes at most once per session per window.
+	reflectLast  sync.Map // sessionID -> time.Time
+	plugins      *plugin.Registry
+	messageGuard plugin.BeforeHook
+	commands     *command.Registry
+	tools        *tool.Registry
+	personas     *persona.Registry
+	bindings     *binding.Registry
+	chatPrefs    *chatprefs.Store
+	affinity     *affinity.Store
+	memeDir      string
+	stickerDir   string
 	// transcriber turns inbound voice clips into text (opt-in ASR).
 	transcriber  voiceTranscriber
 	keywordTools []keywordTool

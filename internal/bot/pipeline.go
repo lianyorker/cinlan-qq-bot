@@ -1379,6 +1379,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			now.Sub(state.prevActivityAt) >= 30*time.Minute {
 			recallLimit = 8
 		}
+		surfacedFacts := map[string]bool{}
 		for _, f := range s.chatPrefs.RecallFacts(state.platform, state.selfID, state.chatType, state.chatID, recallQuery, recallLimit) {
 			if recentSet[f.Text] {
 				continue
@@ -1392,6 +1393,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			if recalledRunes+len([]rune(f.Text)) > recalledBudgetRunes {
 				continue
 			}
+			surfacedFacts[f.Text] = true
 			recalledRunes += len([]rune(f.Text))
 			// Fresh memories arrive sharp; age blurs them the way a
 			// person's recall blurs — a week reads half-sure, a month
@@ -1444,6 +1446,22 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		if len(recalled) > 0 {
 			request.SystemPrompt += "\n\n这条消息让你想起的旧记忆，提不提随你：\n" +
 				strings.Join(recalled, "\n")
+		}
+		// Entity arm: the query names a member — pull his tagged bundle
+		// (impression + facts ABOUT him) even when the fact texts never
+		// mention his name, so "阿茶最近咋样" answers from his record.
+		if mm := s.chatPrefs.MemberMemory(
+			state.platform, state.selfID, state.chatType, state.chatID,
+			recallQuery, surfacedFacts,
+		); len(mm) > 0 {
+			request.SystemPrompt += "\n\n点名的人你手里有账：\n" + strings.Join(mm, "\n")
+			// Reflect arm: "你觉得他最近咋样" earns a synthesized take
+			// on top of the raw bundle — one judge call, throttled.
+			if evaluativeMemberQuery(recallQuery) {
+				if insight := s.reflectOnMember(ctx, state, recallQuery, mm); insight != "" {
+					request.SystemPrompt += "\n\n综合下来你对他的整体感觉：" + insight
+				}
+			}
 		}
 		// Long-term verbatim index: chunks of raw turns the compressor
 		// dropped, scored through the same hybrid ranker as facts. This
@@ -2950,6 +2968,7 @@ func (s *Service) recordExchange(ctx context.Context, state *flowState) {
 	if s.affinity != nil {
 		s.affinity.Add(state.platform, state.selfID, state.userID, 1)
 	}
+	s.maybeExtractMemory(state)
 	s.scheduleCompression(ctx, state)
 }
 
@@ -3896,6 +3915,22 @@ func (s *Service) recallHistoryChunks(
 	chunks := s.sessions.HistoryChunks(state.sessionID)
 	if len(chunks) == 0 {
 		return nil
+	}
+	// Temporal arm: a named period ("上周", "上个月") filters candidates
+	// before scoring — the window narrows the search space instead of
+	// letting recent noise outrank the right-era fragment. When nothing
+	// falls inside, keep the full set: a remembered period that turns
+	// out wrong shouldn't hard-zero recall.
+	if win := recallTimeWindow(query, now); win != nil {
+		var in []session.HistoryChunk
+		for _, c := range chunks {
+			if win.contains(c.TS) {
+				in = append(in, c)
+			}
+		}
+		if len(in) > 0 {
+			chunks = in
+		}
 	}
 	type hit struct {
 		c     session.HistoryChunk

@@ -70,6 +70,10 @@ type fact struct {
 	// "上次说怕猫" later "他家猫很可爱" keeps both, with the new line
 	// carrying what it may have replaced so recall can show the tension.
 	Prev string `json:"prev,omitempty"`
+	// Proofs counts how many times independent evidence re-stated this
+	// belief — Hindsight-style observation strength. 0/1 = seen once;
+	// each re-confirmation refines the line instead of appending a twin.
+	Proofs int `json:"proofs,omitempty"`
 }
 
 // factWeight normalizes the heat multiplier; stored zero / corrupt
@@ -780,6 +784,65 @@ func bestFactMatch(facts []fact, target string) int {
 	return best
 }
 
+// subsetBigrams reports whether every gram of a lives inside b.
+func subsetBigrams(a, b map[string]bool) bool {
+	for g := range a {
+		if !b[g] {
+			return false
+		}
+	}
+	return len(a) > 0
+}
+
+// sharedBigrams counts the intersection size of two gram sets.
+func sharedBigrams(a, b map[string]bool) int {
+	n := 0
+	for g := range a {
+		if b[g] {
+			n++
+		}
+	}
+	return n
+}
+
+// observationMatch finds a fact stating the SAME belief re-worded —
+// re-evidence for an existing observation, not a new memory. The bar
+// sits far above bestFactMatch's conflict threshold: two lines may
+// share a topic ("阿茶爱喝美式" vs "阿茶爱喝拿铁") and legitimately
+// contradict, so only paraphrase-level overlap counts as proof.
+// Ledger lines (promises/journals) never merge — each entry is an
+// event, not a belief.
+func observationMatch(facts []fact, text string, vec *vecstore.Engine) int {
+	grams := textBigrams(text)
+	if len(grams) == 0 {
+		return -1
+	}
+	best, bestSim := -1, 0.0
+	for i, f := range facts {
+		if specialFactText(f.Text) {
+			continue
+		}
+		fg := textBigrams(f.Text)
+		if len(fg) == 0 {
+			continue
+		}
+		if subsetBigrams(fg, grams) || subsetBigrams(grams, fg) {
+			return i // vocabulary containment — same belief, richer wording
+		}
+		// Symmetric coverage: a paraphrase re-uses most of BOTH texts'
+		// vocabulary; a topic-sibling only re-uses the shared subject.
+		// Dense similarity (cache-only, zero IO) confirms the paraphrase
+		// — without a remote arm we stay conservative and don't merge.
+		shared := sharedBigrams(fg, grams)
+		if shared*10 >= len(fg)*7 && shared*10 >= len(grams)*7 && vec != nil {
+			if sim := vec.CachedSimilarity(f.Text, text); sim >= 0.82 && sim > bestSim {
+				best, bestSim = i, sim
+			}
+		}
+	}
+	return best
+}
+
 // HybridTextScore applies the same three-arm scoring (CJK bigram +
 // concept clusters + cached dense similarity) to a raw text — used by
 // the session history index so old conversation chunks rank exactly
@@ -983,6 +1046,32 @@ func (s *Store) addFactLocked(e *chatEntry, text string, o factOpts, now time.Ti
 			// its emotional tag toward how she feels now (2:1 toward the
 			// old color so one odd day doesn't repaint it).
 			e.Facts[i].Mood = (f.Mood*2 + currentMood) / 3
+			return s.saveLocked()
+		}
+	}
+	// Observation merge: the same belief restated in different words
+	// strengthens the existing line (proof count, recall heat, mood
+	// drift) instead of spawning a near-twin the fact-merge pass would
+	// later have to fuse. Same-TOPIC different-content (美式→拿铁) must
+	// NOT merge — it falls through to the conflict marker below.
+	if !specialFactText(text) {
+		if idx := observationMatch(e.Facts, text, s.vec); idx >= 0 {
+			f := &e.Facts[idx]
+			f.LastSeenAt = now
+			f.Proofs++
+			f.Mood = (f.Mood*2 + currentMood) / 3
+			w := factWeight(*f) + 0.25
+			if w > maxFactWeight {
+				w = maxFactWeight
+			}
+			f.Weight = w
+			// Refine, not replace: only when the new wording strictly
+			// contains the old belief's vocabulary does it become the
+			// canonical line; otherwise the original phrasing stands.
+			if subsetBigrams(textBigrams(f.Text), textBigrams(text)) &&
+				len([]rune(text)) > len([]rune(f.Text)) {
+				f.Text = text
+			}
 			return s.saveLocked()
 		}
 	}
@@ -2047,6 +2136,97 @@ func (s *Store) ImpressionTexts(platform, selfID, chatType, chatID string) map[s
 	out := make(map[string]string, len(e.Impressions))
 	for u, f := range e.Impressions {
 		out[u] = f.Text
+	}
+	return out
+}
+
+// MemberMemory is the entity-graph arm: a query naming a member
+// ("阿茶最近咋样") pulls HIS bundle even when the fact texts never
+// mention his name — facts are tagged with who they're about, so the
+// name resolves to a userID and everything tagged to him surfaces.
+// Resolution tries cached profile nicks first, then fact UserName
+// tags. Returns rendered "· 印象 / · 记忆" lines per member,
+// capped at 3 members / 4 facts each. skip drops fact texts already
+// surfaced by the generic recall pass.
+func (s *Store) MemberMemory(
+	platform, selfID, chatType, chatID, query string, skip map[string]bool,
+) []string {
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	e := s.lookup(platform, selfID, chatType, chatID)
+	if e == nil {
+		return nil
+	}
+	// name -> userID resolution table. Cards carry public nicks; fact
+	// tags carry whatever name was current when the memory formed.
+	type member struct {
+		id   string
+		name string
+	}
+	seen := map[string]bool{} // by userID, or "n:"+name when id unknown
+	var members []member
+	prefix := platform + ":"
+	for uk, c := range s.cards {
+		if !strings.HasPrefix(uk, prefix) || c.Nick == "" {
+			continue
+		}
+		nick := c.Nick
+		if len([]rune(nick)) < 2 || !strings.Contains(query, nick) {
+			continue
+		}
+		id := strings.TrimPrefix(uk, prefix)
+		if !seen[id] {
+			seen[id] = true
+			members = append(members, member{id: id, name: nick})
+		}
+	}
+	for _, f := range e.Facts {
+		n := f.UserName
+		if n == "" || len([]rune(n)) < 2 || !strings.Contains(query, n) {
+			continue
+		}
+		k := f.UserID
+		if k == "" {
+			k = "n:" + n
+		}
+		if !seen[k] {
+			seen[k] = true
+			members = append(members, member{id: f.UserID, name: n})
+		}
+	}
+	if len(members) == 0 {
+		return nil
+	}
+	var out []string
+	for _, m := range members {
+		if len(out) >= 3 {
+			break
+		}
+		var lines []string
+		if m.id != "" {
+			if imp, ok := e.Impressions[m.id]; ok && imp.Text != "" {
+				lines = append(lines, "· 印象："+imp.Text)
+			}
+		}
+		matched := 0
+		// Freshest-tagged facts first — a member bundle shows what
+		// she remembers NOW about him, not the oldest stale note.
+		for i := len(e.Facts) - 1; i >= 0 && matched < 4; i-- {
+			f := e.Facts[i]
+			tag := (m.id != "" && f.UserID == m.id) ||
+				(f.UserName != "" && f.UserName == m.name)
+			if !tag || skip[f.Text] || specialFactText(f.Text) {
+				continue
+			}
+			lines = append(lines, "· "+f.Text)
+			matched++
+		}
+		if len(lines) > 0 {
+			out = append(out, "关于「"+m.name+"」："+strings.Join(lines, "；"))
+		}
 	}
 	return out
 }
