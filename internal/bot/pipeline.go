@@ -70,6 +70,11 @@ type flowState struct {
 	text           string
 	promptText     string
 	eventMentioned bool
+	// notifyOff records that MentionOnly came from an operator's
+	// /关闭通知 rather than the binding's own policy — the admin asked
+	// for hard silence, so follow-up and game continuations stop
+	// reaching her too; only real commands and @ mentions pass.
+	notifyOff      bool
 	sessionID      string
 	rateLimitID    string
 	history        []domain.ChatMessage
@@ -245,12 +250,14 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 	// 管理员 /关闭通知 后，该群只在被 @ 时回复。
 	if s.chatPrefs != nil &&
 		state.chatType == platform.ChatGroup &&
-		!s.chatPrefs.NotifyEnabled(state.platform, state.selfID, state.chatType, state.chatID) &&
-		(state.replyPolicy.Mode == binding.ReplyModeAIDecide ||
-			state.replyPolicy.Mode == binding.ReplyModeAlways) {
-		policy := state.replyPolicy
-		policy.Mode = binding.ReplyModeMentionOnly
-		state.replyPolicy = policy
+		!s.chatPrefs.NotifyEnabled(state.platform, state.selfID, state.chatType, state.chatID) {
+		state.notifyOff = true
+		if state.replyPolicy.Mode == binding.ReplyModeAIDecide ||
+			state.replyPolicy.Mode == binding.ReplyModeAlways {
+			policy := state.replyPolicy
+			policy.Mode = binding.ReplyModeMentionOnly
+			state.replyPolicy = policy
+		}
 	}
 
 	// Super-user status comes from the binding's allowed_users plus the
@@ -391,9 +398,13 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		// to undo a notify-off group. Non-command "/" text still dies
 		// here — the attention stage does not re-gate mentions, and a
 		// follow-up exemption must not turn typo'd commands into chat.
+		// When MentionOnly came from /关闭通知 the admin asked for hard
+		// silence: follow-ups and game moves stop reaching her too.
 		slashJunk := strings.HasPrefix(strings.TrimSpace(state.text), "/")
+		followUpOK := !state.notifyOff &&
+			(s.pendingGameMove(state) || s.pendingFollowUp(state))
 		if !state.eventMentioned && !s.commandMessage(state.text) &&
-			(slashJunk || (!s.pendingGameMove(state) && !s.pendingFollowUp(state))) {
+			(slashJunk || !followUpOK) {
 			state.ignored = true
 			event.Stop("not_mentioned")
 			return nil
