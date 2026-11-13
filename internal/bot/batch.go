@@ -225,6 +225,12 @@ func mergePlatformEvents(
 	}
 	merged.ID = current.ID
 	merged.MessageID = current.MessageID
+	if len(merged.MessageIDs) == 0 && previous.MessageID != "" {
+		merged.MessageIDs = []string{previous.MessageID}
+	}
+	if current.MessageID != "" {
+		merged.MessageIDs = append(merged.MessageIDs, current.MessageID)
+	}
 	merged.SubType = current.SubType
 	merged.SenderName = current.SenderName
 	merged.SenderRole = current.SenderRole
@@ -234,6 +240,7 @@ func mergePlatformEvents(
 
 func clonePlatformEvent(event platform.Event) platform.Event {
 	event.Chain = event.Chain.Clone()
+	event.MessageIDs = append([]string(nil), event.MessageIDs...)
 	event.Metadata = cloneMetadata(event.Metadata)
 	return event
 }

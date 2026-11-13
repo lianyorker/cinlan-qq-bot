@@ -94,24 +94,32 @@ func (s *Service) stageModeration(
 		return nil
 	}
 
-	if state.messageID != "" {
+	recallIDs := state.event.MessageIDs
+	if len(recallIDs) == 0 && state.messageID != "" {
+		recallIDs = []string{state.messageID}
+	}
+	recalled := false
+	for _, mid := range recallIDs {
 		if err := s.groupModerator.RecallMessage(
-			ctx, state.selfID, state.messageID,
+			ctx, state.selfID, mid,
 		); err != nil {
 			s.logger.Warn(
 				"moderation recall failed",
 				"chat", state.chatID,
 				"user", state.userID,
-				"message_id", state.messageID,
+				"message_id", mid,
 				"error", err.Error(),
 			)
 		} else {
-			s.feelAmbient(
-				ctx, state, "mod:recall", -4,
-				"撤回了 "+state.event.SenderName+" 发的广告，警告了他",
-				8*time.Minute,
-			)
+			recalled = true
 		}
+	}
+	if recalled {
+		s.feelAmbient(
+			ctx, state, "mod:recall", -4,
+			"撤回了 "+state.event.SenderName+" 发的广告，警告了他",
+			8*time.Minute,
+		)
 	}
 
 	key := state.platform + ":" + state.chatType + ":" +

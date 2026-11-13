@@ -19,11 +19,15 @@ type Event struct {
 	MessageType string
 	SubType     string
 	MessageID   string
-	SelfID      string
-	UserID      string
-	ChatID      string
-	SenderName  string
-	SenderRole  string
+	// MessageIDs accumulates every merged message's id when a batch run
+	// folds several posts into one event — MessageID alone points at the
+	// last post, which left earlier spam messages un-recallable.
+	MessageIDs []string
+	SelfID     string
+	UserID     string
+	ChatID     string
+	SenderName string
+	SenderRole string
 	// Privileged marks a whitelisted super-user. Group owner/admin roles
 	// never set this — only the binding's allowed_users does, so ordinary
 	// group admins keep normal-reply rights without gaining super powers.
