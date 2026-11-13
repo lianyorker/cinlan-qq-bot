@@ -38,3 +38,13 @@ cinlan-qq-bot-*-amd64
 
 # �ڲ������ĵ���agent ��ʾ��/ʵʩ����/��ƣ����������ֿ⣩
 docs/dev/
+
+# 本地产物/评测/留档（不进仓库）
+build/
+bundle/
+eval/
+examples.zip
+runtime/
+providers-eval.json
+cinlan-qq-bot-*-amd64*
+sessiondump*
