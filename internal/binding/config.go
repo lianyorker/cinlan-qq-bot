@@ -20,28 +20,31 @@ type rawFile struct {
 }
 
 type rawRule struct {
-	Name            string       `json:"name"`
-	Platform        string       `json:"platform"`
-	SelfID          string       `json:"self_id"`
-	ChatType        string       `json:"chat_type"`
-	ChatID          string       `json:"chat_id"`
-	ChatIDs         []string     `json:"chat_ids"`
-	UserIDs         []string     `json:"user_ids"`
-	MemberGroups    []string     `json:"member_groups"`
-	Persona         string       `json:"persona"`
-	Provider        string       `json:"provider"`
-	Tools           []string     `json:"tools"`
-	Skills          []string     `json:"skills"`
-	KnowledgeBases  []string     `json:"knowledge_bases"`
-	MCPServers      []string     `json:"mcp_servers"`
-	Actions         []string     `json:"actions"`
-	ActionsOff      []string     `json:"actions_off"`
-	RequireMention  *bool        `json:"require_mention"`
-	SmartAttention  *bool        `json:"smart_attention"`
-	ReplyPolicy     *ReplyPolicy `json:"reply_policy"`
-	LearningEnabled *bool        `json:"learning_enabled"`
-	AllowLinks      *bool        `json:"allow_links"`
-	Enabled         *bool        `json:"enabled"`
+	Name           string       `json:"name"`
+	Platform       string       `json:"platform"`
+	SelfID         string       `json:"self_id"`
+	ChatType       string       `json:"chat_type"`
+	ChatID         string       `json:"chat_id"`
+	ChatIDs        []string     `json:"chat_ids"`
+	UserIDs        []string     `json:"user_ids"`
+	MemberGroups   []string     `json:"member_groups"`
+	Persona        string       `json:"persona"`
+	Provider       string       `json:"provider"`
+	Tools          []string     `json:"tools"`
+	Skills         []string     `json:"skills"`
+	KnowledgeBases []string     `json:"knowledge_bases"`
+	MCPServers     []string     `json:"mcp_servers"`
+	Actions        []string     `json:"actions"`
+	ActionsOff     []string     `json:"actions_off"`
+	RequireMention *bool        `json:"require_mention"`
+	SmartAttention *bool        `json:"smart_attention"`
+	ReplyPolicy    *ReplyPolicy `json:"reply_policy"`
+	// Moderation carries the per-binding spam ladder; without it
+	// configured groups get no recall/warn enforcement at all.
+	Moderation      *ModerationPolicy `json:"moderation"`
+	LearningEnabled *bool             `json:"learning_enabled"`
+	AllowLinks      *bool             `json:"allow_links"`
+	Enabled         *bool             `json:"enabled"`
 	// PromptFile scopes a business/persona prompt fragment to this
 	// binding only — e.g. cinlan storefront rules must not leak into
 	// zkmall chats. Relative paths resolve against the config dir.
@@ -135,6 +138,7 @@ func LoadFile(path string) (*Registry, error) {
 			RequireMention:  raw.RequireMention,
 			SmartAttention:  raw.SmartAttention,
 			ReplyPolicy:     raw.ReplyPolicy,
+			Moderation:      raw.Moderation,
 			LearningEnabled: raw.LearningEnabled,
 			AllowLinks:      raw.AllowLinks,
 			PromptFile:      raw.PromptFile,

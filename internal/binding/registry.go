@@ -65,12 +65,16 @@ const (
 // configured action fires. Admins, owners and whitelisted users are exempt
 // (enforced by the caller).
 type ModerationPolicy struct {
-	Patterns     []string `json:"patterns"`
-	Action       string   `json:"action,omitempty"`
-	WarnLimit    int      `json:"warn_limit,omitempty"`
-	BanSeconds   int64    `json:"ban_seconds,omitempty"`
-	LLMCheck     bool     `json:"llm_check,omitempty"`
-	LLMThreshold float64  `json:"llm_threshold,omitempty"`
+	Patterns  []string `json:"patterns"`
+	Action    string   `json:"action,omitempty"`
+	WarnLimit int      `json:"warn_limit,omitempty"`
+	// LLMAll upgrades llm_check from suspect-gated to judge-everything:
+	// every group message that escapes the strict patterns still gets a
+	// verdict — ads phrased to dodge the word list stop slipping through.
+	LLMAll       bool    `json:"llm_all,omitempty"`
+	BanSeconds   int64   `json:"ban_seconds,omitempty"`
+	LLMCheck     bool    `json:"llm_check,omitempty"`
+	LLMThreshold float64 `json:"llm_threshold,omitempty"`
 
 	compileOnce sync.Once
 	compileErr  error

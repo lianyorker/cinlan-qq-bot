@@ -239,6 +239,7 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			state.chatType,
 			s.cfg.RequireMention,
 		)
+		state.moderation = current.Moderation
 		state.learning = s.cfg.SessionLearning &&
 			current.LearningEnabled != nil &&
 			*current.LearningEnabled

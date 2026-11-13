@@ -23,6 +23,7 @@ var moderationSuspectPattern = regexp.MustCompile(
 	`(?i)代充|代练|代挂|代购|代写|代做|代理|低价|联系我|私聊|微信|加[我vV][xX]?|vx[:：]|v信|` +
 		`扫码|二维码|倍率|中转|手机号|色情|裸|陪玩|陪聊|资源|福利|进群|群号|` +
 		`推广|引流|接单|赚钱|兼职|优惠|特价|免费领|出售|转让|回收|卖号|刷单|日结|` +
+		`实卡|成品号|租号|号商|卡商|卡密|` +
 		`傻逼|煞笔|沙币|脑残|智障|你妈|草泥马|滚蛋|废物|垃圾人|` +
 		`\bnmsl\b|\bsb\b`,
 )
@@ -31,7 +32,8 @@ const spamJudgeSystemPrompt = `你是群消息反垃圾审核员。判断下面�
 
 只输出JSON：{"spam":true|false,"confidence":0.0~1.0,"reason":"一句话"}
 
-判定违规的常见特征：代充/代练/卖号、低价出售、留联系方式引流、不明链接、兼职刷单、色情资源、转发广告卡片、纯图片广告、连续营销话术、对群友的人身攻击或辱骂（如"傻逼/脑残/废物/你妈"类脏词指向具体人）。
+判定违规的常见特征：代充/代练/卖号卖卡、低价出售、留联系方式引流、不明链接、兼职刷单、色情资源、转发广告卡片、纯图片广告、连续营销话术、对群友的人身攻击或辱骂（如"傻逼/脑残/废物/你妈"类脏词指向具体人）。
+消息里的标记说明：[图片]表示带图，[转发]是转发的聊天记录，[JSON]/[XML]是分享卡片，[文件]/[视频]是附件——纯发图、转发卡片、挂附件的广告同样判违规。
 正常聊天、提问、技术讨论、分享资源给群友、表情包互动、自嘲或吐槽代码/产品（如"这代码垃圾"）不算违规。
 宁可漏判不可误判：拿不准就 spam:false 且 confidence 低于0.5。`
 
@@ -65,8 +67,12 @@ func (s *Service) stageModeration(
 	}
 
 	detected, reason := pol.Matches(state.text), ""
-	if !detected && pol.LLMCheck &&
-		moderationSuspicious(state.event.Chain, state.text) {
+	judge := pol.LLMCheck &&
+		moderationSuspicious(state.event.Chain, state.text)
+	if pol.LLMAll && !trivialMessage(state.event.Chain, state.text) {
+		judge = true
+	}
+	if !detected && judge {
 		spam, judgeReason, err := s.classifySpam(
 			ctx, state, pol.EffectiveLLMThreshold(),
 		)
@@ -188,6 +194,19 @@ func (s *Service) stageModeration(
 	state.ignored = true
 	event.Stop("moderation")
 	return nil
+}
+
+// trivialMessage keeps llm_all from burning a judge call on one-word
+// acknowledgements: plain text of a few runes with no rich components.
+func trivialMessage(chain message.Chain, text string) bool {
+	for _, component := range chain {
+		switch component.Type {
+		case message.TypeText, message.TypeAt, message.TypeReply:
+		default:
+			return false
+		}
+	}
+	return len([]rune(strings.TrimSpace(text))) <= 3
 }
 
 // moderationSuspicious reports whether a message carries spam vectors —
