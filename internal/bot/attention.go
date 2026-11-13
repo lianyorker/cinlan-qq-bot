@@ -59,9 +59,13 @@ func (s *Service) stageAttention(ctx context.Context, event *pipeline.Context) e
 		return nil
 	}
 
+	// Privilege is not attention: the owner's group broadcasts still go
+	// through the classifier — he keeps privileged prompt treatment and
+	// mention/command paths, he just doesn't force a reply to every line.
 	direct := state.eventMentioned ||
 		state.replyPolicy.AllowsUser(state.userID) ||
-		s.isOwnerUser(state.userID)
+		(s.isOwnerUser(state.userID) &&
+			state.chatType == platform.ChatPrivate)
 	// An engaged continuation — her recent move or reply — keeps the
 	// channel warm: even a bare "好的" may be answering her question.
 	engaged := s.pendingGameMove(state) || s.pendingFollowUp(state)
