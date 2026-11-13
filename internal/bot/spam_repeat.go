@@ -450,6 +450,11 @@ func (s *Service) tryEchoJoin(state *flowState) string {
 	if s.noteEchoChain(key, state.userID, state.text) < echoChainMinUsers {
 		return ""
 	}
+	// Never tag along on a spam chain — repeating an ad verbatim gets
+	// her flagged right alongside the accounts spamming it.
+	if moderationSuspicious(state.event.Chain, state.text) {
+		return ""
+	}
 	s.echoMu.Lock()
 	entry, ok := s.echoChains[key]
 	if !ok || entry.joined {

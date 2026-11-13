@@ -274,6 +274,19 @@ func (s *Service) classifySpam(
 	if err != nil {
 		return false, "", err
 	}
+	confidence := float64(-1)
+	if verdict.Confidence != nil {
+		confidence = *verdict.Confidence
+	}
+	s.logger.Info(
+		"spam judge verdict",
+		"chat", state.chatID,
+		"user", state.userID,
+		"spam", verdict.Spam,
+		"confidence", confidence,
+		"threshold", threshold,
+		"reason", strings.TrimSpace(verdict.Reason),
+	)
 	if verdict.Confidence == nil ||
 		*verdict.Confidence < threshold {
 		return false, "", nil

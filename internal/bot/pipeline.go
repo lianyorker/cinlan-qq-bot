@@ -131,7 +131,6 @@ func (s *Service) newPipeline() *pipeline.Pipeline {
 		pipeline.StageFunc{StageName: "wake", Handler: s.stageWake},
 		pipeline.StageFunc{StageName: "security", Handler: s.stageSecurity},
 		pipeline.StageFunc{StageName: "command", Handler: s.stageCommand},
-		pipeline.StageFunc{StageName: "moderation", Handler: s.stageModeration},
 		pipeline.StageFunc{StageName: "session", Handler: s.stageSession},
 		pipeline.StageFunc{StageName: "attention", Handler: s.stageAttention},
 		pipeline.StageFunc{StageName: "rate_limit", Handler: s.stageRateLimit},
@@ -332,6 +331,16 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 		s.sessions.AddObservation(state.sessionID, "[其他机器人 "+state.userID+"] "+state.text)
 		state.ignored = true
 		event.Stop("peer_account")
+		return nil
+	}
+	// Moderation gets first dibs ahead of every ignore gate below —
+	// mention-only, self-mute, fatigue, quiet hours. An ad shouldn't
+	// survive just because nobody @-ed her or the group was silenced;
+	// recall is a group-safety action, not a reply.
+	if err := s.stageModeration(ctx, event); err != nil {
+		return err
+	}
+	if state.ignored {
 		return nil
 	}
 	// Voice sampling: fold this message into the sender's learned
