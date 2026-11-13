@@ -26,6 +26,10 @@ const (
 	maxCatalogBytes   = 512 << 10
 	maxCatalogEntries = 128
 	deliveryDedupeTTL = 10 * time.Minute
+	// pendingTTL bounds how long a "add friend then ask again" promise
+	// stays deliverable — after that the guide would be stale anyway.
+	pendingTTL        = 24 * time.Hour
+	pendingMaxPerUser = 8
 )
 
 var entryIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`)
@@ -87,7 +91,16 @@ type Catalog struct {
 
 	deliveryMu sync.Mutex
 	delivered  map[string]time.Time
+	pending    map[string][]pendingFile
+	flushed    map[string]time.Time
 	now        func() time.Time
+}
+
+// pendingFile is a file a user was told to fetch privately; it waits for
+// the friendship to exist before DeliverPending ships it.
+type pendingFile struct {
+	fileID string
+	at     time.Time
 }
 
 func LoadFile(path string, maxBytes int64) (*Catalog, error) {
@@ -149,6 +162,8 @@ func loadFile(path string, maxBytes int64, boundary *security.Boundary) (*Catalo
 		maxBytes:  maxBytes,
 		boundary:  boundary,
 		delivered: make(map[string]time.Time),
+		pending:   make(map[string][]pendingFile),
+		flushed:   make(map[string]time.Time),
 		now:       time.Now,
 	}
 	baseDir := filepath.Dir(absoluteCatalog)
@@ -285,10 +300,23 @@ func (c *Catalog) deliver(
 		if caller, ok := sender.(actionCaller); ok {
 			friendKnown, isFriend = checkFriendship(ctx, caller, friendUserID)
 		}
+		if c.wasFlushed(call.Actor, entry) {
+			// A pending flush just shipped this file — the user's repeat
+			// keyword is what drained the queue, so answer "sent" instead
+			// of pushing a duplicate.
+			messageText := "文件已发送，请查收。"
+			return tool.Result{Content: DeliveryResult{
+				Status:      "sent",
+				FileID:      entry.ID,
+				DisplayName: entry.DisplayName,
+				Message:     messageText,
+			}, Response: textResponse(messageText)}, nil
+		}
 		if friendKnown && !isFriend {
 			// Don't even attempt the send — guide first so nobody waits
 			// on a file card that can never land.
-			messageText := privateGuide(call.Actor.SelfID, entry)
+			c.rememberPending(call.Actor, entry)
+			messageText := privateGuide(entry)
 			return tool.Result{Content: DeliveryResult{
 				Status:      "private_chat_required",
 				FileID:      entry.ID,
@@ -317,7 +345,8 @@ func (c *Catalog) deliver(
 		if dedupeKey != "" {
 			c.forgetDelivery(dedupeKey)
 		}
-		messageText := privateGuide(call.Actor.SelfID, entry)
+		c.rememberPending(call.Actor, entry)
+		messageText := privateGuide(entry)
 		return tool.Result{Content: DeliveryResult{
 			Status:      "private_chat_required",
 			FileID:      entry.ID,
@@ -338,7 +367,8 @@ func (c *Catalog) deliver(
 			// Private send blew up and we can't prove friendship — the
 			// overwhelmingly likely cause is a stranger temp session, so
 			// answer with the add-friend guide instead of a bare error.
-			messageText := privateGuide(call.Actor.SelfID, entry)
+			c.rememberPending(call.Actor, entry)
+			messageText := privateGuide(entry)
 			return tool.Result{Content: DeliveryResult{
 				Status:      "private_chat_required",
 				FileID:      entry.ID,
@@ -348,6 +378,7 @@ func (c *Catalog) deliver(
 		}
 		return tool.Result{}, fmt.Errorf("send file %q: %w", entry.ID, err)
 	}
+	c.forgetPending(call.Actor, entry)
 	messageText := "文件已发送，请查收。"
 	return tool.Result{Content: DeliveryResult{
 		Status:      "sent",
@@ -492,6 +523,21 @@ func (c *Catalog) authorizeDelivery(
 	if !ok {
 		return tool.ErrPermissionDenied
 	}
+	if memberOfAllowedGroup(ctx, caller, entry, userID) {
+		return nil
+	}
+	return tool.ErrPermissionDenied
+}
+
+// memberOfAllowedGroup re-checks entry.AllowedGroupIDs against live
+// membership — used both at request time and again when a queued
+// pending delivery flushes, so leaving the group revokes the file.
+func memberOfAllowedGroup(
+	ctx context.Context,
+	caller actionCaller,
+	entry Entry,
+	userID string,
+) bool {
 	for _, groupID := range entry.AllowedGroupIDs {
 		result, err := caller.Call(ctx, "get_group_member_info", map[string]any{
 			"group_id": groupID,
@@ -502,10 +548,10 @@ func (c *Catalog) authorizeDelivery(
 		}
 		member, known := decodeMembershipResult(result, groupID, userID)
 		if known && member {
-			return nil
+			return true
 		}
 	}
-	return tool.ErrPermissionDenied
+	return false
 }
 
 func decodeMembershipResult(result any, groupID, userID string) (bool, bool) {
@@ -686,19 +732,163 @@ func (c *Catalog) toolDescription() string {
 	return builder.String()
 }
 
-func privateGuide(selfID string, entry Entry) string {
-	keyword := entry.ID
-	if selfID = strings.TrimSpace(selfID); selfID != "" {
-		return fmt.Sprintf(
-			"该文件仅通过私聊发送。请先添加 QQ %s 为好友，然后私聊发送“%s”获取。",
-			selfID,
-			keyword,
-		)
-	}
+func privateGuide(entry Entry) string {
 	return fmt.Sprintf(
-		"该文件仅通过私聊发送。请先添加机器人为好友，然后私聊发送“%s”获取。",
-		keyword,
+		"该文件仅通过私聊发送。麻烦加我一下好友，然后私聊发送“%s”获取。有问题可以先在群里沟通。",
+		entry.ID,
 	)
+}
+
+// forgetPending drops the file from the user's pending queue after a
+// successful private send — whatever path delivered it, the promise is
+// kept and a later flush must not resend.
+func (c *Catalog) forgetPending(actor tool.Actor, entry Entry) {
+	userID := strings.TrimSpace(actor.UserID)
+	if userID == "" {
+		userID = strings.TrimSpace(actor.ChatID)
+	}
+	if userID == "" {
+		return
+	}
+	key := strings.TrimSpace(actor.SelfID) + "\x00" + userID
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	queue := c.pending[key]
+	alive := queue[:0]
+	for _, item := range queue {
+		if item.fileID != entry.ID {
+			alive = append(alive, item)
+		}
+	}
+	if len(alive) == 0 {
+		delete(c.pending, key)
+		return
+	}
+	c.pending[key] = alive
+}
+
+// rememberPending records that userID owes a private copy of entry — the
+// guide told them to add the bot and ask again, so once the friendship
+// lands the adapter can flush the queue without a second request.
+func (c *Catalog) rememberPending(actor tool.Actor, entry Entry) {
+	userID := strings.TrimSpace(actor.UserID)
+	if userID == "" {
+		userID = strings.TrimSpace(actor.ChatID)
+	}
+	if userID == "" {
+		return
+	}
+	selfID := strings.TrimSpace(actor.SelfID)
+	key := selfID + "\x00" + userID
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	queue := c.pending[key]
+	alive := queue[:0]
+	for _, item := range queue {
+		if c.now().Sub(item.at) < pendingTTL {
+			alive = append(alive, item)
+		}
+	}
+	for _, item := range alive {
+		if item.fileID == entry.ID {
+			c.pending[key] = alive
+			return
+		}
+	}
+	if len(alive) >= pendingMaxPerUser {
+		alive = alive[1:]
+	}
+	c.pending[key] = append(alive, pendingFile{fileID: entry.ID, at: c.now()})
+}
+
+// DeliverPending ships every file the user was guided to fetch, then one
+// confirmation text. Called by the adapter when the friendship actually
+// exists (friend_add notice / accepted request). A failed file is
+// requeued so a transient onebot error doesn't lose the promise.
+func (c *Catalog) DeliverPending(
+	ctx context.Context,
+	sender Sender,
+	selfID, userID string,
+) int {
+	if sender == nil {
+		return 0
+	}
+	key := strings.TrimSpace(selfID) + "\x00" + strings.TrimSpace(userID)
+	c.deliveryMu.Lock()
+	queue := c.pending[key]
+	delete(c.pending, key)
+	c.deliveryMu.Unlock()
+	if len(queue) == 0 {
+		return 0
+	}
+	byID := make(map[string]Entry, len(c.entries))
+	for _, entry := range c.entries {
+		byID[entry.ID] = entry
+	}
+	sent := 0
+	for _, item := range queue {
+		entry, ok := byID[item.fileID]
+		if !ok || c.now().Sub(item.at) >= pendingTTL {
+			continue
+		}
+		if err := c.validateFile(entry); err != nil {
+			continue
+		}
+		if len(entry.AllowedGroupIDs) > 0 {
+			// Group-gated files re-verify membership at flush time —
+			// fail closed when the check can't run at all.
+			caller, ok := sender.(actionCaller)
+			if !ok || !memberOfAllowedGroup(ctx, caller, entry, strings.TrimSpace(userID)) {
+				continue
+			}
+		}
+		if err := sender.Send(ctx, platform.Outbound{
+			ChatType: platform.ChatPrivate,
+			ChatID:   strings.TrimSpace(userID),
+			SelfID:   strings.TrimSpace(selfID),
+			Chain:    message.Chain{message.File(entry.Path, entry.DisplayName)},
+		}); err != nil {
+			c.deliveryMu.Lock()
+			c.pending[key] = append(c.pending[key], item)
+			c.deliveryMu.Unlock()
+			continue
+		}
+		c.deliveryMu.Lock()
+		c.flushed[key+"\x00"+item.fileID] = c.now()
+		c.deliveryMu.Unlock()
+		sent++
+	}
+	if sent == 0 {
+		return 0
+	}
+	_ = sender.Send(ctx, platform.Outbound{
+		ChatType: platform.ChatPrivate,
+		ChatID:   strings.TrimSpace(userID),
+		SelfID:   strings.TrimSpace(selfID),
+		Chain:    message.Chain{message.Text("文件已发送，请查收。")},
+	})
+	return sent
+}
+
+// wasFlushed reports whether DeliverPending shipped this file to the
+// actor inside a short window — lets deliver() answer the repeat
+// keyword without sending the file a second time.
+func (c *Catalog) wasFlushed(actor tool.Actor, entry Entry) bool {
+	if strings.TrimSpace(actor.UserID) == "" {
+		return false
+	}
+	key := strings.TrimSpace(actor.SelfID) + "\x00" + strings.TrimSpace(actor.UserID) + "\x00" + entry.ID
+	c.deliveryMu.Lock()
+	defer c.deliveryMu.Unlock()
+	at, ok := c.flushed[key]
+	if !ok {
+		return false
+	}
+	if c.now().Sub(at) >= deliveryDedupeTTL {
+		delete(c.flushed, key)
+		return false
+	}
+	return true
 }
 
 func deliveryKey(actor tool.Actor, fileID string) string {

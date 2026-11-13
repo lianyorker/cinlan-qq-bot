@@ -496,6 +496,12 @@ func main() {
 				logger.Error("failed to register file delivery tool", "error", registerErr)
 				os.Exit(2)
 			}
+			switch adapter := qqAdapter.(type) {
+			case *onebotplatform.MultiAdapter:
+				adapter.SetPendingFiles(fileCatalog)
+			case *onebotplatform.Adapter:
+				adapter.PendingFiles = fileCatalog
+			}
 			logger.Info("file catalog loaded", "file", cfg.FileCatalogPath, "files", len(entries))
 		} else {
 			logger.Warn("file catalog contains no enabled files", "file", cfg.FileCatalogPath)

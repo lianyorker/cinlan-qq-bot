@@ -11,6 +11,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/lianyorker/cinlan-qq-bot/internal/filedelivery"
 	"github.com/lianyorker/cinlan-qq-bot/internal/message"
 	"github.com/lianyorker/cinlan-qq-bot/internal/onebot"
 	"github.com/lianyorker/cinlan-qq-bot/internal/platform"
@@ -43,6 +44,15 @@ type Adapter struct {
 	// welcomes fire outside the pipeline, so without this hook she'd forget
 	// greeting anyone. Set by main once the bot service exists.
 	OnSelfAction func(selfID, chatType, chatID, desc string)
+	// PendingFiles, when set, receives a DeliverPending call the moment a
+	// friendship actually exists (friend_add notice or auto-accepted
+	// request), so files the user was guided to fetch get flushed without
+	// them having to ask twice.
+	PendingFiles pendingFileStore
+}
+
+type pendingFileStore interface {
+	DeliverPending(ctx context.Context, sender filedelivery.Sender, selfID, userID string) int
 }
 
 // emitSelfAction forwards an adapter-side send to the persona's recall hook
@@ -104,7 +114,8 @@ func (a *Adapter) Run(ctx context.Context) error {
 					continue
 				}
 				a.logger.Info("friend_add notice", "user_id", event.UserID.String())
-				a.deliverFriendWelcome(ctx, event.SelfID.String(), event.UserID.String())
+				sent := a.flushPendingFiles(ctx, event.SelfID.String(), event.UserID.String())
+				a.deliverFriendWelcome(ctx, event.SelfID.String(), event.UserID.String(), sent > 0)
 				continue
 			}
 			if event.PostType == "notice" && event.NoticeType == "group_increase" {
@@ -119,6 +130,22 @@ func (a *Adapter) Run(ctx context.Context) error {
 						ctx, event.SelfID.String(), groupID, userID,
 					)
 				}
+			}
+			if event.PostType == "message" && event.MessageType == "private" {
+				if isFriendRequestMessage(event) {
+					// This NapCat build delivers friend requests as a plain
+					// DM ("请求添加你为好友") instead of a request event —
+					// approve via the doubt-request list and swallow the
+					// control text so the agent never chats back at it.
+					if a.AutoAcceptFriend {
+						a.approveDoubtFriendRequest(ctx, event)
+					}
+					continue
+				}
+				// friend_add may never arrive (implementation-specific),
+				// so any private DM also drains the pending queue — the
+				// guide already told them to message us anyway.
+				a.flushPendingFiles(ctx, event.SelfID.String(), event.UserID.String())
 			}
 			converted, err := convertEvent(event)
 			if err != nil {
@@ -280,6 +307,104 @@ func isFriendRequest(event onebot.Event) bool {
 	return event.PostType == "request" && event.RequestType == "friend"
 }
 
+// isFriendRequestMessage detects the text-rendered friend request this
+// NapCat build emits as a private message in place of a request event.
+func isFriendRequestMessage(event onebot.Event) bool {
+	return event.PostType == "message" &&
+		event.MessageType == "private" &&
+		strings.Contains(event.RawMessage, "请求添加你为好友")
+}
+
+// approveDoubtFriendRequest pulls the pending ("doubt") friend-request
+// list, finds this user's request flag and approves it — restoring
+// auto-accept on builds that never emit a request event.
+func (a *Adapter) approveDoubtFriendRequest(ctx context.Context, event onebot.Event) {
+	userID := event.UserID.String()
+	raw, err := a.Call(ctx, "get_doubt_friends_add_request", map[string]any{})
+	if err != nil {
+		a.logger.Error("failed to list doubt friend requests",
+			"user_id", userID, "error", err.Error())
+		return
+	}
+	rawBytes, ok := raw.(json.RawMessage)
+	if !ok {
+		a.logger.Warn("doubt friend request list unexpected type",
+			"user_id", userID)
+		return
+	}
+	var decoded any
+	if err := json.Unmarshal(rawBytes, &decoded); err != nil {
+		a.logger.Warn("doubt friend request list undecodable",
+			"user_id", userID, "error", err.Error())
+		return
+	}
+	flag := findRequestFlag(decoded, userID)
+	if flag == "" {
+		a.logger.Warn("friend request message but no pending doubt request",
+			"user_id", userID)
+		return
+	}
+	if _, err := a.Call(ctx, "set_doubt_friends_add_request", map[string]any{
+		"flag": flag,
+	}); err != nil {
+		a.logger.Error("failed to approve doubt friend request",
+			"user_id", userID, "error", err.Error())
+		return
+	}
+	a.logger.Info("auto-accepted friend request via doubt list", "user_id", userID)
+	sent := a.flushPendingFiles(ctx, event.SelfID.String(), userID)
+	a.deliverFriendWelcome(ctx, event.SelfID.String(), userID, sent > 0)
+}
+
+// findRequestFlag walks the get_doubt_friends_add_request payload and
+// returns the flag of the entry matching userID. Field names vary across
+// NapCat versions, so the walk tolerates user_id/uin/uid and flag/req_id.
+func findRequestFlag(result any, userID string) string {
+	switch current := result.(type) {
+	case json.RawMessage:
+		var decoded any
+		if err := json.Unmarshal(current, &decoded); err != nil {
+			return ""
+		}
+		return findRequestFlag(decoded, userID)
+	case []byte:
+		var decoded any
+		if err := json.Unmarshal(current, &decoded); err != nil {
+			return ""
+		}
+		return findRequestFlag(decoded, userID)
+	case []any:
+		for _, item := range current {
+			if flag := findRequestFlag(item, userID); flag != "" {
+				return flag
+			}
+		}
+	case map[string]any:
+		matchesUser := false
+		for _, key := range []string{"user_id", "uin", "uid", "applicant"} {
+			if value, ok := current[key]; ok && fmt.Sprint(value) == userID {
+				matchesUser = true
+				break
+			}
+		}
+		if matchesUser {
+			for _, key := range []string{"flag", "req_id", "request_id", "msg_seq"} {
+				if value, ok := current[key]; ok {
+					if flag := strings.TrimSpace(fmt.Sprint(value)); flag != "" && flag != "0" {
+						return flag
+					}
+				}
+			}
+		}
+		for _, item := range current {
+			if flag := findRequestFlag(item, userID); flag != "" {
+				return flag
+			}
+		}
+	}
+	return ""
+}
+
 func (a *Adapter) autoAcceptFriendRequest(ctx context.Context, event onebot.Event) {
 	userID := event.UserID.String()
 	if event.Flag == "" {
@@ -292,7 +417,19 @@ func (a *Adapter) autoAcceptFriendRequest(ctx context.Context, event onebot.Even
 		return
 	}
 	a.logger.Info("auto-accepted friend request", "user_id", userID)
-	a.deliverFriendWelcome(ctx, event.SelfID.String(), userID)
+	sent := a.flushPendingFiles(ctx, event.SelfID.String(), userID)
+	a.deliverFriendWelcome(ctx, event.SelfID.String(), userID, sent > 0)
+}
+
+// flushPendingFiles ships any file this user was guided to fetch — the
+// guide told them to add the bot first, so the friendship landing is the
+// trigger that completes the promise. Returns how many files landed so
+// the welcome path can skip a redundant FRIEND_FILE_PATH delivery.
+func (a *Adapter) flushPendingFiles(ctx context.Context, selfID, userID string) int {
+	if a.PendingFiles == nil {
+		return 0
+	}
+	return a.PendingFiles.DeliverPending(ctx, a, selfID, userID)
 }
 
 // friendWelcomeSent dedupes welcome delivery across the request-accept and
@@ -411,7 +548,7 @@ func (a *Adapter) groupNotice(ctx context.Context, groupID string) string {
 	return ""
 }
 
-func (a *Adapter) deliverFriendWelcome(ctx context.Context, selfID, userID string) {
+func (a *Adapter) deliverFriendWelcome(ctx context.Context, selfID, userID string, skipFile bool) {
 	if !friendWelcomeRecent.mark(userID) {
 		return
 	}
@@ -425,6 +562,11 @@ func (a *Adapter) deliverFriendWelcome(ctx context.Context, selfID, userID strin
 				"给新好友发了欢迎消息",
 			)
 		}
+	}
+	if skipFile {
+		// Pending flush already shipped a file to this user — the
+		// welcome file is for people who never asked for anything.
+		return
 	}
 	if path := strings.TrimSpace(a.FriendFilePath); path != "" {
 		allowed := len(a.FriendFileGroups) == 0

@@ -148,7 +148,7 @@ func TestDeliverFileGuidesGroupWhenPrivateSendFails(t *testing.T) {
 	}
 	content := result.Content.(DeliveryResult)
 	if content.Status != "private_chat_required" ||
-		!strings.Contains(content.Message, "添加 QQ 10000001 为好友") ||
+		!strings.Contains(content.Message, "麻烦加我一下好友") ||
 		result.Response == nil ||
 		len(sender.outbound) != 0 {
 		t.Fatalf("result = %#v, outbound = %#v", result, sender.outbound)
@@ -183,7 +183,7 @@ func TestDeliverFileGuidesPrivateWhenNotFriend(t *testing.T) {
 	}
 	content := result.Content.(DeliveryResult)
 	if content.Status != "private_chat_required" ||
-		!strings.Contains(content.Message, "添加 QQ 10000001 为好友") ||
+		!strings.Contains(content.Message, "麻烦加我一下好友") ||
 		result.Response == nil ||
 		len(sender.outbound) != 0 {
 		t.Fatalf("result = %#v, outbound = %#v", result, sender.outbound)
@@ -211,7 +211,7 @@ func TestDeliverFilePrivateSendFailureGuidesWhenFriendshipUnknown(t *testing.T) 
 	}
 	content := result.Content.(DeliveryResult)
 	if content.Status != "private_chat_required" ||
-		!strings.Contains(content.Message, "添加 QQ 10000001 为好友") {
+		!strings.Contains(content.Message, "麻烦加我一下好友") {
 		t.Fatalf("result = %#v", result)
 	}
 }
@@ -576,5 +576,101 @@ func writeCatalog(t *testing.T, dir string) {
 }`)
 	if err := os.WriteFile(filepath.Join(dir, "files.json"), content, 0o600); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestDeliverPendingFlushesGuidedFileAfterFriendship(t *testing.T) {
+	catalog := loadTestCatalog(t, []byte("select 1;"))
+	sender := &recordingSender{err: errors.New("not a friend")}
+	definition := catalog.Tool(sender, time.Second)
+
+	// Stranger asks in a group; the private send bounces (QQ temp
+	// sessions can't take files), the guide goes out, and the catalog
+	// quietly queues the file for once the friendship exists.
+	result, err := definition.Handler(context.Background(), tool.Call{
+		Arguments: json.RawMessage(`{"file_id":"sql"}`),
+		Actor: tool.Actor{
+			Platform:  platform.PlatformQQOneBot,
+			ChatType:  platform.ChatGroup,
+			ChatID:    "20000001",
+			SelfID:    "10000001",
+			UserID:    "10000002",
+			MessageID: "group-message",
+		},
+	})
+	if err != nil {
+		t.Fatalf("guide result error = %v", err)
+	}
+	if content := result.Content.(DeliveryResult); content.Status != "private_chat_required" {
+		t.Fatalf("guide result = %#v", result)
+	}
+	if len(sender.outbound) != 0 {
+		t.Fatalf("guided send should not have fired: %#v", sender.outbound)
+	}
+
+	// Friendship lands -> adapter calls DeliverPending -> file + confirm.
+	sender.err = nil
+	catalog.DeliverPending(context.Background(), sender, "10000001", "10000002")
+	if len(sender.outbound) != 2 {
+		t.Fatalf("pending flush outbound = %#v", sender.outbound)
+	}
+	fileMsg := sender.outbound[0]
+	if fileMsg.ChatType != platform.ChatPrivate ||
+		fileMsg.ChatID != "10000002" ||
+		len(fileMsg.Chain) != 1 ||
+		fileMsg.Chain[0].Type != message.TypeFile {
+		t.Fatalf("pending file outbound = %#v", fileMsg)
+	}
+	confirm := sender.outbound[1]
+	if confirm.ChatType != platform.ChatPrivate ||
+		len(confirm.Chain) != 1 ||
+		confirm.Chain[0].Type != message.TypeText {
+		t.Fatalf("pending confirm outbound = %#v", confirm)
+	}
+
+	// Queue is drained: a second flush sends nothing more.
+	catalog.DeliverPending(context.Background(), sender, "10000001", "10000002")
+	if len(sender.outbound) != 2 {
+		t.Fatalf("second flush outbound = %#v", sender.outbound)
+	}
+}
+
+func TestDeliverPendingSkipsNonMemberForGroupGatedFile(t *testing.T) {
+	catalog := loadTestCatalogWithGroups(t, []string{"20000001"})
+	sender := &recordingSender{
+		call: func(_ context.Context, name string, params map[string]any) (any, error) {
+			if name != "get_group_member_info" {
+				return nil, errors.New("unexpected action " + name)
+			}
+			// Non-member everywhere: retcode failure like a real lookup.
+			return nil, errors.New("not a member")
+		},
+	}
+	catalog.rememberPending(tool.Actor{
+		SelfID: "10000001", UserID: "10000002",
+	}, catalog.entries[0])
+
+	catalog.DeliverPending(context.Background(), sender, "10000001", "10000002")
+	if len(sender.outbound) != 0 {
+		t.Fatalf("non-member flush should send nothing: %#v", sender.outbound)
+	}
+}
+
+func TestDeliverPendingRequeuesOnSendFailure(t *testing.T) {
+	catalog := loadTestCatalog(t, []byte("select 1;"))
+	sender := &recordingSender{err: errors.New("onebot down")}
+	catalog.rememberPending(tool.Actor{
+		SelfID: "10000001", UserID: "10000002",
+	}, catalog.entries[0])
+
+	catalog.DeliverPending(context.Background(), sender, "10000001", "10000002")
+	if len(sender.outbound) != 0 {
+		t.Fatalf("failed send should leave no outbound: %#v", sender.outbound)
+	}
+
+	sender.err = nil
+	catalog.DeliverPending(context.Background(), sender, "10000001", "10000002")
+	if len(sender.outbound) != 2 {
+		t.Fatalf("requeued flush outbound = %#v", sender.outbound)
 	}
 }

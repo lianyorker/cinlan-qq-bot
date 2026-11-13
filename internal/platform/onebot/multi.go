@@ -216,6 +216,14 @@ func (m *MultiAdapter) SetAutoAcceptFriend(enabled bool) {
 	}
 }
 
+// SetPendingFiles hooks the file-catalog pending queue onto every account,
+// so files a user was guided to fetch flush once the friendship exists.
+func (m *MultiAdapter) SetPendingFiles(store pendingFileStore) {
+	for _, account := range m.accounts {
+		account.adapter.PendingFiles = store
+	}
+}
+
 // SetFriendWelcome configures the text/file delivered privately right after
 // an auto-accepted friend request on every account. groups restricts the
 // file to requesters who are members of at least one listed group.

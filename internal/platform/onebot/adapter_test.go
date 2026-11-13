@@ -119,3 +119,43 @@ func TestAdapterAutoAcceptsFriendRequest(t *testing.T) {
 		t.Fatal("adapter did not stop")
 	}
 }
+
+
+func TestFindRequestFlag(t *testing.T) {
+	decoded := map[string]any{
+		"requests": []any{
+			map[string]any{"user_id": "13438811", "flag": "flag-b"},
+			map[string]any{"uin": "1955383721", "flag": "flag-a"},
+		},
+	}
+	if got := findRequestFlag(decoded, "1955383721"); got != "flag-a" {
+		t.Fatalf("uin match = %q", got)
+	}
+	if got := findRequestFlag(decoded, "13438811"); got != "flag-b" {
+		t.Fatalf("user_id match = %q", got)
+	}
+	if got := findRequestFlag(decoded, "99999"); got != "" {
+		t.Fatalf("missing user = %q", got)
+	}
+	// Top-level array shape tolerated.
+	if got := findRequestFlag([]any{
+		map[string]any{"uid": "7", "req_id": "r1"},
+	}, "7"); got != "r1" {
+		t.Fatalf("array+req_id = %q", got)
+	}
+}
+
+func TestIsFriendRequestMessage(t *testing.T) {
+	yes := onebot.Event{PostType: "message", MessageType: "private", RawMessage: "请求添加你为好友"}
+	if !isFriendRequestMessage(yes) {
+		t.Fatal("friend request text not detected")
+	}
+	no := onebot.Event{PostType: "message", MessageType: "private", RawMessage: "zkmall-sql"}
+	if isFriendRequestMessage(no) {
+		t.Fatal("normal dm misdetected")
+	}
+	group := onebot.Event{PostType: "message", MessageType: "group", RawMessage: "请求添加你为好友"}
+	if isFriendRequestMessage(group) {
+		t.Fatal("group message misdetected")
+	}
+}
