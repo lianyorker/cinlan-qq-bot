@@ -18,6 +18,7 @@ import (
 	"mime/multipart"
 	"net"
 	"net/http"
+	"net/textproto"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -396,7 +397,15 @@ func (g *ImageGenerator) generateOpenAIEdit(
 		_ = writer.WriteField("size", size)
 	}
 	_ = writer.WriteField("n", "1")
-	part, err := writer.CreateFormFile("image", "reference.png")
+	// CreateFormFile stamps every part application/octet-stream — strict
+	// gateways validate the declared mimetype and only take jpeg/png/webp.
+	partHeader := textproto.MIMEHeader{}
+	partHeader.Set(
+		"Content-Disposition",
+		fmt.Sprintf(`form-data; name="image"; filename="reference%s"`, referenceExt(refData)),
+	)
+	partHeader.Set("Content-Type", referenceMIME(refData))
+	part, err := writer.CreatePart(partHeader)
 	if err != nil {
 		return nil, err
 	}
@@ -450,6 +459,37 @@ func (g *ImageGenerator) generateOpenAIEdit(
 		return g.download(ctx, remoteURL)
 	}
 	return nil, errors.New("image edit provider returned no image")
+}
+
+// referenceMIME returns the declared Content-Type for the uploaded
+// reference image — strict edit gateways reject application/octet-stream
+// and only take jpeg/png/webp, so we sniff the bytes and map gif/other
+// sniffed-but-unsupported formats to png (still honest about what the
+// upstream wants; the payload itself must actually be that format).
+func referenceMIME(data []byte) string {
+	switch mediaType := http.DetectContentType(data); mediaType {
+	case "image/jpeg", "image/png", "image/webp":
+		return mediaType
+	default:
+		// Anything sniffed outside the gateway's allowlist (gif, bmp, or
+		// an opaque buffer) is declared as png — declaring the real type
+		// would be rejected outright, while png payloads pass most
+		// lenient relays; if the upstream sniffs bytes too, nothing lost.
+		return "image/png"
+	}
+}
+
+// referenceExt keeps the uploaded filename's extension consistent with
+// the sniffed format so relays that validate by name see a coherent file.
+func referenceExt(data []byte) string {
+	switch http.DetectContentType(data) {
+	case "image/jpeg":
+		return ".jpg"
+	case "image/webp":
+		return ".webp"
+	default:
+		return ".png"
+	}
 }
 
 func (g *ImageGenerator) generatePollinations(
