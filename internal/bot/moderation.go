@@ -128,15 +128,21 @@ func (s *Service) stageModeration(
 	limit := pol.EffectiveWarnLimit()
 	action := pol.EffectiveAction()
 	s.logger.Info(
-		"spam message recalled",
+		"spam message flagged",
 		"chat", state.chatID,
 		"user", state.userID,
 		"via", map[bool]string{true: "llm", false: "pattern"}[reason != ""],
 		"reason", reason,
+		"recalled", recalled,
 		"warning", fmt.Sprintf("%d/%d", count, limit),
 		"action", action,
 	)
 
+	// Public replies only claim what actually happened: announce the
+	// warning when we removed the message ourselves, or a real action
+	// outcome — never pretend a recall that failed (another admin or
+	// bot may already have cleaned it up; the warning still counted
+	// silently so repeat offenders keep climbing the ladder).
 	var notice string
 	if count >= limit && action != binding.ModerationActionWarnOnly {
 		label := "禁言处理"
@@ -166,7 +172,7 @@ func (s *Service) stageModeration(
 				"error", actErr.Error(),
 			)
 			notice = fmt.Sprintf(
-				"广告撤了 但处理没成功 管理来看下（警告 %d/%d）",
+				"处理没成功 管理来看下（警告 %d/%d）",
 				count, limit,
 			)
 		} else {
@@ -180,24 +186,26 @@ func (s *Service) stageModeration(
 				label,
 			)
 		}
-	} else {
+	} else if recalled {
 		notice = fmt.Sprintf(
 			"广告我撤了 别再发了（警告 %d/%d 到 %d 次要动手了）",
 			count, limit, limit,
 		)
 	}
-	notice = s.personaModerationNotice(ctx, state, notice)
-	if !s.sendChain(
-		ctx,
-		state.selfID,
-		state.chatType,
-		state.chatID,
-		state.userID,
-		state.event.SenderName,
-		"",
-		message.Chain{message.At(state.userID), message.Text(" " + notice)},
-	) {
-		s.stats.sendErrors.Add(1)
+	if notice != "" {
+		notice = s.personaModerationNotice(ctx, state, notice)
+		if !s.sendChain(
+			ctx,
+			state.selfID,
+			state.chatType,
+			state.chatID,
+			state.userID,
+			state.event.SenderName,
+			"",
+			message.Chain{message.At(state.userID), message.Text(" " + notice)},
+		) {
+			s.stats.sendErrors.Add(1)
+		}
 	}
 	state.ignored = true
 	event.Stop("moderation")
