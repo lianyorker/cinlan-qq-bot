@@ -1058,33 +1058,10 @@ func (s *Service) handleCommand(
 	ctx context.Context,
 	sessionID, plat, selfID, chatType, chatID, userID, senderName, messageID, text string,
 ) bool {
-	command := strings.ToLower(strings.TrimSpace(text))
-	var reply string
-
-	switch command {
-	case "/clear", "/清空":
-		s.sessions.Clear(sessionID)
-		reply = s.cfg.ClearReply
-	case "/亲密度", "/affinity":
-		if s.affinity == nil {
-			reply = "亲密度功能未开启。"
-			break
-		}
-		score := s.affinity.Score(plat, selfID, userID)
-		level, percent := affinity.Level(score), affinity.Percent(score)
-		if chatType == platform.ChatPrivate {
-			level, percent = affinity.LevelIntimate, 100
-		}
-		reply = fmt.Sprintf("你和我的亲密度：%s（%d/100）", level, percent)
-	case "/help", "/帮助":
-		reply = "支持命令：/清空、/亲密度、/帮助"
-	default:
-		return false
-	}
-
-	s.stats.processed.Add(1)
-	s.sendReply(ctx, selfID, chatType, chatID, userID, senderName, messageID, reply)
-	return true
+	// Built-in slash commands were removed — the shipped surface is the
+	// notify pair registered in local_extensions.go; anything else is
+	// handled by the command registry before this runs.
+	return false
 }
 
 func (s *Service) sendReply(

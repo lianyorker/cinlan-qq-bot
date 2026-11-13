@@ -620,23 +620,15 @@ func naturalSecurityRefusal(text, messageID, userID string) string {
 	return fallbackSecurityRefusals[seed%len(fallbackSecurityRefusals)]
 }
 
-// commandMessage reports whether text addresses a real command —
-// registered slash commands plus the built-in set — so operators can
-// still steer the bot in mention-only groups (re-enable notify, resume
-// a handoff) without an @ mention.
+// commandMessage reports whether text addresses a registered command —
+// operators can still steer the bot in mention-only groups (re-enable
+// notify) without an @ mention.
 func (s *Service) commandMessage(text string) bool {
 	trimmed := strings.TrimSpace(text)
 	if !strings.HasPrefix(trimmed, "/") {
 		return false
 	}
-	if s.commands != nil && s.commands.Matches(trimmed) {
-		return true
-	}
-	switch strings.ToLower(trimmed) {
-	case "/clear", "/清空", "/亲密度", "/affinity", "/help", "/帮助":
-		return true
-	}
-	return false
+	return s.commands != nil && s.commands.Matches(trimmed)
 }
 
 func (s *Service) stageCommand(ctx context.Context, event *pipeline.Context) error {

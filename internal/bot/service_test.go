@@ -542,15 +542,9 @@ func TestSlashCommandSurvivesMentionOnly(t *testing.T) {
 		t.Fatalf("slash command dropped under mention-only: %#v", sender.messages)
 	}
 
-	// Built-in commands ride through too — /清空 clears the session.
-	service.handleEvent(context.Background(), testEvent("builtin-cmd", "/清空", false))
-	if len(sender.messages) != 2 || sender.messages[1].text != "clear" {
-		t.Fatalf("builtin command dropped under mention-only: %#v", sender.messages)
-	}
-
 	// A non-command slash text must not leak to the agent either.
 	service.handleEvent(context.Background(), testEvent("slash-junk", "/notacommand", false))
-	if len(sender.messages) != 2 || len(agentClient.requests) != 0 {
+	if len(sender.messages) != 1 || len(agentClient.requests) != 0 {
 		t.Fatalf("slash junk leaked: messages=%#v requests=%#v", sender.messages, agentClient.requests)
 	}
 }
