@@ -122,11 +122,28 @@ func (s *Service) stageModeration(
 		)
 	}
 
+	action := pol.EffectiveAction()
+	if action == binding.ModerationActionRecallOnly {
+		// Delete-and-done: spam is gone (or at least attempted), nothing
+		// else to enforce — no warn counter, no public notice.
+		s.logger.Info(
+			"spam message flagged",
+			"chat", state.chatID,
+			"user", state.userID,
+			"via", map[bool]string{true: "llm", false: "pattern"}[reason != ""],
+			"reason", reason,
+			"recalled", recalled,
+			"action", action,
+		)
+		state.ignored = true
+		event.Stop("moderation")
+		return nil
+	}
+
 	key := state.platform + ":" + state.chatType + ":" +
 		state.chatID + ":" + state.userID
 	count := s.warnStore.Warn(key)
 	limit := pol.EffectiveWarnLimit()
-	action := pol.EffectiveAction()
 	s.logger.Info(
 		"spam message flagged",
 		"chat", state.chatID,

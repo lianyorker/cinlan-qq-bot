@@ -53,6 +53,10 @@ const (
 	ModerationActionBan      = "ban"       // recall + warn, mute on limit (default)
 	ModerationActionKick     = "kick"      // recall + warn, kick on limit
 	ModerationActionWarnOnly = "warn_only" // recall + warn, never mute/kick
+	// recall_only deletes the spam and stops there — no warn ladder, no
+	// public notice, no mute/kick. For chats where another admin or bot
+	// already handles enforcement and we only want the message gone.
+	ModerationActionRecallOnly = "recall_only"
 )
 
 const (
@@ -117,6 +121,8 @@ func (p *ModerationPolicy) EffectiveAction() string {
 		return ModerationActionKick
 	case ModerationActionWarnOnly:
 		return ModerationActionWarnOnly
+	case ModerationActionRecallOnly:
+		return ModerationActionRecallOnly
 	default:
 		return ModerationActionBan
 	}
