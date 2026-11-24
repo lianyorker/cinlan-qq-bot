@@ -435,6 +435,31 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			(s.pendingGameMove(state) || s.pendingFollowUp(state))
 		if !state.eventMentioned && !s.commandMessage(state.text) &&
 			(slashJunk || !followUpOK) {
+			// Notify-off misses still land in history tagged [静音未接] —
+			// with their #N ref bound, a later /开启通知 can hand the
+			// look-back turn real lines to pick up instead of guessing.
+			// Same safety bar as stageSession: guard-flagged text stays
+			// out of the record so a muted window can't poison context.
+			if state.notifyOff && s.sessions != nil &&
+				security.TextSafeForPrompt(state.text) {
+				sid := state.platform + ":self:" + state.selfID +
+					":" + state.chatType + ":" + state.chatID
+				ref := s.sessions.BindInboundRef(
+					sid, state.messageID, state.userID,
+					state.event.SenderName,
+				)
+				s.sessions.AddObservation(
+					sid,
+					fmt.Sprintf(
+						"#%d%s %s", ref, mutedInboundTag,
+						groupPromptText(
+							state.event.SenderName,
+							state.userID,
+							strings.TrimSpace(state.text),
+						),
+					),
+				)
+			}
 			state.ignored = true
 			event.Stop("not_mentioned")
 			return nil

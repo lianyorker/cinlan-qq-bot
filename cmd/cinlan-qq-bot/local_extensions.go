@@ -158,6 +158,15 @@ func registerLocalExtensions(
 			// /人工 /恢复 are gone.
 			_ = store.SetMuteUntil(c.Event.Platform, c.Event.SelfID, c.Event.MessageType, c.Event.ChatID, time.Time{})
 			service.ClearHandoff(c.SessionID)
+			// Look back at what the muted window dropped — a person who
+			// just un-mutes checks the pings she slept through. Detached
+			// ctx: the turn must outlive this handler's request scope.
+			go service.CatchUpAfterWake(
+				context.Background(),
+				c.Event.Platform, c.Event.SelfID,
+				c.Event.MessageType, c.Event.ChatID,
+				c.Event.UserID, c.Event.SenderName,
+			)
 			return command.Result{Handled: true, Reply: "通知已开启，装死/接管状态也一并解除。"}, nil
 		},
 	})
