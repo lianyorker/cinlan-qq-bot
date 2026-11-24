@@ -1074,12 +1074,9 @@ func (s *Service) sendReply(
 	ctx context.Context,
 	selfID, chatType, chatID, userID, senderName, messageID, text string,
 ) bool {
-	parts, truncated := splitReply(
+	parts, _ := splitReply(
 		text, s.cfg.MaxReplyRunes, s.cfg.MaxReplyChunks,
 	)
-	if truncated {
-		parts = append(parts, truncationCloser(chatType))
-	}
 	return s.sendTextParts(
 		ctx,
 		selfID,
@@ -1731,14 +1728,6 @@ func lastSentenceEnd(text []rune) int {
 	return best + 1
 }
 
-// truncationCloser is the follow-up bubble when a reply got capped —
-// group and private keep separate voices.
-func truncationCloser(chatType string) string {
-	if chatType == platform.ChatPrivate {
-		return "太长了，先说到这，想继续再问"
-	}
-	return "群里讲不完了，想细聊私我"
-}
 
 func workerIndex(event onebot.Event, count int) int {
 	if count <= 0 {

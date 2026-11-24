@@ -483,14 +483,6 @@ func TestSplitReplyBacktrimsToSentenceEnd(t *testing.T) {
 	}
 }
 
-func TestTruncationCloserVoices(t *testing.T) {
-	if got := truncationCloser(platform.ChatPrivate); got != "太长了，先说到这，想继续再问" {
-		t.Fatalf("private closer = %q", got)
-	}
-	if got := truncationCloser(platform.ChatGroup); got != "群里讲不完了，想细聊私我" {
-		t.Fatalf("group closer = %q", got)
-	}
-}
 
 func TestPipelineStagesAndCustomCommand(t *testing.T) {
 	cfg := testBotConfig(t)
