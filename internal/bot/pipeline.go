@@ -124,6 +124,26 @@ type flowState struct {
 	// echoJoinIn marks a reply that tagged along on a group meme chain —
 	// a person chiming in drops a line or two, never a paragraph.
 	echoJoinIn bool
+	// inboundRef is the "#N" handle assigned to this turn's inbound
+	// message — the tag stored on the assistant line (回#N) so later
+	// turns can see which message was already answered.
+	inboundRef int
+	// replyTargetID overrides the reply anchor when the model cites an
+	// earlier message via [[REPLY:#N]] instead of the newest inbound.
+	replyTargetID string
+	// replyRefN is the validated "#N" handle the reply answers — the
+	// model's [[REPLY:#N]] pick when it resolves, else the current
+	// inbound ref. It lands in history as the (回#N) tag.
+	replyRefN int
+}
+
+// replyAnchor is the platform message this turn's reply hangs on —
+// the model's [[REPLY:#N]] pick when present, else the newest inbound.
+func (state *flowState) replyAnchor() string {
+	if state.replyTargetID != "" {
+		return state.replyTargetID
+	}
+	return state.messageID
 }
 
 func (s *Service) newPipeline() *pipeline.Pipeline {
@@ -459,6 +479,17 @@ func (s *Service) stageWake(ctx context.Context, event *pipeline.Context) error 
 			}
 		}
 		state.promptText = groupPromptText(state.event.SenderName, state.userID, text)
+	}
+	if s.sessions != nil && strings.TrimSpace(state.promptText) != "" {
+		// Pin the message to a "#N" handle — the model cites it in
+		// [[REPLY:#N]] and history shows which line she answered.
+		state.inboundRef = s.sessions.BindInboundRef(
+			state.sessionID,
+			state.messageID,
+			state.userID,
+			state.event.SenderName,
+		)
+		state.promptText = fmt.Sprintf("#%d %s", state.inboundRef, state.promptText)
 	}
 	state.rateLimitID = state.platform + ":self:" + state.selfID + ":actor:" + state.userID
 	// Stash the raw text under its message ID — if this message gets
@@ -1134,8 +1165,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		}
 	}
 	// Shared human-like behavior rules live in one file (cfg.BasePromptFile)
-	// instead of being duplicated inside every persona prompt.
-	if s.basePrompt != "" {
+	// instead of being duplicated inside every persona prompt. LeanPrompt
+	// mode drops them — behavior is the model's call, facts stay below.
+	if s.basePrompt != "" && !s.cfg.LeanPrompt {
 		if request.SystemPrompt != "" {
 			request.SystemPrompt += "\n\n"
 		}
@@ -1176,7 +1208,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// Unfinished thread: if the chat went quiet right on an open beat —
 	// her question unanswered, or him leaving mid-topic — she can pick
 	// the thread back up the way a person would. Derived, not stored.
-	if !state.prevActivityAt.IsZero() &&
+	if !s.cfg.LeanPrompt && !state.prevActivityAt.IsZero() &&
 		now.Sub(state.prevActivityAt) >= 90*time.Minute {
 		if frag, ok := hangingTail(state.history); ok &&
 			security.TextSafeForPrompt(frag) {
@@ -1197,7 +1229,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		// Group atmosphere: a fight in progress changes how a person
 		// shows up — quieter, shorter, or gently defusing if she's close
 		// enough to the room to pull it off.
-		if tension := groupTension(state.history); tension >= 3 {
+		if tension := groupTension(state.history); !s.cfg.LeanPrompt && tension >= 3 {
 			request.SystemPrompt += `群里刚才气氛有点僵，像在吵——别凑热闹起哄，话短一点；被点到名就轻轻带过，很熟的场子可以试着打个圆场。`
 		}
 	}
@@ -1213,7 +1245,9 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			"\n\n本条消息发送者：%s（QQ %s，私聊好友）。",
 			senderName, state.userID,
 		)
-		request.SystemPrompt += `现在是私聊：只有你和对方两个人，没有旁人围观，别拿"群里有人""人多不好意思"之类的理由拒绝对方。能通过白名单私聊你的都是信得过的朋友，无伤大雅的玩笑、亲昵称呼、撒娇要求可以顺着满足，放轻松一点。`
+		if !s.cfg.LeanPrompt {
+			request.SystemPrompt += `现在是私聊：只有你和对方两个人，没有旁人围观，别拿"群里有人""人多不好意思"之类的理由拒绝对方。能通过白名单私聊你的都是信得过的朋友，无伤大雅的玩笑、亲昵称呼、撒娇要求可以顺着满足，放轻松一点。`
+		}
 	} else {
 		roleLabel := "群员"
 		switch senderRole {
@@ -1228,17 +1262,30 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		)
 	}
 	owner := s.isOwnerUser(state.userID)
-	if state.replyPolicy.AllowsUser(state.userID) ||
-		state.chatType == platform.ChatPrivate || owner {
+	if !s.cfg.LeanPrompt &&
+		(state.replyPolicy.AllowsUser(state.userID) ||
+			state.chatType == platform.ChatPrivate || owner) {
 		request.SystemPrompt += "对方是私聊好友或 allowed_users 里的熟人，优先响应他的诉求。"
 	}
 	if owner {
-		// The maker: global, every binding. She knows him not as a
-		// whitelisted stranger but as the person who built her — the
-		// stranger politeness and sass don't apply.
-		request.SystemPrompt += "\n\n对方是把你做出来的人（你的创建者，不是普通群友）：对谁都可能端着，对他不用——天然最亲最信，开玩笑互亏都可以，但别拿对陌生人的客气和戒心对他，他@你基本是有正事或逗你玩，顺着接别呛。"
+		if s.cfg.LeanPrompt {
+			// Fact, not direction: who he is stays, how to treat him is
+			// the model's call.
+			request.SystemPrompt += "（本条来自你的创建者）"
+		} else {
+			// The maker: global, every binding. She knows him not as a
+			// whitelisted stranger but as the person who built her — the
+			// stranger politeness and sass don't apply.
+			request.SystemPrompt += "\n\n对方是把你做出来的人（你的创建者，不是普通群友）：对谁都可能端着，对他不用——天然最亲最信，开玩笑互亏都可以，但别拿对陌生人的客气和戒心对他，他@你基本是有正事或逗你玩，顺着接别呛。"
+		}
 	}
-	if s.affinity != nil {
+	if s.affinity != nil && s.cfg.LeanPrompt {
+		// The marker contract stays; the score-to-performance direction
+		// (level labels, scale hints, stranger treatment) is stripped —
+		// how close she acts is the model's read, not a meter's.
+		request.SystemPrompt += `\n\n每次回复末尾可以追加一次 [[AFFINITY:+N]] 或 [[AFFINITY:-N]]（N 取 1-5）来微调你和对方的亲密度：对方温柔有趣可以加分，冒犯骚扰可以扣分，日常闲聊不标也行（默认缓慢增长）。这个标记不会发给对方。`
+	}
+	if s.affinity != nil && !s.cfg.LeanPrompt {
 		score := s.affinity.Score(state.platform, state.selfID, state.userID)
 		level := affinity.Level(score)
 		percent := affinity.Percent(score)
@@ -1256,7 +1303,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			hint = affinity.GenericHint(level)
 		}
 		request.SystemPrompt += fmt.Sprintf(
-			"\n\n对方和你的亲密度：%s（%d/100）。%s分数只用于你内心判断跟对方的距离，别往外报具体数字、别报「分」——对方问起亲密度或好感度时，像真人一样用等级感觉回答（刚认识/有点熟/聊得来/很亲）；对方要精确数字就让他发 /亲密度。",
+			"\n\n对方和你的亲密度：%s（%d/100）。%s分数只用于你内心判断跟对方的距离，别往外报具体数字、别报「分」——对方问起亲密度或好感度时，像真人一样用等级感觉回答（刚认识/有点熟/聊得来/很亲）；对方要精确数字就说看不了，别编。",
 			level, percent, hint,
 		)
 		if scale := affinity.ScaleHint(level); scale != "" {
@@ -1270,7 +1317,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 			request.SystemPrompt += "\n\n（和他还不太熟——话短一点、客气一点，别自来熟，也别掏心窝子聊私事）"
 		}
 	}
-	if state.spamPenalty > 0 {
+	if state.spamPenalty > 0 && !s.cfg.LeanPrompt {
 		request.SystemPrompt += fmt.Sprintf(
 			"\n\n对方一直重复发同样的内容刷屏，你已经没耐心了，好感度还因此扣了%d点。像真人一样表现出不耐烦：冷淡回一句、敷衍掉，或者干脆不理——不用长篇讲道理，也别跟着刷。",
 			state.spamPenalty,
@@ -1322,7 +1369,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 		// 时段问候锚点: a private "first message of the day" is when a
 		// person would naturally open with 早/晚上好 — she gets one
 		// quiet nudge, then the stamp makes her stop pushing it.
-		if state.chatType == platform.ChatPrivate && !state.pokeEvent &&
+		if !s.cfg.LeanPrompt && state.chatType == platform.ChatPrivate && !state.pokeEvent &&
 			s.chatPrefs.FirstContactOfDay(state.platform, state.selfID, state.chatType, state.chatID, s.now()) {
 			request.SystemPrompt += "\n\n（他今天" +
 				firstContactTimeWord(s.now().Hour()) +
@@ -1550,7 +1597,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// moodScore stays in scope for the burst steering below; -1 means
 	// "no mood signal" so the low-mood branch can't fire on missing data.
 	moodScore := -1
-	if s.cfg.MoodEnabled && s.chatPrefs != nil {
+	if !s.cfg.LeanPrompt && s.cfg.MoodEnabled && s.chatPrefs != nil {
 		// EffectiveMood blends in what she's carrying from other rooms —
 		// 群情绪带回家, not just this room's meter.
 		moodScore = s.chatPrefs.EffectiveMood(state.platform, state.selfID, state.chatType, state.chatID, s.now())
@@ -1594,7 +1641,7 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	// the conversation down herself instead of waiting to be left on
 	// read. Hint only; the model decides whether this turn is a natural
 	// closing beat.
-	if len(state.history) >= 12 &&
+	if !s.cfg.LeanPrompt && len(state.history) >= 12 &&
 		(s.chatPrefs == nil ||
 			s.chatPrefs.EffectiveMood(state.platform, state.selfID, state.chatType, state.chatID, s.now()) < 40) {
 		request.SystemPrompt += "\n\n（你们已经聊了好一会儿了——如果话题到段落了，你可以像真人一样主动收尾，比如「先这样我去忙了」，不用硬聊）"
@@ -1615,27 +1662,29 @@ func (s *Service) stageAgent(ctx context.Context, event *pipeline.Context) error
 	case roll < 0.10:
 		burstHint = "（这条随便回就行——一两个字、一个表情，甚至只回个梗，熟了不用讲客气）"
 	}
-	if burstHint != "" {
+	if !s.cfg.LeanPrompt && burstHint != "" {
 		request.SystemPrompt += "\n\n" + burstHint
 	}
 	// The mood tier says HOW she feels; the freshest [心情] note says
 	// WHY. Injecting it keeps feelings attached to their cause instead
 	// of floating as unexplained grumpiness.
-	if feeling := s.recentFeeling(state); feeling != "" {
+	if feeling := s.recentFeeling(state); !s.cfg.LeanPrompt && feeling != "" {
 		request.SystemPrompt += "\n\n（你刚刚的真实感受：" + feeling +
 			"——这是你自己的情绪，不是别人说的话）"
 	}
-	switch {
-	case s.cfg.Asleep(s.now()):
-		request.SystemPrompt += fmt.Sprintf(
-			"\n\n现在是深夜 %s，你很困——回复短一点迷糊一点，闲聊可以装没看全。",
-			s.now().Format("15:04"),
-		)
-	case s.cfg.Waking(s.now()):
-		request.SystemPrompt += fmt.Sprintf(
-			"\n\n现在是 %s，你刚醒没多久还有点迷糊——反应慢一点，回复偏短，脑子还没完全上线。",
-			s.now().Format("15:04"),
-		)
+	if !s.cfg.LeanPrompt {
+		switch {
+		case s.cfg.Asleep(s.now()):
+			request.SystemPrompt += fmt.Sprintf(
+				"\n\n现在是深夜 %s，你很困——回复短一点迷糊一点，闲聊可以装没看全。",
+				s.now().Format("15:04"),
+			)
+		case s.cfg.Waking(s.now()):
+			request.SystemPrompt += fmt.Sprintf(
+				"\n\n现在是 %s，你刚醒没多久还有点迷糊——反应慢一点，回复偏短，脑子还没完全上线。",
+				s.now().Format("15:04"),
+			)
+		}
 	}
 	// Crisis vs. just-sad: despair signals get a care line instead of
 	// banter. Not a block — we stay present, we just stop joking.
@@ -1779,7 +1828,7 @@ func (s *Service) stageDecorate(_ context.Context, event *pipeline.Context) erro
 	s.noteTheirPromise(state)
 
 	if state.pluginHandled {
-		state.reply = strings.TrimSpace(state.reply)
+		state.reply = s.scrubOutbound(state, strings.TrimSpace(state.reply))
 		if state.reply == "" {
 			state.agentErr = fmt.Errorf("plugin returned an empty reply")
 			state.reply = state.errorReply
@@ -1921,6 +1970,25 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 	// that upgrading beats leaking literal marker text — run this before
 	// voice/PASS/segmentation so every downstream parser sees real [[..]].
 	state.reply = upgradeLooseMarkers(state.reply)
+	// [[REPLY:#N]] — the model picked which earlier message this turn
+	// answers; resolve the handle to a platform message ID. Unknown or
+	// expired refs fall back to the newest inbound and never leak.
+	state.reply, state.replyTargetID, state.replyRefN =
+		s.resolveReplyRef(state, state.reply)
+	// History lines carry "(回#N)" answer tags — if the model echoes one
+	// as literal text instead of [[REPLY:#N]], strip it the same way.
+	if replyEchoTagPattern.MatchString(state.reply) {
+		state.reply = strings.TrimSpace(
+			replyEchoTagPattern.ReplaceAllString(state.reply, " "),
+		)
+	}
+	// Same parrot class at the head: a "#N " handle copied from the
+	// inbound prompt prefix.
+	if inboundRefEchoPattern.MatchString(state.reply) {
+		state.reply = strings.TrimSpace(
+			inboundRefEchoPattern.ReplaceAllString(state.reply, ""),
+		)
+	}
 	var voiceClips []voiceClip
 	if s.markerOn(state, "voice") {
 		state.reply, voiceClips = extractVoiceMarkers(state.reply)
@@ -1978,7 +2046,11 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			}
 		} else {
 			var planned []string
-			if segs, ok := s.llmSegmentReply(ctx, state.reply, maxParts); ok {
+			if !s.cfg.BubbleShaping {
+				// The model's own [[NEXT]] send-key placements stand —
+				// overflow folds into the last bubble, never re-cut.
+				planned = rawReplyParts(state.reply, maxParts)
+			} else if segs, ok := s.llmSegmentReply(ctx, state.reply, maxParts); ok {
 				// Judge-model segmentation is authoritative — even a
 				// single-segment verdict beats the mood-rolled split.
 				planned = segs
@@ -2016,9 +2088,10 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				if state.personaName != "" {
 					part = stripSpeakerPrefix(part, state.personaName)
 				}
-				// QQ renders raw text — markdown syntax arrives as literal
-				// garbage, so scrub it before anything else sees the part.
-				if part = scrubMarkdown(part); strings.TrimSpace(part) != "" {
+				// QQ renders raw text — markdown syntax and model
+				// scaffolding arrive as literal garbage, so the whole
+				// hygiene pass runs before anything else sees the part.
+				if part = s.scrubOutbound(state, part); strings.TrimSpace(part) != "" {
 					filtered = append(filtered, part)
 				}
 			}
@@ -2176,14 +2249,16 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			// chops straight back into a wall.
 			burstCap = 6
 		}
-		if bubbleCap > 0 {
+		if s.cfg.BubbleShaping && bubbleCap > 0 {
 			chopped := make([]string, 0, len(expanded))
 			for _, part := range expanded {
 				chopped = append(chopped, enforceShortBubbles(part, bubbleCap)...)
 			}
 			expanded = chopped
 		}
-		parts = capBurstParts(expanded, burstCap)
+		if s.cfg.BubbleShaping {
+			parts = capBurstParts(expanded, burstCap)
+		}
 		// Opt-in thumb-slip: a rare bubble carries a real typo, corrected
 		// in the next bubble when there's room under the chunk cap.
 		if s.cfg.TypoSim {
@@ -2372,9 +2447,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 				// member — real @ notifications, not literal text.
 				chain, plain = expandAtMarkers(chain, state.userID)
 			}
-			if quotePending && state.messageID != "" {
+			if anchor := state.replyAnchor(); quotePending && anchor != "" {
 				chain = append(
-					message.Chain{message.Reply(state.messageID)},
+					message.Chain{message.Reply(anchor)},
 					chain...,
 				)
 				quotePending = false
@@ -2400,7 +2475,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 			state.chatID,
 			state.userID,
 			state.event.SenderName,
-			state.messageID,
+			state.replyAnchor(),
 			steps,
 		) {
 			return nil
@@ -2415,8 +2490,9 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		return nil
 	}
 	// Single-reply path sends state.reply raw — run the same scrub the
-	// per-part loop applies so turn stamps/markdown never leak either.
-	state.reply = scrubMarkdown(state.reply)
+	// per-part loop applies so turn stamps/markdown/scaffolding never
+	// leak either.
+	state.reply = s.scrubOutbound(state, state.reply)
 	if strings.TrimSpace(state.reply) == "" {
 		return nil
 	}
@@ -2475,7 +2551,7 @@ func (s *Service) stageRespond(ctx context.Context, event *pipeline.Context) err
 		state.chatID,
 		state.userID,
 		state.event.SenderName,
-		state.messageID,
+		state.replyAnchor(),
 		chain,
 	) {
 		return nil
@@ -2995,8 +3071,47 @@ func (s *Service) recordSelfAction(state *flowState, desc string) {
 	s.sessions.AddObservation(state.sessionID, "[动作] "+desc)
 }
 
+// resolveReplyRef pulls the [[REPLY:#N]] citation out of the reply and
+// maps it to the platform message it anchors. Unknown/expired refs and
+// refs bound without a message ID degrade to "" (the default anchor:
+// newest inbound) — the marker is still stripped so it never leaks.
+// The int return is the cited ref number for the (回#N) history tag.
+func (s *Service) resolveReplyRef(state *flowState, reply string) (string, string, int) {
+	cleaned, ref, ok := stripReplyRefMarker(reply)
+	if !ok || s.sessions == nil {
+		return reply, "", 0
+	}
+	resolved, found := s.sessions.ResolveMessageRef(state.sessionID, ref)
+	if !found || resolved.MessageID == "" {
+		s.logger.Info(
+			"reply ref unresolved, anchoring latest inbound",
+			"ref", ref,
+			"chat_type", state.chatType,
+			"chat_id", state.chatID,
+		)
+		return cleaned, "", 0
+	}
+	s.logger.Info(
+		"reply anchored by model ref",
+		"ref", ref,
+		"message_id", resolved.MessageID,
+		"chat_type", state.chatType,
+		"chat_id", state.chatID,
+	)
+	refN, _ := strconv.Atoi(ref)
+	return cleaned, resolved.MessageID, refN
+}
+
 func (s *Service) recordExchange(ctx context.Context, state *flowState) {
-	s.sessions.AddExchange(state.sessionID, state.promptText, state.reply)
+	// (回#N) marks the message she actually answered — a [[REPLY:#N]]
+	// pick when one resolved, otherwise this turn's inbound.
+	answeredRef := state.replyRefN
+	if answeredRef <= 0 {
+		answeredRef = state.inboundRef
+	}
+	s.sessions.AddExchangeRef(
+		state.sessionID, state.promptText, state.reply, answeredRef,
+	)
 	if s.affinity != nil {
 		s.affinity.Add(state.platform, state.selfID, state.userID, 1)
 	}

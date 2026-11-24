@@ -320,6 +320,21 @@ type Config struct {
 	// [[NEXT]] placements (fidelity-checked, falls back on failure).
 	// Off = [[NEXT]] markers and mechanical folding decide all splits.
 	LLMReplySegment bool
+	// LeanPrompt strips every "how to behave" injection — mood meter,
+	// affinity scores, spam scolding, sleep/burst steering, the shared
+	// base rules — so the model decides from raw context. What stays is
+	// fact-only: persona, marker contract, clock, sender identity, memory,
+	// binding rules and capability notes. Off = full legacy prompt.
+	LeanPrompt bool
+	// BubbleShaping controls the mechanical reply re-segmentation chain
+	// (llmSegment/softSplit/enforceShortBubbles/capBurst). Off = the
+	// model's own [[NEXT]] markers decide bubbles; MaxReplyChunks and
+	// MaxReplyRunes still cap the send.
+	BubbleShaping bool
+	// AmbientCooldown suppresses ambient (non-mention, non-follow-up)
+	// group messages for this long after her own reply — she just spoke,
+	// so unrelated chatter passes without a judge call. 0 disables.
+	AmbientCooldown time.Duration
 	SleepStart      int           // hour sleep window begins (-1 disables)
 	SleepEnd        int           // hour sleep window ends
 	Proactive       bool          // ambient opener engine
@@ -692,6 +707,14 @@ func Load() (Config, error) {
 	cfg.FollowUpAnyUser = parseBool("QQ_FOLLOW_UP_ANY_USER", false, &errs)
 	cfg.MemoryExtract = parseBool("QQ_MEMORY_EXTRACT", true, &errs)
 	cfg.LLMReplySegment = parseBool("QQ_LLM_SEGMENT", true, &errs)
+	cfg.LeanPrompt = parseBool("QQ_LEAN_PROMPT", false, &errs)
+	cfg.BubbleShaping = parseBool("QQ_BUBBLE_SHAPING", true, &errs)
+	cfg.AmbientCooldown = parseDuration(
+		"QQ_AMBIENT_COOLDOWN",
+		60*time.Second,
+		true,
+		&errs,
+	)
 	cfg.SleepStart = parseInt("QQ_SLEEP_START", 1, -1, &errs)
 	cfg.SleepEnd = parseInt("QQ_SLEEP_END", 8, 0, &errs)
 	cfg.Proactive = parseBool("QQ_PROACTIVE", false, &errs)

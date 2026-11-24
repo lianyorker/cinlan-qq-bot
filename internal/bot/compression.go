@@ -365,9 +365,10 @@ func decodeCompressionResult(value string, summaryBudget int) (compressionResult
 			value = strings.TrimSpace(strings.Join(lines[1:len(lines)-1], "\n"))
 		}
 	}
+	value = extractJSONObject(value)
 	var result compressionResult
 	decoder := json.NewDecoder(strings.NewReader(value))
-	decoder.DisallowUnknownFields()
+	// Model output may carry extra fields (e.g. "key_points"); ignore them.
 	if err := decoder.Decode(&result); err != nil {
 		return compressionResult{}, fmt.Errorf("decode session compression result: %w", err)
 	}

@@ -305,7 +305,17 @@ func (s *Service) classifySpam(
 	}
 	verdict, err := decodeSpamVerdict(response.Reply)
 	if err != nil {
-		return false, "", err
+		// Judge answered in prose — one corrective retry for strict JSON
+		// before failing the classification.
+		request.SystemPrompt = spamJudgeSystemPrompt +
+			"\n上次回复不是合法 JSON。只输出 JSON 对象本身，不要任何解释、前后文或代码块。"
+		response, retryErr := s.judgeReply(decisionCtx, "", request)
+		if retryErr != nil {
+			return false, "", err
+		}
+		if verdict, retryErr = decodeSpamVerdict(response.Reply); retryErr != nil {
+			return false, "", err
+		}
 	}
 	confidence := float64(-1)
 	if verdict.Confidence != nil {
@@ -395,18 +405,30 @@ func sanitizeModerationVoice(reply string) string {
 	return line
 }
 
+// extractJSONObject trims a model reply down to its outermost JSON
+// object, tolerating prose the model wraps around it. Returns the
+// input unchanged when no braces are present so the caller's decoder
+// still gets a meaningful syntax error instead of silence.
+func extractJSONObject(value string) string {
+	start := strings.Index(value, "{")
+	end := strings.LastIndex(value, "}")
+	if start < 0 || end <= start {
+		return value
+	}
+	return value[start : end+1]
+}
+
 // decodeSpamVerdict parses the judge's JSON reply, tolerating surrounding
 // prose by extracting the first JSON object.
 func decodeSpamVerdict(value string) (spamVerdict, error) {
 	value = strings.TrimSpace(value)
 	start := strings.Index(value, "{")
-	end := strings.LastIndex(value, "}")
-	if start < 0 || end <= start {
+	if start < 0 {
 		return spamVerdict{}, errors.New("spam verdict is not JSON")
 	}
 	var verdict spamVerdict
 	if err := json.Unmarshal(
-		[]byte(value[start:end+1]), &verdict,
+		[]byte(extractJSONObject(value)), &verdict,
 	); err != nil {
 		return spamVerdict{}, fmt.Errorf("decode spam verdict: %w", err)
 	}

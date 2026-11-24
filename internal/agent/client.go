@@ -120,11 +120,12 @@ type customToolResult struct {
 }
 
 type openAIRequest struct {
-	Model     string           `json:"model"`
-	Messages  []openAIMessage  `json:"messages"`
-	Stream    bool             `json:"stream"`
-	MaxTokens int              `json:"max_tokens,omitempty"`
-	Tools     []map[string]any `json:"tools,omitempty"`
+	Model      string           `json:"model"`
+	Messages   []openAIMessage  `json:"messages"`
+	Stream     bool             `json:"stream"`
+	MaxTokens  int              `json:"max_tokens,omitempty"`
+	Tools      []map[string]any `json:"tools,omitempty"`
+	ToolChoice string           `json:"tool_choice,omitempty"`
 }
 
 type openAIMessage struct {
@@ -353,15 +354,23 @@ func (c *HTTPClient) replyWithTools(
 	if maxRounds <= 0 {
 		maxRounds = 4
 	}
+	failStreak := map[string]int{}
 	// One grace round past maxRounds: if the model still returns tool
 	// calls on its "final" answer we execute them once and demand a
 	// summary — otherwise her text could promise actions that never ran.
 	for round := 0; round <= maxRounds+1; round++ {
 		requestMessages := messages
+		// Tools stay on the wire every round so tool_choice stays
+		// spec-valid; final rounds hard-disable calls instead of just
+		// hiding the schema — a model that emits calls from habit
+		// ignores a missing tools array.
 		var availableTools []map[string]any
-		if round < maxRounds {
+		if requestTools != nil {
 			availableTools = requestTools.OpenAITools()
-		} else {
+		}
+		toolChoice := ""
+		if round >= maxRounds {
+			toolChoice = "none"
 			note := "工具调用轮次已用完。请只根据已经取得的工具结果直接回答；" +
 				"如果证据仍不足，只追问一个最关键的范围，不要再调用工具。"
 			if round > maxRounds {
@@ -376,11 +385,12 @@ func (c *HTTPClient) replyWithTools(
 			)
 		}
 		payload, err := json.Marshal(openAIRequest{
-			Model:     c.cfg.Model,
-			Messages:  requestMessages,
-			Stream:    false,
-			MaxTokens: c.cfg.MaxTokens,
-			Tools:     availableTools,
+			Model:      c.cfg.Model,
+			Messages:   requestMessages,
+			Stream:     false,
+			MaxTokens:  c.cfg.MaxTokens,
+			Tools:      availableTools,
+			ToolChoice: toolChoice,
 		})
 		if err != nil {
 			return domain.AgentResponse{}, fmt.Errorf("encode OpenAI tool request: %w", err)
@@ -445,6 +455,7 @@ func (c *HTTPClient) replyWithTools(
 					call.Function.Name,
 					json.RawMessage(call.Function.Arguments),
 					round+1,
+					failStreak,
 				)
 				if executeErr != nil {
 					if errors.Is(executeErr, tool.ErrPermissionDenied) {
@@ -491,6 +502,7 @@ func (c *HTTPClient) replyCustomWithTools(
 	if maxRounds <= 0 {
 		maxRounds = 4
 	}
+	failStreak := map[string]int{}
 	var toolResults []customToolResult
 	for round := 0; round <= maxRounds+1; round++ {
 		requestInput := input
@@ -569,6 +581,7 @@ func (c *HTTPClient) replyCustomWithTools(
 				name,
 				arguments,
 				round+1,
+				failStreak,
 			)
 			if executeErr != nil {
 				if errors.Is(executeErr, tool.ErrPermissionDenied) {
@@ -590,6 +603,12 @@ func (c *HTTPClient) replyCustomWithTools(
 	return domain.AgentResponse{}, errors.New("agent custom tool loop exhausted without a result")
 }
 
+// toolFailStreakLimit short-circuits a tool that keeps erroring in
+// one request — without it the model burns every round retrying the
+// same dead endpoint (e.g. fetch_url against an IP-banned site) until
+// the canned "rounds exhausted" line replaces her real answer.
+const toolFailStreakLimit = 3
+
 func (c *HTTPClient) executeTool(
 	ctx context.Context,
 	requestTools *tool.Registry,
@@ -597,7 +616,12 @@ func (c *HTTPClient) executeTool(
 	name string,
 	arguments json.RawMessage,
 	round int,
+	failStreak map[string]int,
 ) (tool.Result, error) {
+	if failStreak != nil && failStreak[name] >= toolFailStreakLimit {
+		return tool.Result{Error: name + " 已经连续失败好几次了，本条消息别再调用这个工具；" +
+			"用已经拿到的信息直接回答，或直接说查不到。"}, nil
+	}
 	started := time.Now()
 	result, err := requestTools.Execute(ctx, tool.Call{
 		Name:      name,
@@ -622,6 +646,13 @@ func (c *HTTPClient) executeTool(
 			),
 		},
 	})
+	if failStreak != nil {
+		if err == nil && result.Error != "" {
+			failStreak[name]++
+		} else {
+			failStreak[name] = 0
+		}
+	}
 	outcome := "success"
 	if err != nil {
 		outcome = "error"
@@ -630,15 +661,34 @@ func (c *HTTPClient) executeTool(
 	} else if result.Error != "" {
 		outcome = "tool_error"
 	}
-	c.logger.Info(
-		"agent tool call completed",
+	attrs := []any{
 		"request_id", input.RequestID,
 		"round", round,
 		"tool", strings.TrimSpace(name),
 		"duration_ms", time.Since(started).Milliseconds(),
 		"outcome", outcome,
-	)
+	}
+	if errText := toolErrorText(result, err); errText != "" {
+		attrs = append(attrs, "error_text", errText)
+	}
+	c.logger.Info("agent tool call completed", attrs...)
 	return result, err
+}
+
+// toolErrorText surfaces the actual failure text the tool handed back
+// so a tool_error log line says WHY it failed, not just that it did.
+// Capped — tool errors can carry a whole upstream error body.
+func toolErrorText(result tool.Result, err error) string {
+	text := result.Error
+	if err != nil {
+		text = err.Error()
+	}
+	text = strings.Join(strings.Fields(text), " ")
+	runes := []rune(text)
+	if len(runes) > 200 {
+		text = string(runes[:200]) + "…"
+	}
+	return text
 }
 
 func (c *HTTPClient) rawWithRetry(ctx context.Context, payload []byte) ([]byte, error) {

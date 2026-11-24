@@ -125,6 +125,35 @@ func TestSelectScopedAllowsOnlyDeclaredResources(t *testing.T) {
 	}
 }
 
+func TestSelectScopedWildcardSelectsEverythingButKeepsGuard(t *testing.T) {
+	registry := NewRegistry()
+	guard := &testGuard{err: ErrPermissionDenied}
+	registry.SetGuard(guard)
+	for _, definition := range []Definition{
+		{Name: "builtin", Handler: testHandler},
+		{Name: "mcp_search_query", Source: SourceMCP, SourceName: "search", Handler: testHandler},
+		{Name: "read_skill", Source: SourceSkill, Handler: testHandler},
+	} {
+		if err := registry.Register(definition); err != nil {
+			t.Fatalf("Register() error = %v", err)
+		}
+	}
+
+	selected := registry.SelectScoped(Selection{Names: []string{"*"}})
+	for _, name := range []string{"builtin", "mcp_search_query", "read_skill"} {
+		if !selected.Has(name) {
+			t.Fatalf("wildcard selection is missing %q", name)
+		}
+	}
+	// "*" widens the menu, not the gate — the guard still runs.
+	if _, err := selected.Execute(context.Background(), Call{Name: "builtin"}); !errors.Is(err, ErrPermissionDenied) {
+		t.Fatalf("wildcard bypassed guard: %v", err)
+	}
+	if guard.calls != 1 {
+		t.Fatalf("guard calls = %d, want 1", guard.calls)
+	}
+}
+
 func testHandler(context.Context, Call) (Result, error) {
 	return Result{}, nil
 }

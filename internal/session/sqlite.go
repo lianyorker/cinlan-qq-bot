@@ -176,6 +176,7 @@ func (b *sqliteBackend) initialize() error {
 			provider_cipher BLOB,
 			summary_cipher BLOB,
 			memory_cipher BLOB,
+			refs_cipher BLOB,
 			updated_at INTEGER NOT NULL
 		)`,
 		`CREATE TABLE IF NOT EXISTS messages (
@@ -206,13 +207,20 @@ func (b *sqliteBackend) initialize() error {
 			return fmt.Errorf("initialize SQLite session store: %w", err)
 		}
 	}
+	// Databases built before the ref map shipped lack the column — add
+	// it in place instead of forcing a rebuild.
+	if _, err := b.db.Exec(`ALTER TABLE sessions ADD COLUMN refs_cipher BLOB`); err != nil &&
+		!strings.Contains(err.Error(), "duplicate column") {
+		return fmt.Errorf("migrate SQLite sessions refs column: %w", err)
+	}
 	return nil
 }
 
 func (s *Store) loadSQLite() error {
 	rows, err := s.sqlite.db.Query(`
 		SELECT scope_hash, scope_cipher, handoff, persona_cipher,
-		       provider_cipher, summary_cipher, memory_cipher, updated_at
+		       provider_cipher, summary_cipher, memory_cipher, refs_cipher,
+		       updated_at
 		FROM sessions`)
 	if err != nil {
 		return fmt.Errorf("query SQLite sessions: %w", err)
@@ -224,6 +232,7 @@ func (s *Store) loadSQLite() error {
 			scopeHash, scopeCipher        []byte
 			personaCipher, providerCipher []byte
 			summaryCipher, memoryCipher   []byte
+			refsCipher                    []byte
 			handoff                       int
 			updatedAt                     int64
 		)
@@ -235,6 +244,7 @@ func (s *Store) loadSQLite() error {
 			&providerCipher,
 			&summaryCipher,
 			&memoryCipher,
+			&refsCipher,
 			&updatedAt,
 		); err != nil {
 			return fmt.Errorf("scan SQLite session: %w", err)
@@ -267,7 +277,7 @@ func (s *Store) loadSQLite() error {
 			return err
 		}
 		scopeID := string(scope)
-		s.entries[scopeID] = entry{
+		loaded := entry{
 			Handoff:   handoff != 0,
 			Persona:   persona,
 			Provider:  provider,
@@ -275,6 +285,17 @@ func (s *Store) loadSQLite() error {
 			Memory:    memory,
 			UpdatedAt: time.Unix(0, updatedAt),
 		}
+		if refsJSON, err := s.sqlite.cipher.open("refs", scopeHash, refsCipher); err != nil {
+			return err
+		} else if len(refsJSON) > 0 {
+			var saved persistedRefs
+			if err := json.Unmarshal(refsJSON, &saved); err != nil {
+				return fmt.Errorf("decode session refs: %w", err)
+			}
+			loaded.RefSeq = saved.RefSeq
+			loaded.Refs = saved.Refs
+		}
+		s.entries[scopeID] = loaded
 		hashToScope[hex.EncodeToString(scopeHash)] = scopeID
 	}
 	if err := rows.Err(); err != nil {
@@ -445,11 +466,26 @@ func (s *Store) persistSQLiteLocked() error {
 		if err != nil {
 			return err
 		}
+		var refsCipher []byte
+		if current.RefSeq > 0 || len(current.Refs) > 0 {
+			refsJSON, err := json.Marshal(persistedRefs{
+				RefSeq: current.RefSeq,
+				Refs:   current.Refs,
+			})
+			if err != nil {
+				return fmt.Errorf("encode session refs: %w", err)
+			}
+			refsCipher, err = s.sqlite.cipher.seal("refs", scopeHash, refsJSON)
+			if err != nil {
+				return err
+			}
+		}
 		if _, err := tx.Exec(`
 			INSERT INTO sessions (
 				scope_hash, scope_cipher, handoff, persona_cipher,
-				provider_cipher, summary_cipher, memory_cipher, updated_at
-			) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+				provider_cipher, summary_cipher, memory_cipher, refs_cipher,
+				updated_at
+			) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 			scopeHash,
 			scopeCipher,
 			boolInt(current.Handoff),
@@ -457,6 +493,7 @@ func (s *Store) persistSQLiteLocked() error {
 			providerCipher,
 			summaryCipher,
 			memoryCipher,
+			refsCipher,
 			current.UpdatedAt.UnixNano(),
 		); err != nil {
 			return fmt.Errorf("insert SQLite session: %w", err)
@@ -575,6 +612,13 @@ func writePrivateAtomic(path string, data []byte) error {
 		}
 	}
 	return os.Chmod(path, 0o600)
+}
+
+// persistedRefs is the on-disk shape of a session's "#N" ref map —
+// sealed as one JSON blob under refs_cipher.
+type persistedRefs struct {
+	RefSeq int                   `json:"ref_seq"`
+	Refs   map[string]MessageRef `json:"refs"`
 }
 
 func boolInt(value bool) int {

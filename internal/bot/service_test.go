@@ -106,7 +106,8 @@ func TestHandleMentionedGroupMessageAndHistory(t *testing.T) {
 		!strings.HasSuffix(got[1].Content, "客服答案") {
 		t.Fatalf("second request history = %#v", got)
 	}
-	if agentClient.requests[0].Text != "[tester (20002)]: 第一个问题" {
+	if !strings.HasSuffix(agentClient.requests[0].Text, "[tester (20002)]: 第一个问题") ||
+		!strings.HasPrefix(agentClient.requests[0].Text, "#1 ") {
 		t.Fatalf("first request text = %q", agentClient.requests[0].Text)
 	}
 	if len(sender.messages) != 2 || !sender.messages[0].quote {
@@ -132,7 +133,7 @@ func TestGroupContextIsSharedAndKeepsSenderIdentity(t *testing.T) {
 	if second.SessionID != "qq-onebot:self:10001:group:30003" {
 		t.Fatalf("session ID = %q", second.SessionID)
 	}
-	if second.Text != "[bob (20003)]: second" {
+	if !strings.HasSuffix(second.Text, "[bob (20003)]: second") {
 		t.Fatalf("second text = %q", second.Text)
 	}
 	if len(second.History) != 2 ||
@@ -371,7 +372,7 @@ func TestHandoffAndResumeCommands(t *testing.T) {
 	service.handleEvent(context.Background(), testEvent("4", "恢复后的问题", true))
 
 	if len(agentClient.requests) != 1 ||
-		agentClient.requests[0].Text != "[tester (20002)]: 恢复后的问题" {
+		!strings.HasSuffix(agentClient.requests[0].Text, "[tester (20002)]: 恢复后的问题") {
 		t.Fatalf("agent requests = %#v", agentClient.requests)
 	}
 	if len(sender.messages) != 1 || sender.messages[0].text != "answer" {
@@ -855,6 +856,7 @@ func testBotConfig(t *testing.T) config.Config {
 		QuoteReply:       true,
 		QuoteGroupProb:   1,
 		GroupAtSender:    true,
+		BubbleShaping:    true,
 		MaxReplyRunes:    1500,
 		MaxReplyChunks:   4,
 		MaxConcurrency:   2,

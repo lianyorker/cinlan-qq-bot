@@ -347,14 +347,20 @@ func NewWithRuntime(
 			Default:      true,
 		})
 	}
+	basePromptOff := false
 	if path := strings.TrimSpace(cfg.BasePromptFile); path != "" {
-		if data, err := os.ReadFile(path); err == nil {
+		if strings.EqualFold(path, "off") || strings.EqualFold(path, "none") {
+			// Explicit opt-out: BASE_PROMPT_FILE=off means no shared
+			// behavior rules at all — not even the embedded default.
+			basePromptOff = true
+			logger.Info("base prompt disabled via BASE_PROMPT_FILE=off")
+		} else if data, err := os.ReadFile(path); err == nil {
 			service.basePrompt = strings.TrimSpace(string(data))
 		} else if !os.IsNotExist(err) {
 			logger.Warn("failed to read base prompt file", "path", path, "error", err.Error())
 		}
 	}
-	if service.basePrompt == "" {
+	if service.basePrompt == "" && !basePromptOff {
 		// No file on disk (or unreadable) — fall back to the copy baked
 		// into the binary so behavior rules survive a bare checkout.
 		service.basePrompt = strings.TrimSpace(embeddedBasePrompt)
@@ -1260,6 +1266,16 @@ func (s *Service) justRepliedRecently(chatType, chatID string) bool {
 	defer s.socialMu.Unlock()
 	spoke, ok := s.lastSpoke[chatType+":"+chatID]
 	return ok && s.now().Sub(spoke) < recentReplyWindow
+}
+
+// spokeWithin reports whether her last send in this chat landed inside
+// the given window — the ambient-cooldown check, a wider cousin of
+// justRepliedRecently with a caller-chosen window.
+func (s *Service) spokeWithin(chatType, chatID string, window time.Duration) bool {
+	s.socialMu.Lock()
+	defer s.socialMu.Unlock()
+	spoke, ok := s.lastSpoke[chatType+":"+chatID]
+	return ok && s.now().Sub(spoke) < window
 }
 
 // neglected reports whether she spoke recently and this inbound group

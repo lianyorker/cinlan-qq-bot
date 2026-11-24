@@ -158,9 +158,14 @@ func (r *Registry) Select(names []string) *Registry {
 
 func (r *Registry) SelectScoped(scope Selection) *Registry {
 	selected := NewRegistry()
+	allowAll := false
 	allowed := make(map[string]struct{}, len(scope.Names))
 	for _, name := range scope.Names {
 		name = strings.TrimSpace(name)
+		if name == "*" {
+			allowAll = true
+			continue
+		}
 		if name != "" {
 			allowed[name] = struct{}{}
 		}
@@ -173,12 +178,13 @@ func (r *Registry) SelectScoped(scope Selection) *Registry {
 		}
 	}
 	r.mu.RLock()
-	definitions := make([]Definition, 0, len(allowed)+len(mcpServers))
+	definitions := make([]Definition, 0, len(r.items))
 	guard := r.guard
 	for name, definition := range r.items {
 		_, selectedByName := allowed[name]
 		_, selectedMCPServer := mcpServers[definition.SourceName]
-		if selectedByName ||
+		if allowAll ||
+			selectedByName ||
 			(definition.Source == SourceMCP && selectedMCPServer) ||
 			(definition.Source == SourceSkill && scope.AllowSkills) {
 			definitions = append(definitions, definition)

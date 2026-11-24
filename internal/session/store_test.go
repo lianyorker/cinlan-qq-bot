@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"encoding/base64"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -30,6 +32,100 @@ func TestStoreKeepsCompleteRecentExchanges(t *testing.T) {
 	}
 	if !strings.HasPrefix(history[0].Content, "[") {
 		t.Fatalf("history entries should be timestamped: %#v", history[0])
+	}
+}
+
+func TestBindInboundRefAssignsSequentialHandlesAndResolves(t *testing.T) {
+	store := newWithClock(10, time.Hour, time.Now)
+	key := "session"
+
+	if got := store.BindInboundRef(key, "msg-a", "u1", "alice"); got != 1 {
+		t.Fatalf("first ref = %d, want 1", got)
+	}
+	if got := store.BindInboundRef(key, "msg-b", "u2", "bob"); got != 2 {
+		t.Fatalf("second ref = %d, want 2", got)
+	}
+
+	resolved, ok := store.ResolveMessageRef(key, "1")
+	if !ok || resolved.MessageID != "msg-a" || resolved.SenderName != "alice" {
+		t.Fatalf("resolve plain ref = %#v, %v", resolved, ok)
+	}
+	// The model writes [[REPLY:#N]] — the "#" prefix must resolve too.
+	resolved, ok = store.ResolveMessageRef(key, "#2")
+	if !ok || resolved.MessageID != "msg-b" || resolved.UserID != "u2" {
+		t.Fatalf("resolve # ref = %#v, %v", resolved, ok)
+	}
+	if _, ok := store.ResolveMessageRef(key, "99"); ok {
+		t.Fatal("unknown ref resolved")
+	}
+	if _, ok := store.ResolveMessageRef("other-session", "1"); ok {
+		t.Fatal("ref leaked across sessions")
+	}
+}
+
+func TestBindInboundRefEvictsBeyondWindow(t *testing.T) {
+	store := newWithClock(10, time.Hour, time.Now)
+	key := "session"
+
+	for i := 0; i < maxSessionRefs+2; i++ {
+		store.BindInboundRef(key, fmt.Sprintf("msg-%d", i), "u", "n")
+	}
+	if _, ok := store.ResolveMessageRef(key, "1"); ok {
+		t.Fatal("oldest ref should be evicted past maxSessionRefs")
+	}
+	if _, ok := store.ResolveMessageRef(key, "2"); ok {
+		t.Fatal("second-oldest ref should be evicted past maxSessionRefs")
+	}
+	if _, ok := store.ResolveMessageRef(key, strconv.Itoa(maxSessionRefs+2)); !ok {
+		t.Fatal("newest ref should survive eviction")
+	}
+}
+
+func TestAddExchangeRefTagsAnsweredHandle(t *testing.T) {
+	store := newWithClock(10, time.Hour, time.Now)
+	key := "session"
+
+	store.AddExchangeRef(key, "question", "answer", 3)
+	history, _ := store.Snapshot(key)
+	if len(history) != 2 || !strings.Contains(history[1].Content, "(回#3)") {
+		t.Fatalf("assistant line missing (回#N) tag: %#v", history)
+	}
+
+	store.AddExchangeRef(key, "question2", "answer2", 0)
+	history, _ = store.Snapshot(key)
+	if len(history) != 4 || strings.Contains(history[3].Content, "(回#") {
+		t.Fatalf("ref-less exchange got tagged: %#v", history)
+	}
+}
+
+func TestInboundRefsSurviveSQLiteReload(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sessions.db")
+	key := base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x42}, 32))
+	scope := "qq-onebot:self:10001:group:30003"
+
+	store, err := OpenEncryptedSQLite(20, time.Hour, path, key, "")
+	if err != nil {
+		t.Fatalf("OpenEncryptedSQLite() error = %v", err)
+	}
+	if got := store.BindInboundRef(scope, "msg-persist", "u1", "alice"); got != 1 {
+		t.Fatalf("ref = %d, want 1", got)
+	}
+	if err := store.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+
+	reopened, err := OpenEncryptedSQLite(20, time.Hour, path, key, "")
+	if err != nil {
+		t.Fatalf("reopen error = %v", err)
+	}
+	defer reopened.Close()
+	resolved, ok := reopened.ResolveMessageRef(scope, "1")
+	if !ok || resolved.MessageID != "msg-persist" {
+		t.Fatalf("ref did not survive reload: %#v, %v", resolved, ok)
+	}
+	if got := reopened.BindInboundRef(scope, "msg-after", "u2", "bob"); got != 2 {
+		t.Fatalf("ref seq did not survive reload: %d, want 2", got)
 	}
 }
 

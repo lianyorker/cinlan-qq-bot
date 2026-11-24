@@ -56,10 +56,10 @@ type rawNoteReview struct {
 }
 
 func decodeNoteReview(value string) (bool, string, error) {
-	value = strings.TrimSpace(value)
+	value = extractJSONObject(strings.TrimSpace(value))
 	var raw rawNoteReview
 	decoder := json.NewDecoder(strings.NewReader(value))
-	decoder.DisallowUnknownFields()
+	// Model output may carry extra fields; ignore them.
 	if err := decoder.Decode(&raw); err != nil {
 		return false, "", fmt.Errorf("decode note review: %w", err)
 	}

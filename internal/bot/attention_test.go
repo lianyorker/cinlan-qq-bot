@@ -231,7 +231,7 @@ func TestPrivateAIDecisionSupportsReplyAndIgnore(t *testing.T) {
 	}
 }
 
-func TestAttentionHistoryDefaultsToNoneAndAnonymizesOptIn(t *testing.T) {
+func TestAttentionHistoryDefaultsToNoneAndPassesThroughOptIn(t *testing.T) {
 	history := []domain.ChatMessage{
 		{Role: "user", Content: "[Alice (12345)]: first"},
 		{Role: "assistant", Content: "answer"},
@@ -241,9 +241,10 @@ func TestAttentionHistoryDefaultsToNoneAndAnonymizesOptIn(t *testing.T) {
 		t.Fatalf("default history = %#v, want nil", got)
 	}
 	got := attentionHistory(history, binding.AttentionHistoryPolicy{Mode: binding.AttentionHistoryLastN, Limit: 2})
-	if len(got) != 2 || got[1].Content != "[previous participant]: second" ||
-		strings.Contains(got[1].Content, "67890") {
-		t.Fatalf("anonymized history = %#v", got)
+	// The judge sees the real conversation — names, IDs and #N / (回#N)
+	// markers — so it can tell which message was already answered.
+	if len(got) != 2 || got[1].Content != "[Bob (67890)]: second" {
+		t.Fatalf("judge history = %#v", got)
 	}
 }
 

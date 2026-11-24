@@ -15,6 +15,66 @@ import (
 
 const naturalReplyBreak = "[[NEXT]]"
 
+// replyRefMarkerPattern matches the model's reply-target citation,
+// e.g. [[REPLY:#3]] or [[REPLY:3]] — always stripped before send.
+var replyRefMarkerPattern = regexp.MustCompile(
+	`\[\[\s*REPLY\s*:\s*#?\s*(\d+)\s*\]\]`,
+)
+
+// replyEchoTagPattern matches the "(回#N)" tag when the model parrots it
+// back from stored history lines instead of emitting [[REPLY:#N]] — same
+// class of internal marker, always stripped before send.
+var replyEchoTagPattern = regexp.MustCompile(
+	`[（(]\s*回\s*#\s*\d+\s*[）)]`,
+)
+
+// inboundRefEchoPattern matches a leaked "#N " inbound handle echoed at
+// the head of the reply — the model copies the handle prefix it saw on
+// the user's message. Only the head is scrubbed; "#N" mid-text stays.
+var inboundRefEchoPattern = regexp.MustCompile(
+	`^\s*#\s*\d+\s+`,
+)
+
+// stripReplyRefMarker extracts the [[REPLY:#N]] citation the model used
+// to aim its reply at an earlier message. All occurrences are scrubbed;
+// the first one wins as the target handle.
+func stripReplyRefMarker(reply string) (string, string, bool) {
+	loc := replyRefMarkerPattern.FindStringSubmatchIndex(reply)
+	if loc == nil {
+		return reply, "", false
+	}
+	ref := reply[loc[2]:loc[3]]
+	cleaned := strings.TrimSpace(
+		replyRefMarkerPattern.ReplaceAllString(reply, " "),
+	)
+	return cleaned, ref, true
+}
+
+// rawReplyParts splits only on the model's own [[NEXT]] markers — the
+// autonomous path (BubbleShaping=off) trusts its send-key placement.
+// Overflow folds into the last bubble so nothing is silently dropped;
+// MaxReplyRunes still bounds the whole send downstream.
+func rawReplyParts(reply string, maxParts int) []string {
+	reply = strings.TrimSpace(reply)
+	if reply == "" {
+		return nil
+	}
+	if maxParts <= 0 {
+		maxParts = 1
+	}
+	var parts []string
+	for _, seg := range strings.Split(reply, naturalReplyBreak) {
+		if seg = strings.TrimSpace(seg); seg != "" {
+			parts = append(parts, seg)
+		}
+	}
+	if len(parts) > maxParts {
+		head := parts[:maxParts-1]
+		parts = append(head, strings.Join(parts[maxParts-1:], "\n"))
+	}
+	return parts
+}
+
 // memeMarkerPattern matches a whole reply part like "[[MEME]]" or
 // "[[MEME:嘲笑]]" that asks the bot to send a sticker from the chat's meme
 // pool instead of text.

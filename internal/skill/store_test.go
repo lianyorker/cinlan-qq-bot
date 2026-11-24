@@ -65,6 +65,36 @@ func TestLoadDirProgressiveDisclosureAndTools(t *testing.T) {
 	}
 }
 
+func TestListSelectedWildcardReturnsAllSkills(t *testing.T) {
+	dir := t.TempDir()
+	for _, name := range []string{"alpha", "beta"} {
+		skillDir := filepath.Join(dir, name)
+		if err := os.MkdirAll(skillDir, 0o700); err != nil {
+			t.Fatalf("MkdirAll() error = %v", err)
+		}
+		content := "---\nname: " + name + "\ndescription: d\n---\n# " + name
+		if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(content), 0o600); err != nil {
+			t.Fatalf("WriteFile() error = %v", err)
+		}
+	}
+	store, err := LoadDir(dir)
+	if err != nil {
+		t.Fatalf("LoadDir() error = %v", err)
+	}
+	if got := store.ListSelected([]string{"*"}); len(got) != 2 {
+		t.Fatalf("wildcard ListSelected = %#v, want 2 skills", got)
+	}
+	if got := store.ListSelected([]string{"alpha"}); len(got) != 1 || got[0].Name != "alpha" {
+		t.Fatalf("scoped ListSelected = %#v", got)
+	}
+	if !containsName([]string{"*"}, "anything") {
+		t.Fatal("wildcard containsName rejected a name")
+	}
+	if containsName([]string{"alpha"}, "beta") {
+		t.Fatal("scoped containsName accepted an unlisted name")
+	}
+}
+
 func TestReloadKeepsPreviousSkillsOnFailure(t *testing.T) {
 	dir := t.TempDir()
 	skillDir := filepath.Join(dir, "delivery")

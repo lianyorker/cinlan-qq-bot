@@ -292,8 +292,15 @@ func TestToolLoopFinalRoundDoesNotExposeTools(t *testing.T) {
 						}}]}`)
 						return
 					}
-					if len(payload.Tools) != 0 {
-						t.Fatalf("final tools = %#v", payload.Tools)
+					// Final round keeps the schema on the wire but hard-
+					// disables calls — a model that emits calls from
+					// habit ignores a missing tools array.
+					if len(payload.Tools) != 1 || payload.ToolChoice != "none" {
+						t.Fatalf(
+							"final tools = %#v tool_choice = %q",
+							payload.Tools,
+							payload.ToolChoice,
+						)
 					}
 					_, _ = io.WriteString(writer, `{"choices":[{"message":{
 						"role":"assistant","content":"根据现有结果回答"

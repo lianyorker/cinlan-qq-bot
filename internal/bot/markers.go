@@ -56,7 +56,7 @@ var gestureNeedsCall = map[string]bool{
 
 // protocolTagLegend documents inbound segment tags — it describes what
 // the parser produces, not a toggleable feature, so it always ships.
-const protocolTagLegend = `- 你看到的消息标记：[表情:憨笑] 是对方发的QQ表情名（你可以回打同款）[链接:x][音乐:x][位置:x][名片:x] 是对方分享的东西标题；[骰子:6][猜拳:石头] 是对方的游戏结果；[文件:x.pdf][视频:x.mp4][红包:恭喜发财] 是对方发的文件/视频/红包名；@阿茶 就是@了那个人；[转发的聊天记录] 后面是对方贴进来的聊天记录 里面"昵称: 内容"每行一条；[语音]是对方发的语音（配了转写时直接就是文字）；[图片][视频][文件]占位；消息开头的（回复 昵称：内容）表示那条在接那条消息的话茬 把上下文对上了再答`
+const protocolTagLegend = `- 你看到的消息标记：[表情:憨笑] 是对方发的QQ表情名（你可以回打同款）[链接:x][音乐:x][位置:x][名片:x] 是对方分享的东西标题；[骰子:6][猜拳:石头] 是对方的游戏结果；[文件:x.pdf][视频:x.mp4][红包:恭喜发财] 是对方发的文件/视频/红包名；@阿茶 就是@了那个人；[转发的聊天记录] 后面是对方贴进来的聊天记录 里面"昵称: 内容"每行一条；[语音]是对方发的语音（配了转写时直接就是文字）；[图片][视频][文件]占位；消息开头的（回复 昵称：内容）表示那条在接那条消息的话茬 把上下文对上了再答；每条消息开头的 #数字 是它的编号，你回复历史开头标的 (回#N) 是你答过哪条`
 
 // protocolPassDoc keeps [[PASS]] always documented — abstaining is part
 // of the reply contract, not an optional gesture.
@@ -65,6 +65,11 @@ const protocolPassDoc = `[[PASS]]整条不打字弃权——没话说、不想�
 // protocolNextDoc teaches [[NEXT]] — control-plane reply splitting,
 // always documented alongside PASS.
 const protocolNextDoc = `想分泡就打[[NEXT]]——拆的是不同的事或节奏变化 不是把一句话拦腰切断；一般一两条就够 最多四条 别为了显得碎硬拆；[[NEXT]]拆开的每条都要在回应对方发的消息 不许凭空接自己上一句的话茬 更不许对自己刚发的语音台词/图片内容做出反应`
+
+// protocolReplyDoc hands reply-target choice to the model: cite the
+// "#N" of the message being answered instead of always anchoring the
+// newest one.
+const protocolReplyDoc = `回哪句你说了算：默认接最新那条，要接更早的消息就在回复开头打[[REPLY:#数字]]（编号见每条消息开头），一轮最多选一个；没人问你的、别人已经答过的，别去接`
 
 func validMarkerID(id string) bool {
 	for _, known := range markerIDs {
@@ -173,7 +178,7 @@ func buildProtocolBlock(set markerSet, callOK bool) string {
 		}
 		gestures = append(gestures, gestureDocs[id])
 	}
-	gestures = append(gestures, protocolPassDoc, protocolNextDoc)
+	gestures = append(gestures, protocolPassDoc, protocolNextDoc, protocolReplyDoc)
 	b.WriteString(strings.Join(gestures, " "))
 	if len(gestures) > 1 {
 		b.WriteString("——每样用一两次就够，别刷屏")

@@ -39,6 +39,17 @@ func TestBasePromptFileOverridesEmbedded(t *testing.T) {
 	}
 }
 
+// BASE_PROMPT_FILE=off is an explicit opt-out: no shared behavior rules
+// at all — the embedded default must NOT sneak back in.
+func TestBasePromptOffDisablesEmbeddedFallback(t *testing.T) {
+	cfg := testBotConfig(t)
+	cfg.BasePromptFile = "off"
+	service := New(cfg, &fakeAgent{response: domain.AgentResponse{Reply: "ok"}}, &fakeSender{}, session.New(10, time.Hour), testLogger())
+	if service.basePrompt != "" {
+		t.Fatalf("base prompt = %q, want empty under off", service.basePrompt)
+	}
+}
+
 // The marker contract ships with the binary so a stripped-down deployment
 // still knows which [[ACTION]] markers the reply parser understands.
 func TestProtocolBlockCoversMarkers(t *testing.T) {

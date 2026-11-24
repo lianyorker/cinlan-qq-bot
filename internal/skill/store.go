@@ -124,6 +124,10 @@ func (s *Store) List() []Info {
 }
 
 func (s *Store) ListSelected(names []string) []Info {
+	items := s.List()
+	if containsName(names, "*") {
+		return items
+	}
 	allowed := make(map[string]struct{}, len(names))
 	for _, name := range names {
 		name = strings.TrimSpace(name)
@@ -134,7 +138,6 @@ func (s *Store) ListSelected(names []string) []Info {
 	if len(allowed) == 0 {
 		return nil
 	}
-	items := s.List()
 	result := make([]Info, 0, len(items))
 	for _, item := range items {
 		if _, ok := allowed[item.Name]; ok {
@@ -274,7 +277,8 @@ func (p PromptPlugin) BeforeMessage(_ context.Context, event *plugin.MessageCont
 func containsName(values []string, target string) bool {
 	target = strings.TrimSpace(target)
 	for _, value := range values {
-		if strings.TrimSpace(value) == target {
+		value = strings.TrimSpace(value)
+		if value == "*" || value == target {
 			return true
 		}
 	}

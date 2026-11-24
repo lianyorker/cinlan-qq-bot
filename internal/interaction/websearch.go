@@ -76,7 +76,9 @@ func WebSearchTool(apiURL, apiKey string, pool *ProxyPool) tool.Definition {
 		Name: "web_search",
 		Description: "联网搜索一下（像人打开搜索引擎查一下）。问的是你没听过的新东西、黑话、" +
 			"新模型名、实时价格/活动时用，别拿来查你本来就知道的常识。" +
-			"参数 query 填要搜的关键词，越具体越好。",
+			"参数 query 填要搜的关键词。搜法像人：一次搜不到就换说法——拆词、试英文原名、" +
+			"加「是什么/发布/泄露/官网」这类词、换同义词，别拿同一个关键词反复搜；" +
+			"结果里看着靠谱的页面用 fetch_url 读详情再下结论。真搜不到就如实说搜不到，别编。",
 		Parameters: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -100,7 +102,8 @@ func WebSearchTool(apiURL, apiKey string, pool *ProxyPool) tool.Definition {
 			}
 			results, err := runWebSearch(ctx, apiURL, apiKey, pool, query)
 			if err != nil {
-				return tool.Result{Error: "没搜到：" + err.Error()}, nil
+				return tool.Result{Error: "没搜到：" + err.Error() +
+					"（别再反复搜同一个问题；换个问法或直接说查不到）"}, nil
 			}
 			if len(results) == 0 {
 				return tool.Result{Content: "搜了一圈没找到相关结果"}, nil
@@ -181,6 +184,7 @@ func searchBackendsOnce(
 	var firstErr error
 	allRotateWorthy := true
 	sawErr := false
+	var fallbackResults []webSearchResult
 	for _, backend := range []func(context.Context, *http.Client, string) ([]webSearchResult, error){
 		searchBingAuto,
 		searchDuckDuckGoLite,
@@ -188,7 +192,16 @@ func searchBackendsOnce(
 	} {
 		results, err := backend(ctx, client, query)
 		if err == nil && len(results) > 0 {
-			return results, false, nil
+			if resultsLookRelevant(results, query) {
+				return results, false, nil
+			}
+			// Results came back but nothing echoes the query — junk
+			// matches, not answers. Keep as fallback and let the next
+			// backend (then Jina) take a shot at something relevant.
+			if fallbackResults == nil {
+				fallbackResults = results
+			}
+			continue
 		}
 		if err != nil {
 			sawErr = true
@@ -203,10 +216,61 @@ func searchBackendsOnce(
 			return nil, false, ctx.Err()
 		}
 	}
+	// Scrape chain empty or off-topic — grounded search takes the last
+	// shot. Its errors are swallowed: a slow/rate-limited fallback must
+	// not trip proxy rotation or mask the scrapers' real errors.
+	if results, jerr := searchJinaGrounded(ctx, client, query); jerr == nil && len(results) > 0 {
+		return results, false, nil
+	}
+	if fallbackResults != nil {
+		return fallbackResults, false, nil
+	}
 	if !sawErr {
 		return nil, false, nil
 	}
 	return nil, allRotateWorthy, firstErr
+}
+
+// searchJinaGrounded is the last-resort brain: s.jina.ai runs the query
+// through Jina's own index and synthesizes a markdown answer — far
+// better than raw scrapes for obscure terms, model codenames and leaker
+// jargon. Keyless quota is small, so it only fires when the scrape
+// chain came back empty or off-topic. Gets its own client (it is slow)
+// but shares the transport so the picked proxy still applies.
+func searchJinaGrounded(
+	ctx context.Context,
+	client *http.Client,
+	query string,
+) ([]webSearchResult, error) {
+	jina := &http.Client{Timeout: 16 * time.Second, Transport: client.Transport}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet,
+		"https://s.jina.ai/"+url.PathEscape(query), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Accept", "text/plain")
+	req.Header.Set("User-Agent", webSearchUserAgent)
+	resp, err := jina.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("jina search HTTP %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 64<<10))
+	if err != nil {
+		return nil, err
+	}
+	text := strings.TrimSpace(string(body))
+	if text == "" {
+		return nil, nil
+	}
+	return []webSearchResult{{
+		Title:   "Jina 综合检索",
+		Snippet: text,
+		URL:     "https://s.jina.ai/" + url.PathEscape(query),
+	}}, nil
 }
 
 // searchBingAuto wraps the zh bing call with a relevance gate: zh-CN
@@ -365,7 +429,13 @@ func searchJSONEndpoint(
 	if strings.Contains(apiURL, "?") {
 		sep = "&"
 	}
-	endpoint := apiURL + sep + "q=" + url.QueryEscape(query) + "&format=json"
+	endpoint := apiURL + sep + "q=" + url.QueryEscape(query)
+	brave := strings.Contains(apiURL, "search.brave.com")
+	if brave {
+		endpoint += "&count=5"
+	} else {
+		endpoint += "&format=json"
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, endpoint, nil)
 	if err != nil {
 		return nil, err
@@ -373,7 +443,11 @@ func searchJSONEndpoint(
 	req.Header.Set("User-Agent", webSearchUserAgent)
 	req.Header.Set("Accept", "application/json")
 	if apiKey != "" {
-		req.Header.Set("Authorization", "Bearer "+apiKey)
+		if brave {
+			req.Header.Set("X-Subscription-Token", apiKey)
+		} else {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
+		}
 	}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -384,11 +458,20 @@ func searchJSONEndpoint(
 		return nil, fmt.Errorf("search endpoint status %d", resp.StatusCode)
 	}
 	var payload struct {
+		// SearXNG shape: results[] = {title, content, url}
 		Results []struct {
 			Title   string `json:"title"`
 			Content string `json:"content"`
 			URL     string `json:"url"`
 		} `json:"results"`
+		// Brave shape: web.results[] = {title, url, description}
+		Web struct {
+			Results []struct {
+				Title       string `json:"title"`
+				URL         string `json:"url"`
+				Description string `json:"description"`
+			} `json:"results"`
+		} `json:"web"`
 	}
 	body, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
@@ -402,6 +485,13 @@ func searchJSONEndpoint(
 		results = append(results, webSearchResult{
 			Title:   strings.TrimSpace(r.Title),
 			Snippet: strings.TrimSpace(r.Content),
+			URL:     strings.TrimSpace(r.URL),
+		})
+	}
+	for _, r := range payload.Web.Results {
+		results = append(results, webSearchResult{
+			Title:   strings.TrimSpace(r.Title),
+			Snippet: strings.TrimSpace(r.Description),
 			URL:     strings.TrimSpace(r.URL),
 		})
 	}

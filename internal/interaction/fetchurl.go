@@ -22,6 +22,7 @@ const (
 	fetchURLMaxRunes  = 3000
 	fetchURLTimeout   = 15 * time.Second
 	fetchURLMaxRedirs = 4
+	jinaReaderBase    = "https://r.jina.ai/"
 )
 
 // FetchURLTool lets the persona open a web page and read its text. It rides
@@ -63,7 +64,8 @@ func FetchURLTool(pool *ProxyPool) tool.Definition {
 			}
 			text, err := runFetchURL(ctx, pool, raw)
 			if err != nil {
-				return tool.Result{Error: "打不开：" + err.Error()}, nil
+				return tool.Result{Error: "打不开：" + err.Error() +
+					"（这条链接抓不了，别再反复试同一个站；换个来源或凭已知信息直接答）"}, nil
 			}
 			return tool.Result{Content: text}, nil
 		},
@@ -182,6 +184,29 @@ func runFetchURL(ctx context.Context, pool *ProxyPool, raw string) (string, erro
 	if _, err := publicFetchURL(u.String()); err != nil {
 		return "", err
 	}
+	text, err := fetchViaPool(ctx, pool, u)
+	if err == nil {
+		return text, nil
+	}
+	lastErr := err
+	// Direct fetch failed — datacenter/proxy exit IP banned or a JS-only
+	// page. Jina Reader renders the page server-side from its own egress
+	// and returns markdown text, which clears most anti-bot walls. It
+	// reads the ORIGINAL url (not the fxtwitter/bsky rewrite) and its
+	// free unauthenticated tier is enough for bot chat volume.
+	if ju, jerr := url.Parse(jinaReaderBase + raw); jerr == nil {
+		if _, perr := publicFetchURL(ju.String()); perr == nil {
+			if text, ferr := fetchViaPool(ctx, pool, ju); ferr == nil {
+				return text, nil
+			}
+		}
+	}
+	return "", lastErr
+}
+
+// fetchViaPool runs the proxy-rotation fetch loop shared by the direct
+// path and the Jina fallback.
+func fetchViaPool(ctx context.Context, pool *ProxyPool, u *url.URL) (string, error) {
 	attempts := 1
 	if pool != nil {
 		attempts += pool.size()

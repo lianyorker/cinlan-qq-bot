@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,7 +25,23 @@ type entry struct {
 	Summary   string               `json:"summary,omitempty"`
 	Memory    string               `json:"memory,omitempty"`
 	UpdatedAt time.Time            `json:"updated_at"`
+	// RefSeq is the next inbound message ref number; Refs maps "#N"
+	// handles to the platform message they came from so a reply can
+	// quote/cite a specific earlier message.
+	RefSeq int                   `json:"ref_seq,omitempty"`
+	Refs   map[string]MessageRef `json:"refs,omitempty"`
 }
+
+// MessageRef records which platform message a "#N" handle points at.
+type MessageRef struct {
+	MessageID  string `json:"message_id"`
+	UserID     string `json:"user_id,omitempty"`
+	SenderName string `json:"sender_name,omitempty"`
+}
+
+// maxSessionRefs bounds the ref map — a person scrolls back tens of
+// messages, not thousands.
+const maxSessionRefs = 64
 
 type persistedState struct {
 	Version  int              `json:"version"`
@@ -69,8 +86,8 @@ type HistoryChunk struct {
 }
 
 type Store struct {
-	mu         sync.Mutex
-	entries    map[string]entry
+	mu      sync.Mutex
+	entries map[string]entry
 	// chunks caches the decrypted retrieval index per scope so recall
 	// doesn't hit sqlite+AES on every turn. Nil entries mean not yet
 	// loaded; written spans append into both cache and the table.
@@ -258,9 +275,20 @@ func (s *Store) stamped(content string) string {
 }
 
 func (s *Store) AddExchange(key, userText, assistantText string) {
+	s.AddExchangeRef(key, userText, assistantText, 0)
+}
+
+// AddExchangeRef is AddExchange plus an inbound ref: when the reply
+// answers a "#N" inbound message, the stored assistant line carries a
+// 「(回#N)」 tag so later turns (and the attention judge) can see which
+// message was already answered instead of answering it again.
+func (s *Store) AddExchangeRef(key, userText, assistantText string, replyToRef int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
+	if replyToRef > 0 {
+		assistantText = fmt.Sprintf("(回#%d) %s", replyToRef, assistantText)
+	}
 	current, _ := s.getLocked(key)
 	// If the inbound was already recorded as an observation (stageSession
 	// logs every inbound, including messages we don't answer), don't
@@ -285,6 +313,45 @@ func (s *Store) AddExchange(key, userText, assistantText string) {
 	current.UpdatedAt = s.now()
 	s.entries[key] = current
 	s.persistLocked()
+}
+
+// BindInboundRef assigns the next "#N" handle to an inbound message and
+// pins it to the platform message/user it came from. The handle is what
+// the model writes in [[REPLY:#N]] to cite this message later.
+func (s *Store) BindInboundRef(key, messageID, userID, senderName string) int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, _ := s.getLocked(key)
+	current.RefSeq++
+	if current.Refs == nil {
+		current.Refs = map[string]MessageRef{}
+	}
+	current.Refs[strconv.Itoa(current.RefSeq)] = MessageRef{
+		MessageID:  messageID,
+		UserID:     userID,
+		SenderName: senderName,
+	}
+	if current.RefSeq > maxSessionRefs {
+		delete(current.Refs, strconv.Itoa(current.RefSeq-maxSessionRefs))
+	}
+	current.UpdatedAt = s.now()
+	s.entries[key] = current
+	s.persistLocked()
+	return current.RefSeq
+}
+
+// ResolveMessageRef looks up the platform message behind a "#N" handle.
+// Missing handles are normal — refs expire, or the model hallucinates a
+// number — so callers fall back to the default reply target.
+func (s *Store) ResolveMessageRef(key, ref string) (MessageRef, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	current, ok := s.entries[key]
+	if !ok || current.Refs == nil {
+		return MessageRef{}, false
+	}
+	resolved, ok := current.Refs[strings.TrimSpace(strings.TrimPrefix(ref, "#"))]
+	return resolved, ok
 }
 
 // AddObservation records an inbound message the bot saw but did not
